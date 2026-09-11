@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kabelbed — MS-tracéontwerp</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="registers.css">
+</head>
+<body>
+<header id="topbar">
+  <h1>Kabelbed</h1>
+  <span class="sub">MS-tracéontwerp · fase 1-prototype · RD New (EPSG:28992)</span>
+  <span id="gemeente-info" class="mono"></span>
+  <span class="spacer"></span>
+  <button id="btn-registers" title="Alle registers op één pagina: bewerken, filteren, sorteren">▤ Registers</button>
+  <button id="btn-new" title="Nieuw leeg project starten">+ Nieuw</button>
+  <input id="project-naam" type="text" placeholder="projectnaam" spellcheck="false">
+  <button id="btn-save" title="Project opslaan (invoer én berekend tracé)">Opslaan</button>
+  <select id="project-lijst" title="Project openen"><option value="">— openen —</option></select>
+</header>
+
+<div id="layout">
+  <aside id="sidebar">
+    <section>
+      <h2>1 · Verkennen</h2>
+      <div class="toolgrid">
+        <button class="tool" data-mode="pan" title="Navigeren">⇱ Navigeren</button>
+        <button class="tool" data-mode="area" title="Projectgebied tekenen (polygoon; dubbelklik om af te sluiten)">▱ Projectgebied</button>
+        <button class="tool" data-mode="station" title="MS-station plaatsen (klik op de kaart)">◉ MS-station</button>
+        <button class="tool" data-mode="via" title="Verplicht passeerpunt">◈ Via-punt</button>
+        <button class="tool" data-mode="forbidden" title="Verboden zone tekenen">⊘ Verboden zone</button>
+        <button class="tool" data-mode="delete" title="Klik op een station, via-punt of zone om te verwijderen">✕ Verwijderen</button>
+        <button class="tool breed" data-mode="street" title="Street View: klik op (of naast) het tracé en loop er doorheen. Beschikbaar zodra een tracé is berekend.">🚶 Street View langs het tracé</button>
+      </div>
+      <p class="hint" id="tekenhint">Plaats minimaal twee MS-stations; een projectgebied tekenen is optioneel. Punten zijn daarna versleepbaar.</p>
+    </section>
+
+    <section>
+      <h2>Kaartlagen</h2>
+      <label><input type="radio" name="basis" value="brt" checked> BRT-achtergrondkaart</label>
+      <label><input type="radio" name="basis" value="grijs"> BRT grijs</label>
+      <label><input type="radio" name="basis" value="lufo"> Luchtfoto</label>
+      <hr>
+      <label><input type="checkbox" id="lg-bgt"> BGT-visualisatie</label>
+      <label><input type="checkbox" id="lg-dkk"> Kadastrale kaart (DKK)</label>
+      <label><input type="checkbox" id="lg-seg" checked> Segmenten (ligging)</label>
+      <label><input type="checkbox" id="lg-alt" checked> Overige varianten</label>
+      <hr>
+      <span class="hint">Zonelagen (wegen mee in het tracé)</span>
+      <label><input type="checkbox" id="lg-natura"> Natura 2000</label>
+      <label><input type="checkbox" id="lg-nnn"> Natuurnetwerk Nederland</label>
+      <label><input type="checkbox" id="lg-gwb"> Grondwaterbescherming</label>
+      <label><input type="checkbox" id="lg-sld" title="BRO Overheidsbesluit bodemverontreiniging en nazorg (SLD) — actueel register onder de Omgevingswet, in opbouw sinds 1-1-2026"> Bodem: verontreiniging/nazorg (BRO SLD)</label>
+      <label><input type="checkbox" id="lg-sad" title="BRO Milieuhygiënisch bodemonderzoek (SAD) — verplichte aanlevering door gemeenten en provincies sinds 1-7-2025"> Bodem: onderzoeken (BRO SAD)</label>
+      <label><input type="checkbox" id="lg-bodem" title="Historische Wbb-locaties uit het landelijke Bodemloket (overgangsbron; niet elk bevoegd gezag leverde aan)"> Bodem: historisch Bodemloket (Wbb)</label>
+      <label><input type="checkbox" id="lg-bodemdek" title="Arcering: bevoegd gezag publiceert bodemdata via een eigen loket; het landelijke Bodemloket is daar niet dekkend"> Bodemloket: dekking (arcering)</label>
+      <label><input type="checkbox" id="lg-bodemreg" title="Open services van bevoegde gezagen die (nog) niet in BRO/Bodemloket zitten: Zuid-Holland (spoedlocaties, bedrijfsterreinen, stortplaatsen), Zaanstad/Nazca. Uitbreidbaar in backend/pdok.py (BODEM_REGIONAAL)"> Bodem: regionale bronnen</label>
+      <label><input type="checkbox" id="lg-amk"> Archeologie (AMK)</label>
+      <label><input type="checkbox" id="lg-bomen" checked title="Bomen uit de BGT (vegetatieobject, plustopografie) aangevuld met gekoppelde gemeentelijke bomenregisters (BOMEN_REGIONAAL in backend/pdok.py; nu: Amersfoort). Wortelzone = kroonprojectie waar bekend, anders r ≈ 2,5 m. Zichtbaar na het berekenen van een tracé."> Bomen + wortelzone</label>
+    </section>
+
+    <section>
+      <h2>2 · Wegingsprofiel</h2>
+      <p class="hint">Kosten per meter en kruisingsprijzen; instelbaar per project (FO §3.1).</p>
+      <table id="weights-table" class="mini"></table>
+      <button id="btn-weights-reset" class="klein">Terug naar standaard</button>
+    </section>
+
+    <section>
+      <h2>3 · Tracé berekenen</h2>
+      <label><input type="checkbox" id="opt-varianten" checked> Drie varianten + MCA (FO §3.4)</label>
+      <label class="inline">Haspellengte <input id="opt-haspel" type="number" value="500" min="100" step="50" class="mono"> m</label>
+      <p class="hint">Tot 70 km en meerdere stations. Boven ± 2,5 km hemelsbreed rekent de
+        app per deeltraject in een corridor van ± 160 m rond de rechte lijn tussen de
+        stations. Loopt een deeltraject vast (natuurgebied, bebouwing, verboden zone),
+        dan verbreedt de app de corridor automatisch tot ± 1,3 km om een begaanbare
+        route te vinden; stuur het tracé zo nodig met via-punten. Reken op enkele
+        minuten voor lange tracés.</p>
+      <button id="btn-compute" class="primair" disabled>Bereken tracé</button>
+      <div id="status" class="mono"></div>
+    </section>
+
+    <section>
+      <h2>Export</h2>
+      <div class="toolgrid">
+        <button id="btn-exp-geojson" disabled>GeoJSON</button>
+        <button id="btn-exp-xlsx" disabled>Excel-registers</button>
+      </div>
+      <hr>
+      <span class="hint">Ontwerpnota — door AI opgesteld uit alle registers en
+        het berekende tracé. Het document bouwt zich live op in een
+        voorbeeldvenster; daarna te downloaden als Word.</span>
+      <div class="toolgrid">
+        <button class="btn-nota" data-fase="VO" disabled title="Voorlopig Ontwerp: variantenafweging en voorkeursvariant">VO-nota</button>
+        <button class="btn-nota" data-fase="DO" disabled title="Definitief Ontwerp: tracékeuze, technieken, vergunningen- en ZRO-strategie">DO-nota</button>
+        <button class="btn-nota" data-fase="UO" disabled title="Uitvoeringsgereed Ontwerp: uitvoeringswijze, boringen, meldingen, werkvolgorde">UO-nota</button>
+      </div>
+    </section>
+  </aside>
+
+  <main id="map-wrap">
+    <div id="map"></div>
+    <div id="legenda"></div>
+
+    <div id="sv-paneel" class="dicht" aria-label="Street View">
+      <header id="sv-kop">
+        <h3>Street View</h3>
+        <span id="sv-positie" class="mono"></span>
+        <span class="spacer"></span>
+        <a id="sv-extern" href="#" target="_blank" rel="noopener"
+           title="Dit punt met kijkrichting openen in Google Maps (nieuw tabblad)">↗ Google Maps</a>
+        <button id="sv-sluit" title="Sluiten">✕</button>
+      </header>
+      <div id="sv-beeld">
+        <div id="sv-pano"></div>
+        <div id="sv-melding"></div>
+      </div>
+      <div id="sv-controls">
+        <button id="sv-start" title="Naar het begin van het tracé">⏮</button>
+        <button id="sv-terug" title="Stap terug langs het tracé">◀</button>
+        <button id="sv-play" title="Automatisch langs het tracé lopen">▷ Lopen</button>
+        <button id="sv-vooruit" title="Stap vooruit langs het tracé">▶</button>
+        <button id="sv-eind" title="Naar het einde van het tracé">⏭</button>
+        <select id="sv-stap" title="Stapgrootte">
+          <option value="10">10 m</option>
+          <option value="25" selected>25 m</option>
+          <option value="50">50 m</option>
+          <option value="100">100 m</option>
+        </select>
+        <input id="sv-slider" type="range" min="0" max="1000" value="0" step="1"
+               title="Positie langs het tracé">
+      </div>
+    </div>
+
+    <aside id="zro-detail" class="dicht" aria-label="ZRO-detail">
+      <header id="zd-kop">
+        <div>
+          <h3 id="zd-titel">ZRO</h3>
+          <span id="zd-perceel" class="mono"></span>
+        </div>
+        <span id="zd-status-chip" class="chip"></span>
+        <button id="zd-sluit" title="Sluiten">✕</button>
+      </header>
+      <div id="zd-inhoud">
+        <section>
+          <h4>Status</h4>
+          <select id="zd-status"></select>
+        </section>
+        <section>
+          <h4>Uit het tracé</h4>
+          <dl id="zd-feiten"></dl>
+        </section>
+        <section>
+          <h4>Eigenaar / rechthebbende</h4>
+          <label>Naam <input id="zd-eigenaar-naam" placeholder="BRK niet gekoppeld — handmatig invullen"></label>
+          <label>Adres <input id="zd-eigenaar-adres"></label>
+          <label>Postcode en plaats <input id="zd-eigenaar-pp"></label>
+          <div class="rij2">
+            <label>E-mail <input id="zd-eigenaar-email" type="email"></label>
+            <label>Telefoon <input id="zd-eigenaar-tel"></label>
+          </div>
+        </section>
+        <section>
+          <h4>Recht en vergoeding</h4>
+          <label>Netbeheerder / verkrijger <input id="zd-netbeheerder"></label>
+          <label>Aard van het recht <select id="zd-aard"></select></label>
+          <div class="rij2">
+            <label>Vergoeding eenmalig (€) <input id="zd-verg1" type="number" step="0.01" min="0"></label>
+            <label>Jaarlijks (€) <input id="zd-verg2" type="number" step="0.01" min="0"></label>
+          </div>
+          <div id="zd-voorstel">
+            <div id="zd-voorstel-kop">Richtlijnvoorstel vergoeding</div>
+            <table id="zd-voorstel-tabel"></table>
+            <p id="zd-voorstel-toelichting" class="hint"></p>
+            <button id="zd-voorstel-overnemen">Voorstel overnemen</button>
+          </div>
+          <label>Notaris <input id="zd-notaris"></label>
+          <label>Opmerkingen / bijzondere bepalingen <textarea id="zd-opm" rows="3"></textarea></label>
+          <button id="zd-opslaan">Dossier opslaan</button>
+          <span id="zd-melding" class="hint"></span>
+        </section>
+        <section>
+          <h4>Vestigingsvereisten</h4>
+          <ul id="zd-checklist"></ul>
+        </section>
+        <section>
+          <h4>Bijlagen</h4>
+          <ul id="zd-bijlagen"></ul>
+          <div class="zd-acties">
+            <div class="radios">
+              Ondergrond tekening:
+              <label><input type="radio" name="zd-ondergrond" value="dkk" checked> kadastrale kaart</label>
+              <label><input type="radio" name="zd-ondergrond" value="luchtfoto"> luchtfoto</label>
+            </div>
+            <button id="zd-tekening">◫ ZRO-tekening genereren (PDF)</button>
+            <button id="zd-upload-knop">+ Eigen bijlage toevoegen</button>
+            <input id="zd-upload" type="file" hidden>
+            <button id="zd-overeenkomst" class="primair" disabled>⎘ ZRO-overeenkomst opstellen (Word)</button>
+            <span id="zd-overeenkomst-hint" class="hint"></span>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div id="paneel">
+  <div id="paneel-kop">
+    <select id="variant-select" title="Actieve variant"></select>
+    <nav id="tabs">
+      <button data-tab="mca" class="actief">Varianten / MCA</button>
+      <button data-tab="werkpakketten">Werkpakketten</button>
+      <button data-tab="planning">Planning</button>
+      <button data-tab="segmenten">Segmenten</button>
+      <button data-tab="kruisingen">Kruisingen</button>
+      <button data-tab="vergunningen">Vergunningen</button>
+      <button data-tab="boringen">Boringen</button>
+      <button data-tab="onderzoeken">Onderzoeken</button>
+      <button data-tab="zro">ZRO</button>
+      <button data-tab="toetsing">Toetsing</button>
+      <button data-tab="moffen">Moffen</button>
+      <button data-tab="kosten">Calculatie</button>
+    </nav>
+    <span class="spacer"></span>
+    <button id="paneel-toggle" title="Paneel in-/uitklappen">▾</button>
+  </div>
+  <div id="paneel-inhoud"><p class="leeg">Nog geen berekend tracé. Plaats minimaal twee stations (projectgebied optioneel) en klik <em>Bereken tracé</em>.</p></div>
+</div>
+
+<div id="nota-overlay" class="dicht" aria-label="Ontwerpnota">
+  <div id="nota-venster">
+    <header id="nota-kop">
+      <h3 id="nota-koptitel">Ontwerpnota</h3>
+      <span id="nota-substatus" class="mono"></span>
+      <span class="spacer"></span>
+      <button id="nota-download" disabled title="Downloaden als opgemaakt Word-document">⭳ Word downloaden</button>
+      <button id="nota-sluit" title="Sluiten (stopt het genereren)">✕</button>
+    </header>
+    <div id="nota-sheetwrap">
+      <article id="nota-sheet"></article>
+    </div>
+  </div>
+</div>
+
+<div id="register-pagina">
+  <div id="register-kop">
+    <button id="btn-reg-terug" title="Terug naar het ontwerp">‹ Ontwerp</button>
+    <h2>Registers</h2>
+    <select id="register-variant" title="Actieve variant"></select>
+    <nav id="register-tabs"></nav>
+    <span class="spacer"></span>
+    <span id="register-status" class="mono"></span>
+    <input id="register-zoek" type="search" placeholder="zoeken in register…" spellcheck="false">
+  </div>
+  <div id="register-layout">
+    <div id="register-tabelwrap">
+      <p class="hint">Klik op een rij om er op de kaart naartoe te zoomen · dubbelklik op een
+        cel met ✎ om te bewerken (wijzigingen tellen mee in de Excel-export) · sorteer via de
+        kolomkop, filter per kolom of zoek rechtsboven.</p>
+      <div id="register-inhoud"><p class="leeg">Nog geen berekend tracé.</p></div>
+    </div>
+    <aside id="register-kaartwrap"><div id="register-kaart"></div></aside>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
+<script src="app.js"></script>
+<script src="registers.js"></script>
+</body>
+</html>

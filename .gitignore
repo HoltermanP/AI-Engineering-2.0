@@ -1,0 +1,14 @@
+# geheimen — nooit committen (bevat o.a. ANTHROPIC_API_KEY)
+.env
+*.env
+
+# virtuele omgeving en caches
+.venv/
+__pycache__/
+*.pyc
+
+# lokale projectdata (opgeslagen tracé-projecten en ZRO-dossiers)
+kabelbed/data/
+
+# macOS
+.DS_Store
