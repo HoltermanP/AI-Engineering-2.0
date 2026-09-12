@@ -1,0 +1,16 @@
+# Render-blueprint: koppel de repo op https://dashboard.render.com en Render
+# leest dit bestand automatisch. Zet ANTHROPIC_API_KEY daarna handmatig in
+# het dashboard (Environment) — geheimen horen niet in de repo.
+services:
+  - type: web
+    name: kabelbed
+    runtime: python
+    plan: free
+    rootDir: kabelbed
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ANTHROPIC_API_KEY
+        sync: false
