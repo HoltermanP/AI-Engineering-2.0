@@ -18,7 +18,7 @@ Word-document: titelpagina met documentgegevens, echte kopstijlen (zichtbaar
 in de Word-navigatie), rastertabellen en een voettekst met paginanummers.
 
 Vereist een Anthropic API-key: omgevingsvariabele ``ANTHROPIC_API_KEY`` of
-een regel in ``kabelbed/.env``.
+een regel in ``infraengine/.env``.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-try:  # API-key uit kabelbed/.env laden als die er is
+try:  # API-key uit infraengine/.env laden als die er is
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
 except Exception:
@@ -201,6 +201,9 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
             "modus": result.get("modus"),
             "aantal_stations": len(result.get("stations", [])),
             "coordinatenstelsel": "RD New (EPSG:28992)",
+            # richtlijndocumenten (beheerscherm) die als parameter-overrides
+            # in deze berekening zijn toegepast
+            "richtlijnen_toegepast": result.get("richtlijnen_toegepast", []),
         },
         "variant": {
             "naam": v["naam"],
@@ -215,6 +218,8 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
         "kruising_totalen": kruising_totalen,
         "kruisingen": _cap(kruisingen, 120, "kruisingen"),
         "boringen": _cap(_zonder_geometrie(v.get("boringen", [])), 80, "boringen"),
+        "bestaande_sonderingen_bro": _cap(
+            _zonder_geometrie(v.get("sonderingen", [])), 60, "sonderingen"),
         "vergunningen": v.get("vergunningen", []),
         "onderzoeken": v.get("onderzoeken", []),
         "zro_status_totalen": zro_status_totalen,
@@ -273,7 +278,7 @@ def stream_nota(result: dict, fase: str, variant_idx: int, projectnaam: str):
             or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         raise NotaError(
             "Geen Anthropic API-key gevonden. Zet ANTHROPIC_API_KEY in de "
-            "omgeving of in kabelbed/.env en herstart de server.")
+            "omgeving of in infraengine/.env en herstart de server.")
 
     context = bouw_context(result, variant_idx, projectnaam)
     prompt = (
@@ -281,7 +286,7 @@ def stream_nota(result: dict, fase: str, variant_idx: int, projectnaam: str):
         f"({FASE_NAMEN[fase]}).\n\n"
         f"Opdracht: {NOTA_FASEN[fase]['doel']}\n\n"
         "Projectdata (JSON, automatisch gegenereerd door het "
-        "Kabelbed-ontwerpplatform):\n" +
+        "InfraEngine-ontwerpplatform):\n" +
         json.dumps(context, ensure_ascii=False)
     )
 
@@ -595,7 +600,7 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
 
     P = []
     # --- titelpagina ---
-    P.append(_para("Kabelbed · Ontwerpnota middenspanningstracé",
+    P.append(_para("InfraEngine · Ontwerpnota middenspanningstracé",
                    style="NotaKicker"))
     P.append(_para(FASE_NAMEN[fase] + f" ({fase})", style="NotaTitel"))
     P.append(_para(titel, style="NotaSubtitel"))
@@ -609,7 +614,7 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
         ["Status", "Concept — AI-gegenereerd, toetsing vereist"],
     ], kopregel=False))
     P.append(_para("Automatisch opgesteld met AI op basis van het berekende "
-                   "tracé en de registers van het Kabelbed-ontwerpplatform "
+                   "tracé en de registers van het InfraEngine-ontwerpplatform "
                    f"(model {MODEL}). Inhoudelijke en juridische toetsing "
                    "door de ontwerpverantwoordelijke is vereist.",
                    size=18, color=_INK3,
@@ -632,7 +637,7 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
 
     footer = f"{proj['naam']} · {FASE_NAMEN[fase]} ({fase}) · concept {proj['datum']}"
     docx = _docx_pakket("".join(P), footer)
-    slug = (projectnaam or "kabelbed").strip().replace(" ", "_")[:40] or "kabelbed"
+    slug = (projectnaam or "infraengine").strip().replace(" ", "_")[:40] or "infraengine"
     naam = f"{fase}-nota_{slug}_{date.today().strftime('%Y%m%d')}.docx"
     return naam, docx
 

@@ -8,7 +8,7 @@ __pycache__/
 *.pyc
 
 # lokale projectdata (opgeslagen tracé-projecten en ZRO-dossiers)
-kabelbed/data/
+infraengine/data/
 
 # macOS
 .DS_Store

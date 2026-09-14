@@ -325,7 +325,7 @@ def _wms_getmap(url: str, layers: str, bbox: tuple, w: int, h: int,
         "TRANSPARENT": "TRUE" if transparant else "FALSE",
     }
     r = requests.get(url, params=params, timeout=30,
-                     headers={"User-Agent": "Kabelbed-prototype/0.1"})
+                     headers={"User-Agent": "InfraEngine-prototype/0.1"})
     r.raise_for_status()
     if "image" not in r.headers.get("Content-Type", ""):
         raise ValueError("WMS gaf geen afbeelding terug")
@@ -517,7 +517,7 @@ def maak_tekening(zro_item: dict, route_geojson: dict, stations: list,
     d.text((_MARGE + 24, tb_y + 180),
            f"Ondergrond: {ondergrond_bron}", font=_font(24), fill=(124, 137, 148))
     d.text((_MARGE + 24, tb_y + 220),
-           "Automatisch gegenereerd door Kabelbed (fase 1-prototype) — indicatief, "
+           "Automatisch gegenereerd door InfraEngine (fase 1-prototype) — indicatief, "
            "geen meetkundige grensreconstructie.",
            font=_font(22), fill=(124, 137, 148))
 
@@ -713,7 +713,7 @@ def maak_overeenkomst(zro_item: dict, dossier: dict, gemeente: str | None,
                 space_before=200))
     P.append(_p("De Netbeheerder,\n\n\n____________________________\n" + netb,
                 space_before=200))
-    P.append(_p("Concept — automatisch opgesteld door Kabelbed (fase 1-prototype) "
+    P.append(_p("Concept — automatisch opgesteld door InfraEngine (fase 1-prototype) "
                 "op basis van het ZRO-dossier; juridische toetsing vereist.",
                 size=18, space_before=260))
     return _docx(P)

@@ -3,18 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kabelbed — MS-tracéontwerp</title>
+<title>InfraEngine — MS-tracéontwerp</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="registers.css">
 </head>
 <body>
 <header id="topbar">
-  <h1>Kabelbed</h1>
+  <h1>InfraEngine</h1>
   <span class="sub">MS-tracéontwerp · fase 1-prototype · RD New (EPSG:28992)</span>
   <span id="gemeente-info" class="mono"></span>
   <span class="spacer"></span>
+  <button id="btn-richtlijnen" title="Beheer: richtlijndocumenten (ontwerphandboek, AVOI, keur) uploaden; de AI vertaalt ze naar rekenparameters voor de tracébepaling">⚖ Richtlijnen</button>
   <button id="btn-registers" title="Alle registers op één pagina: bewerken, filteren, sorteren">▤ Registers</button>
   <button id="btn-new" title="Nieuw leeg project starten">+ Nieuw</button>
   <input id="project-naam" type="text" placeholder="projectnaam" spellcheck="false">
@@ -33,7 +34,7 @@
         <button class="tool" data-mode="via" title="Verplicht passeerpunt">◈ Via-punt</button>
         <button class="tool" data-mode="forbidden" title="Verboden zone tekenen">⊘ Verboden zone</button>
         <button class="tool" data-mode="delete" title="Klik op een station, via-punt of zone om te verwijderen">✕ Verwijderen</button>
-        <button class="tool breed" data-mode="street" title="Street View: klik op (of naast) het tracé en loop er doorheen. Beschikbaar zodra een tracé is berekend.">🚶 Street View langs het tracé</button>
+        <button class="tool breed" data-mode="street" title="Street View: klik op (of naast) het tracé en loop er doorheen — versleep de blauwe marker over het tracé of gebruik de pijltjestoetsen; het beeld loopt mee. Beschikbaar zodra een tracé is berekend.">🚶 Street View langs het tracé</button>
       </div>
       <p class="hint" id="tekenhint">Plaats minimaal twee MS-stations; een projectgebied tekenen is optioneel. Punten zijn daarna versleepbaar.</p>
     </section>
@@ -45,7 +46,12 @@
       <label><input type="radio" name="basis" value="lufo"> Luchtfoto</label>
       <hr>
       <label><input type="checkbox" id="lg-bgt"> BGT-visualisatie</label>
-      <label><input type="checkbox" id="lg-dkk"> Kadastrale kaart (DKK)</label>
+      <label><input type="checkbox" id="lg-dkk" title="Kadastrale perceelgrenzen (DKK, PDOK). De WMS rendert alleen op perceelschaal (1:6.000 of groter, labels vanaf 1:2.000) — zoom in tot straatniveau (zoomniveau 11+) als er niets verschijnt."> Kadastrale kaart (DKK)</label>
+      <label><input type="checkbox" id="lg-bodemkaart" title="BRO Bodemkaart (SGM), schaal 1:50.000 — bodemsamenstelling (zand, klei, veen, moerig) tot ± 1,2 m diepte. Informatief, weegt niet mee in het tracé. Bebouwd gebied is niet gekarteerd. Klik in navigeermodus op de kaart voor de bodemeenheid op dat punt."> Bodemkaart: samenstelling (BRO)</label>
+      <label><input type="checkbox" id="lg-grondwater" title="Putten met grondwaterstandonderzoek uit de Basisregistratie Ondergrond (GLD), live via PDOK/BRO. Kleur = hoe recent de laatste meting is. Klik in navigeermodus op een put voor de actuele stand (m t.o.v. NAP) en de meetreeks, rechtstreeks uit de BRO-uitgifteservice. Informatief, weegt niet mee in het tracé. Putten laden per kaartbeeld; zoom in als er niets verschijnt."> Grondwaterstanden (BRO GLD, live)</label>
+      <label style="margin-left:14px"><input type="checkbox" id="lg-gwiso" title="Hoogtelijnen van de grondwaterstand (m t.o.v. NAP), berekend uit de actuele standen van de putten in beeld (metingen uit de laatste 2 jaar, live uit de BRO, IDW-interpolatie). Indicatief: metingen zijn niet gelijktijdig en filterdieptes verschillen. De eerste keer per gebied kan het berekenen even duren."> ↳ isohypsen (hoogtelijnen)</label>
+      <label><input type="checkbox" id="lg-ahn" title="AHN maaiveldhoogte (DTM 0,5 m, PDOK-WMS). Informatieve kaartlaag; de backend gebruikt dezelfde bron (WCS) voor het hoogteprofiel langs boringen en korte tracés."> Hoogte AHN (maaiveld)</label>
+      <label><input type="checkbox" id="lg-cpt" title="BRO geotechnisch sondeeronderzoek (CPT): bestaande sonderingen. Informatief; het boringenregister meldt automatisch of er binnen ± 100 m van een boring al sonderingen bekend zijn."> Sonderingen (BRO CPT)</label>
       <label><input type="checkbox" id="lg-seg" checked> Segmenten (ligging)</label>
       <label><input type="checkbox" id="lg-alt" checked> Overige varianten</label>
       <hr>
@@ -57,9 +63,16 @@
       <label><input type="checkbox" id="lg-sad" title="BRO Milieuhygiënisch bodemonderzoek (SAD) — verplichte aanlevering door gemeenten en provincies sinds 1-7-2025"> Bodem: onderzoeken (BRO SAD)</label>
       <label><input type="checkbox" id="lg-bodem" title="Historische Wbb-locaties uit het landelijke Bodemloket (overgangsbron; niet elk bevoegd gezag leverde aan)"> Bodem: historisch Bodemloket (Wbb)</label>
       <label><input type="checkbox" id="lg-bodemdek" title="Arcering: bevoegd gezag publiceert bodemdata via een eigen loket; het landelijke Bodemloket is daar niet dekkend"> Bodemloket: dekking (arcering)</label>
-      <label><input type="checkbox" id="lg-bodemreg" title="Open services van bevoegde gezagen die (nog) niet in BRO/Bodemloket zitten: Zuid-Holland (spoedlocaties, bedrijfsterreinen, stortplaatsen), Zaanstad/Nazca. Uitbreidbaar in backend/pdok.py (BODEM_REGIONAAL)"> Bodem: regionale bronnen</label>
+      <label><input type="checkbox" id="lg-bodemreg" title="Open services van bevoegde gezagen die (nog) niet in BRO/Bodemloket zitten. Welke bron geldt volgt automatisch uit het trace/projectgebied (BODEM_REGIONAAL in backend/pdok.py, uitbreidbaar)"> Bodem: regionale bronnen <span class="hint" id="lg-bodemreg-info"></span></label>
       <label><input type="checkbox" id="lg-amk"> Archeologie (AMK)</label>
-      <label><input type="checkbox" id="lg-bomen" checked title="Bomen uit de BGT (vegetatieobject, plustopografie) aangevuld met gekoppelde gemeentelijke bomenregisters (BOMEN_REGIONAAL in backend/pdok.py; nu: Amersfoort). Wortelzone = kroonprojectie waar bekend, anders r ≈ 2,5 m. Zichtbaar na het berekenen van een tracé."> Bomen + wortelzone</label>
+      <label><input type="checkbox" id="lg-monument" title="Rijksmonument-contouren (RCE, open WFS/WMS). Wegen mee (×2,0) en triggeren de omgevingsvergunning rijksmonumentenactiviteit."> Rijksmonumenten (RCE)</label>
+      <label><input type="checkbox" id="lg-kering" title="Waterkeringen uit de landelijke IMWA-leggerdataset van de waterschappen (PDOK). De keringlijn + beschermingszone (± 15 m) weegt mee (×3,0) en triggert de waterschapsvergunning."> Waterkeringen (legger IMWA)</label>
+      <label><input type="checkbox" id="lg-stilte" title="Provinciale stiltegebieden (PDOK, INSPIRE). Lichte weging (×1,2) + melding geluidsarme uitvoering."> Stiltegebieden (provincie)</label>
+      <label><input type="checkbox" id="lg-nge" title="NGE-verdachte gebieden uit gekoppelde gemeentelijke/regionale bodembelastingkaarten; welke bron geldt volgt automatisch uit het trace/projectgebied (NGE_REGIONAAL in backend/pdok.py). Geen landelijke open bron — buiten gekoppelde gebieden blijft het onderzoeksitem 'handmatig beoordelen'."> NGE-verdacht (regionaal) <span class="hint" id="lg-nge-info"></span></label>
+      <label><input type="checkbox" id="lg-bomen" checked title="Bomen uit de BGT (vegetatieobject, plustopografie) aangevuld met het gemeentelijke bomenregister dat bij het trace/projectgebied hoort (BOMEN_REGIONAAL in backend/pdok.py). Wortelzone = kroonprojectie waar bekend, anders r ≈ 2,5 m. Zichtbaar na het berekenen van een tracé."> Bomen + wortelzone <span class="hint" id="lg-bomen-info"></span></label>
+      <p class="hint">Aangevinkte datalagen verschijnen met hun kleuruitleg in de
+        legenda rechtsonder op de kaart; klik in navigeermodus op de kaart om de
+        gegevens van die lagen op dat punt te zien.</p>
     </section>
 
     <section>
@@ -88,6 +101,8 @@
       <div class="toolgrid">
         <button id="btn-exp-geojson" disabled>GeoJSON</button>
         <button id="btn-exp-xlsx" disabled>Excel-registers</button>
+        <button id="btn-exp-dxf" disabled
+                title="Tracétekening als DXF in RD New (EPSG:28992): tracé, boringen met in-/uittredepunten, kruisingen, moffen, stations en wortelzones op eigen lagen">AutoCAD (DXF)</button>
       </div>
       <hr>
       <span class="hint">Ontwerpnota — door AI opgesteld uit alle registers en
@@ -218,6 +233,7 @@
       <button data-tab="kruisingen">Kruisingen</button>
       <button data-tab="vergunningen">Vergunningen</button>
       <button data-tab="boringen">Boringen</button>
+      <button data-tab="sonderingen">Sonderingen</button>
       <button data-tab="onderzoeken">Onderzoeken</button>
       <button data-tab="zro">ZRO</button>
       <button data-tab="toetsing">Toetsing</button>
@@ -241,6 +257,30 @@
     </header>
     <div id="nota-sheetwrap">
       <article id="nota-sheet"></article>
+    </div>
+  </div>
+</div>
+
+<div id="rl-overlay" class="dicht" aria-label="Beheer richtlijnen">
+  <div id="rl-venster">
+    <header id="rl-kop">
+      <h3>Beheer · Richtlijnen tracébepaling</h3>
+      <span id="rl-status" class="mono"></span>
+      <span class="spacer"></span>
+      <button id="rl-upload-knop">+ Richtlijn uploaden</button>
+      <input id="rl-upload" type="file" hidden accept=".pdf,.docx,.txt,.md">
+      <button id="rl-sluit" title="Sluiten">✕</button>
+    </header>
+    <div id="rl-inhoud">
+      <p class="hint">Upload richtlijndocumenten (PDF, Word, tekst of Markdown) — bijvoorbeeld het
+        eigen ontwerphandboek, een AVOI/verordening, waterschapskeur of ProRail-voorschrift.
+        De AI leest het document en vertaalt de voorschriften naar de rekenparameters van de
+        tracébepaling (wegingsprofiel, kruisingsbeslistabel, boor-uitloop, werkterrein-eisen),
+        met per parameter de motivering en het citaat waarop de waarde is gebaseerd.
+        <strong>Actieve richtlijnen gelden als nieuwe standaard bij elke berekening</strong>;
+        handmatige aanpassingen in het wegingsprofiel-paneel gaan vóór de richtlijn. Bij
+        meerdere actieve richtlijnen wint per parameter de laatst geüploade.</p>
+      <div id="rl-lijst"></div>
     </div>
   </div>
 </div>

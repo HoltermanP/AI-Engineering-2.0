@@ -1,13 +1,13 @@
-# Kabelbed — MS-tracéontwerp (fase 1-prototype)
+# InfraEngine — MS-tracéontwerp (fase 1-prototype)
 
-Werkend prototype van fase 1 uit het functioneel ontwerp *Kabelbed* (versie 0.1,
+Werkend prototype van fase 1 uit het functioneel ontwerp *InfraEngine* (versie 0.1,
 11-09-2026): ontwerpplatform voor middenspanningstracés met PDOK-datalagen,
 automatische tracébepaling, kruisingsherkenning en registers.
 
 ## Starten
 
 ```bash
-cd kabelbed
+cd infraengine
 ./start.sh            # of: ./.venv/bin/python -m uvicorn main:app --app-dir backend --port 8000
 ```
 
@@ -22,12 +22,68 @@ python3 -m venv .venv
 ```
 
 Voor de AI-ontwerpnota's (VO/DO/UO) is een Anthropic API-key nodig: zet
-`ANTHROPIC_API_KEY=sk-ant-…` in de omgeving of in `kabelbed/.env`.
+`ANTHROPIC_API_KEY=sk-ant-…` in de omgeving of in `infraengine/.env`.
+
+## Deployen
+
+Meegeleverd: `Dockerfile`, `docker-compose.yml` en `deploy/Caddyfile` voor
+een kleine server (VPS) met Docker — het profiel dat bij deze app past:
+bestandsopslag in `data/`, rekenverzoeken van minuten en één gelijktijdige
+gebruiker. Serverless platforms (Vercel/Netlify) passen daar niet op;
+een PaaS met persistente schijf (Fly.io, Railway, Render betaald) kan wel,
+met dezelfde Dockerfile.
+
+Op de server (met Docker en een (sub)domein dat naar de server wijst):
+
+```bash
+git clone <repo> && cd infraengine
+echo 'ANTHROPIC_API_KEY=sk-ant-…' > .env       # + evt. GOOGLE_MAPS_API_KEY
+# deploy/Caddyfile: domein invullen en wachtwoord-hash zetten:
+docker run --rm caddy:2 caddy hash-password --plaintext 'jouw-wachtwoord'
+docker compose up -d --build
+```
+
+Caddy haalt automatisch een HTTPS-certificaat en zet **basic-auth** voor de
+hele app — laat die niet weg, want de app heeft zelf geen authenticatie en
+de API kan bestanden schrijven en (via de nota's) API-tegoed verbruiken.
+Aandachtspunten:
+
+- **Eén uvicorn-worker** (staat zo in de Dockerfile): resultaat, voortgang
+  en caches leven in het procesgeheugen. Niet opschalen naar meerdere
+  workers of replica's zonder die staat eerst extern te maken.
+- **`data/` is de volledige staat** — een bind-mount naast de code;
+  back-uppen is een kwestie van die map kopiëren.
+- De server heeft **uitgaand internet** nodig (PDOK, RCE, regionale
+  services, api.anthropic.com) en voor lange tracés enkele GB's geheugen.
+
+### Render
+
+Meegeleverd: `render.yaml` op de **repo-root** (Render leest blueprints
+alleen daar; via `rootDir` wijst hij naar deze map). Repo koppelen via
+**New → Blueprint** in het Render-dashboard; bij de eerste deploy vraagt
+Render om
+`ANTHROPIC_API_KEY` en `BASIC_AUTH_WACHTWOORD`. Die laatste activeert de
+ingebouwde basic-auth van de app (`main.py`) — op Render staat er geen
+eigen reverse proxy voor, dus dit is daar de slagboom (gebruikersnaam
+standaard `infraengine`, aanpasbaar met `BASIC_AUTH_GEBRUIKER`).
+
+De blueprint kiest bewust: **Docker-runtime** (zelfde Dockerfile als de
+VPS-opzet), regio **Frankfurt** (dicht bij PDOK), plan **standard** (2 GB —
+de rasters passen niet in de 512 MB van starter), **één instance** met een
+**persistente schijf** op `/app/data` (Render maakt daar dagelijks
+snapshots van). Renders proxy staat lange verzoeken ruim toe (~100 min),
+dus ook corridor-berekeningen lopen gewoon door. Kanttekening: met een
+schijf deployt Render niet zero-downtime — bij elke deploy is de app even
+onbereikbaar (en een lopende berekening breekt af).
+
 
 ## Wat het prototype doet (FO §9, fase 1)
 
 1. **Verkennen** — kaartviewer in RD New (EPSG:28992) met PDOK-lagen:
-   BRT-achtergrondkaart, luchtfoto, BGT-visualisatie, kadastrale kaart.
+   BRT-achtergrondkaart, luchtfoto, BGT-visualisatie, kadastrale kaart en
+   de **BRO Bodemkaart** (bodemsamenstelling — zand, klei, veen, moerig —
+   tot ± 1,2 m diepte, 1:50.000; klik in navigeermodus op de kaart voor de
+   bodemeenheid op dat punt; bebouwd gebied is niet gekarteerd).
    Projectgebied tekenen (max ± 3 km²), MS-stations plaatsen (volgorde =
    streng), via-punten en verboden zones. Met de tool **🚶 Street View**
    (beschikbaar zodra een tracé is berekend) loop je door het tracé:
@@ -35,7 +91,7 @@ Voor de AI-ontwerpnota's (VO/DO/UO) is een Anthropic API-key nodig: zet
    "Lopen" langs de route; de kaart toont positie en kijkrichting
    (kijkrichting = looprichting). Het beeld is standaard ingebed zonder
    API-sleutel (Googles embed-iframe). Optioneel: met een
-   `GOOGLE_MAPS_API_KEY` in `kabelbed/.env` (Maps JavaScript API) wordt
+   `GOOGLE_MAPS_API_KEY` in `infraengine/.env` (Maps JavaScript API) wordt
    het interactieve panorama gebruikt — lopen kan dan ook met de pijlen
    ín het beeld en de kaartmarker volgt mee. "↗ Google Maps" opent
    hetzelfde punt met kijkrichting in een nieuw tabblad.
@@ -185,7 +241,7 @@ Voor de AI-ontwerpnota's (VO/DO/UO) is een Anthropic API-key nodig: zet
    rastertabellen voor de registeroverzichten en een voettekst met
    paginanummers (`POST /api/nota/docx`; in één keer zonder voorbeeld:
    `GET /api/export/nota`). Vereist `ANTHROPIC_API_KEY` (omgeving of
-   `kabelbed/.env`); fase-instructies, model en Word-stijlen in
+   `infraengine/.env`); fase-instructies, model en Word-stijlen in
    `backend/nota.py`.
 8. **Registerpagina** — knop **▤ Registers** in de kopbalk (of `#registers`
    in de URL) opent alle registers op een eigen pagina: tabel per register
@@ -201,10 +257,15 @@ Voor de AI-ontwerpnota's (VO/DO/UO) is een Anthropic API-key nodig: zet
 ## Architectuur
 
 ```
-kabelbed/
+infraengine/
 ├── backend/
 │   ├── main.py        FastAPI: /api/compute, /api/export/*, /api/project/*
-│   ├── pdok.py        PDOK-fetchers: BGT OGC API, DKK WFS, gemeentenaam (met cache)
+│   ├── pdok.py        PDOK-fetchers: BGT OGC API, DKK WFS, NWB, IMWA-legger/
+│   │                  keringen, waterschapsnaam, RCE, CPT, NGE (met cache)
+│   ├── ahn.py         AHN-WCS: hoogteprofielen langs boringen en tracé
+│   ├── sonderingen.py BRO-uitgifteservice: CPT-kenmerken langs het tracé
+│   ├── klic.py        KLIC-importkoppelvlak (data/klic/, voorbereid)
+│   ├── brk.py         BRK-importkoppelvlak (data/brk/eigenaren.csv, voorbereid)
 │   ├── engine.py      Kostenraster (PIL), routing (skimage MCP), nabewerking,
 │   │                  kruisingsbeslistabel, segmentering, moffen
 │   ├── registers.py   Vergunningen, boringen, ZRO, toetsing, kosten, MCA,
@@ -238,9 +299,22 @@ PostGIS.
 | BRO SAD: milieuhygiënisch bodemonderzoek | PDOK WMS (TNO) → rastermasker | weging (×1,5); vooronderzoek NEN 5725 (CROW 400) |
 | Bodemloket: Wbb-locaties (historisch) | GDN geoservices WMS → rastermasker | aanvulling op SAD zolang de BRO-migratie loopt (zelfde zone en weging) |
 | Bodemloket: beschikbaarheid gegevens | GDN geoservices WMS → rastermasker | dekkingssignaal (geen kosteneffect): "raadpleeg eigen loket bevoegd gezag" |
-| Regionale bodembronnen (register `BODEM_REGIONAAL`) | per bevoegd gezag (nu: Zuid-Holland-geoserver — spoedlocaties, BSB-bedrijfsterreinen, stortplaatsen; Zaanstad/Nazca — verontreinigingen, activiteiten) | vullen de BRO/Bodemloket-gaten; spoed/verontreiniging telt als ×2,0, onderzoek als ×1,5; actieve bronnen worden per berekening gemeld |
+| Regionale bodembronnen (register `BODEM_REGIONAAL`) | per bevoegd gezag (nu: Zuid-Holland — spoedlocaties, BSB-bedrijfsterreinen, stortplaatsen; Zaanstad/Nazca — verontreinigingen, activiteiten; Fryslân-bodematlas — saneringslocaties; Gelderland — stortplaatsen nazorg + gesloten stortplaatsen; Overijssel — stortplaatsen; Limburg — Wbb-overgangsrecht + voormalige stortplaatsen) | vullen de BRO/Bodemloket-gaten; welke bron geldt volgt automatisch uit het trace/projectgebied (`GET /api/regionale-bronnen`); spoed/verontreiniging telt als ×2,0, onderzoek als ×1,5; actieve bronnen worden per berekening gemeld |
 | Archeologische Monumentenkaart 2014 | RCE WFS | weging (×1,5); PvE/begeleiding; bureauonderzoek |
-| Bomen: BGT vegetatieobject (punt) + gemeentelijke registers (`BOMEN_REGIONAAL`; nu: Amersfoort — ArcGIS FeatureServer, met kroondiameter) | PDOK OGC API Features + per gemeente | wortelzone-weging (×2,0; kroonprojectie waar bekend, anders r ≈ 2,5 m); BEA + kapvergunning-signaal; kaartlaag; ontdubbeld op ~2 m |
+| BRO Bodemkaart (SGM, 1:50.000): bodemsamenstelling tot ± 1,2 m | PDOK WMS (TNO) | informatieve kaartlaag (zand/klei/veen/moerig) met legenda en klik-info (bodemeenheid per vlak); weegt niet mee in het kostenoppervlak; bebouwd gebied is niet gekarteerd |
+| Bomen: BGT vegetatieobject (punt) + gemeentelijke registers (`BOMEN_REGIONAAL`; nu: Amersfoort, Utrecht, Amsterdam, Groningen, Almere, Breda, Delft, Assen — het register dat bij het trace/projectgebied hoort wordt automatisch geraadpleegd) | PDOK OGC API Features + per gemeente | wortelzone-weging (×2,0; kroonprojectie waar bekend, anders r ≈ 2,5 m); BEA + kapvergunning-signaal; kaartlaag; ontdubbeld op ~2 m |
+| AHN maaiveldhoogte (DTM 0,5 m) | PDOK WCS + WMS (RWS) | hoogteprofiel per boring (min/max/verval, in register, popup, Excel en GeoJSON) en langs korte tracés (≤ 5 km, `hoogteprofiel` in het resultaat); informatieve kaartlaag |
+| NWB wegvakken (wegbeheerder) | PDOK WFS (RWS) | echte wegbeheerder (Rijk/provincie/gemeente/waterschap) + wegnaam als bevoegd gezag bij rijbaankruisingen |
+| Waterschappen: leggerwatergangen (IMWA oppervlaktewaterlichaam) | PDOK OGC API Features (HWH, landelijk) | categorie primair/secundair/tertiair (≈ A/B/C) per waterkruising: bij een primaire (A-)watergang wordt open ontgraving kritisch uitgesloten en de lichtste passende sleufloze techniek voorgesteld; vervangt de breedte-aanname |
+| Waterschappen: waterkeringen (IMWA) | PDOK OGC API Features (HWH, landelijk) + WMS | kering + beschermingszone (± 15 m) als weging (×3,0); waterschapsvergunning + toets-waarschuwing |
+| Waterschapsgrenzen (IMSO) | PDOK WMS GetFeatureInfo (HWH) | naam van het bevoegde waterschap bij waterkruisingen (i.p.v. generiek "Waterschap") |
+| BRO geotechnisch sondeeronderzoek (CPT) | BRO-uitgifteservice (characteristics, live) + PDOK WMS als kaartlaag | **sonderingenregister**: alle bestaande sonderingen binnen ± 50 m van het tracé of ± 100 m van een boring, met BRO-ID, chainage, einddiepte, maaiveld, kwaliteitsklasse, datum en link naar het BRO-loket; per boring gekoppeld in het boorregister (SON-nrs + loket-links) → opvragen i.p.v. nieuw ramen |
+| Rijksmonument-contouren | RCE WFS/WMS | weging (×2,0); omgevingsvergunning rijksmonumentenactiviteit; kaartlaag |
+| Stiltegebieden | PDOK WMS (provincies) → rastermasker | lichte weging (×1,2); melding/ontheffing + werkplan geluidsarme uitvoering |
+| NGE-verdachte gebieden (register `NGE_REGIONAAL`) | per gemeente/regio (nu: Amsterdam — CE-bodembelastingkaart WMS) | weging (×1,5); NGE-vooronderzoek (WSCS-OCE); buiten gekoppelde gebieden blijft het onderzoeksitem "handmatig beoordelen" |
+| Buisleidingen gevaarlijke stoffen (register `BUISLEIDING_REGIONAAL`) | nog leeg — REV publiceert (nog) geen open buisleidingenservice en de Risicokaart is afgeschermd | koppelvlak staat klaar (weging ×2,0, Bevb-afstemming + proefsleuven-onderzoek zodra een bron is toegevoegd) |
+| KLIC (voorbereid koppelvlak, licentie) | import: GeoJSON in `data/klic/` | netdichtheid-weging (×1,5), toets "bestaande netten", melding per boring; zonder import blijft alles op "onbekend — KLIC niet gekoppeld" |
+| BRK-eigendom (voorbereid koppelvlak, licentie) | import: `data/brk/eigenaren.csv` | echte eigenaren in het ZRO-register en de dossiers; zonder import "onbekend" |
 
 De zonelagen wegen mee in het kostenoppervlak (instelbaar in het
 wegingsprofiel), zijn als overlay op de kaart te tonen, en voeden de
@@ -252,21 +326,36 @@ fout (gemeld in `laag_fouten`).
 
 ## Bekende beperkingen (bewust buiten fase 1)
 
-- **Geen KLIC en geen BRK-eigendom** (licentiebronnen, FO §2-noot): netdichtheid
-  weegt niet mee en eigendom is een proxy (BGT erf/agrarisch). ZRO-eigenaren
-  staan op "onbekend". Het FO markeert precies deze twee bronnen als bepalend
-  voor de kwaliteit — toegang vroeg regelen.
+- **KLIC en BRK-eigendom zijn licentiebronnen** (FO §2-noot) en nog niet
+  aangesloten, maar het koppelvlak staat klaar: een KLIC-levering (GeoJSON in
+  `data/klic/`) weegt direct mee als netdichtheid en vult de melding
+  "bestaande netten" per boring; een BRK-export (`data/brk/eigenaren.csv`)
+  vult de echte eigenaren in het ZRO-register. Zonder import blijft alles
+  eerlijk op "onbekend — niet gekoppeld". Het FO markeert precies deze twee
+  bronnen als bepalend voor de kwaliteit — toegang vroeg regelen.
 - Kruisingskosten zijn per meter benaderd in plaats van vast+variabel per
   techniek (FO §3.2); het omloop-versus-boren-gedrag werkt, de kalibratie is
   indicatief.
-- **Zonder landelijke open service, dus fase 2 met per-bronhouder-koppelingen:**
-  waterschapsleggers (keringen en watergangen A/B/C — kruising is nu een
-  breedte-aanname), NWB-wegbeheerder, gemeentelijke bomenregisters (BGT-bomen
-  en het register `BOMEN_REGIONAAL` — nu Amersfoort — wegen al mee als
-  wortelzone/kroonprojectie, maar landsdekkend wordt dit pas met een koppeling
-  per gemeente; beschermwaardigheid ontbreekt), NGE-
-  bodembelastingkaarten en buisleidingen (Bevb). AHN/BRO-lengteprofielen voor
-  HDD-ontwerp zijn eveneens fase 2.
+- **Inmiddels landelijk gekoppeld:** waterschapsleggers (watergangen met
+  categorie én keringen, via de landelijke IMWA-datasets op PDOK),
+  NWB-wegbeheerder, AHN-hoogteprofielen (per boring en langs korte tracés)
+  en BRO-sonderingen (signaal per boring). Kanttekeningen: de IMWA-categorie
+  (primair/secundair/tertiair) is een landelijke harmonisatie van de
+  A/B/C-leggers en per waterschap kan het onderhoudsregime afwijken; het
+  AHN-profiel is maaiveld (DTM) — een volledig HDD-boorplan (BRO-bodemopbouw,
+  gestuurde diepteligging) blijft fase 2.
+- **Zonder landelijke open service, dus per-bronhouder-koppelingen:**
+  gemeentelijke bomenregisters (`BOMEN_REGIONAAL`, acht gemeenten gekoppeld;
+  beschermwaardigheid ontbreekt), NGE-bodembelastingkaarten
+  (`NGE_REGIONAAL`, nu Amsterdam — buiten gekoppelde gebieden blijft het
+  onderzoeksitem "handmatig beoordelen") en buisleidingen Bevb
+  (`BUISLEIDING_REGIONAAL`, nog leeg: het REV publiceert nog geen open
+  buisleidingenservice en de Risicokaart is afgeschermd — bron toevoegen
+  zodra een service-URL bekend is). Welke regionale bron bij een trace
+  hoort bepaalt de app zelf: `GET /api/regionale-bronnen?bbox=…` filtert de
+  registers op het projectgebied, de frontend bouwt daar de kaartlagen uit
+  op en toont naast elk laag-vinkje welke bron geldt (of "geen bron voor
+  dit gebied").
 - **Bodemdata zit midden in de stelselwijziging Wbb → BRO; er bestaat géén
   volledige landelijke bron.** De app stapelt daarom vier sporen: BRO **SAD**
   (milieuhygiënisch bodemonderzoek; verplichte aanlevering sinds 1-7-2025,
@@ -275,10 +364,11 @@ fout (gemeld in `laag_fouten`).
   nazorg; in werking per 1-1-2026, register nog vrijwel leeg maar de zwaarste
   weging zodra gevuld), het **historische Wbb-Bodemloket** als overgangsbron,
   en **regionale open services per bevoegd gezag** via het uitbreidbare
-  register `BODEM_REGIONAAL` in `pdok.py` (meegeleverd: Zuid-Holland en
-  Zaanstad/Nazca; Brabant-BIS, Fryslân-bodematlas e.d. zijn op dezelfde
-  manier toe te voegen zodra hun service-URL bekend is — provincie Utrecht
-  publiceert geen open Wbb-locatieservice). Waar alle sporen leeg zijn en de
+  register `BODEM_REGIONAAL` in `pdok.py` (meegeleverd: Zuid-Holland,
+  Zaanstad/Nazca, Fryslân-bodematlas, Gelderland, Overijssel en Limburg;
+  Brabant-BIS e.d. zijn op dezelfde manier toe te voegen zodra hun
+  service-URL bekend is — provincie Utrecht publiceert geen open
+  Wbb-locatieservice). Waar alle sporen leeg zijn en de
   dekkingslaag "eigen website" aangeeft, volgt een info-melding en het
   onderzoeksitem "bodeminformatie opvragen bij bevoegd gezag" in plaats van
   een kostenweging. Het vooronderzoek (NEN 5725) doet altijd de echte

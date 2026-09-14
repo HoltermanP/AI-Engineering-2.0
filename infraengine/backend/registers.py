@@ -10,11 +10,13 @@ import math
 
 from shapely.geometry import LineString, Point, mapping
 
+import brk
 from engine import (
     CL_BERM, CL_ERF, CL_FIETSPAD, CL_NATUURGROEN, CL_ONBEKEND, CL_ONVERHARD,
     CL_PAND, CL_PARKEER, CL_RIJBAAN, CL_SPOOR, CL_VERBODEN, CL_VOETPAD, CL_WATER,
     CLASS_NAMES, ZN_ARCHEO, ZN_BODEM, ZN_BODEM_ELDERS, ZN_BODEM_ONDERZOEK,
-    ZN_BOOM, ZN_GWB, ZN_NATURA, ZN_NNN, ZONE_NAMES, BOOM_WORTELZONE_M,
+    ZN_BOOM, ZN_BUISLEIDING, ZN_GWB, ZN_KERING, ZN_KLIC, ZN_MONUMENT, ZN_NATURA,
+    ZN_NGE, ZN_NNN, ZN_STILTE, ZONE_NAMES, BOOM_WORTELZONE_M,
     TECHNIEK_HDD, TECHNIEK_NANO, TECHNIEK_OPEN, TECHNIEK_PERSING, TECHNIEK_RAKET,
     BOOR_UITLOOP, BOOR_UITLOOP_DEFAULT, _substring,
 )
@@ -173,6 +175,45 @@ def build_vergunningen(segments: list, crossings: list, gemeente: str | None,
             "trigger": f"{zones_m[ZN_ARCHEO]:.0f} m tracé over AMK-terrein",
             "doorlooptijd_wk": DOORLOOPTIJD_WK["Provincie"],
         })
+    if zones_m[ZN_KERING] > 0:
+        items.append({
+            **_basisitem(f"VRG-{len(items) + 1:03d}", "vergunning"),
+            "item": "Omgevingsvergunning wateractiviteit — kruising/nabijheid "
+                    "waterkering",
+            "bevoegd_gezag": "Waterschap",
+            "trigger": f"{zones_m[ZN_KERING]:.0f} m tracé binnen de kering + "
+                       f"beschermingszone (legger IMWA); ligging en diepte "
+                       f"afstemmen met de keringbeheerder",
+            "doorlooptijd_wk": DOORLOOPTIJD_WK["Waterschap"],
+        })
+    if zones_m[ZN_MONUMENT] > 0:
+        items.append({
+            **_basisitem(f"VRG-{len(items) + 1:03d}", "vergunning"),
+            "item": "Omgevingsvergunning rijksmonumentenactiviteit",
+            "bevoegd_gezag": "Gemeente (advies RCE)",
+            "trigger": f"{zones_m[ZN_MONUMENT]:.0f} m tracé binnen een "
+                       f"rijksmonument-contour (RCE)",
+            "doorlooptijd_wk": DOORLOOPTIJD_WK["RWS"],
+        })
+    if zones_m[ZN_STILTE] > 0:
+        items.append({
+            **_basisitem(f"VRG-{len(items) + 1:03d}", "vergunning"),
+            "item": "Melding/ontheffing werken in stiltegebied",
+            "bevoegd_gezag": "Provincie / omgevingsdienst",
+            "trigger": f"{zones_m[ZN_STILTE]:.0f} m tracé in provinciaal "
+                       f"stiltegebied; geluidseisen aan de uitvoering",
+            "doorlooptijd_wk": DOORLOOPTIJD_WK["Melding"],
+        })
+    if zones_m[ZN_BUISLEIDING] > 0:
+        items.append({
+            **_basisitem(f"VRG-{len(items) + 1:03d}", "vergunning"),
+            "item": "Afstemming buisleidingexploitant (Bevb; NEN 3651)",
+            "bevoegd_gezag": "Leidingexploitant",
+            "trigger": f"{zones_m[ZN_BUISLEIDING]:.0f} m tracé in of nabij de "
+                       f"belemmeringenstrook van een buisleiding gevaarlijke "
+                       f"stoffen; kruisings-/parallelligging-eisen exploitant",
+            "doorlooptijd_wk": DOORLOOPTIJD_WK["Waterschap"],
+        })
 
     items.append({
         **_basisitem(f"VRG-{len(items) + 1:03d}", "vergunning"),
@@ -248,6 +289,94 @@ def build_boringen(route: LineString, crossings: list) -> list:
 
 
 # ---------------------------------------------------------------------------
+# 6.2b Sonderingenregister: bestaande BRO-sonderingen die relevant zijn
+# ---------------------------------------------------------------------------
+
+# relevant = binnen SONDERING_TRACE_M van het tracé, of binnen
+# SONDERING_BORING_M van een boorlijn (dan gekoppeld aan die boring)
+SONDERING_TRACE_M = 50.0
+SONDERING_BORING_M = 100.0
+
+
+def build_sonderingen(route: LineString, cpts: list | None,
+                      boringen: list) -> list:
+    """Register van bestaande BRO-sonderingen die relevant zijn voor het tracé,
+    en de koppeling naar het boorregister (in place op ``boringen``).
+
+    ``cpts`` is de kenmerkenlijst uit ``sonderingen.langs_route`` of None als
+    de BRO-dienst niet beschikbaar was — de boringen melden dat dan eerlijk.
+    """
+    import sonderingen as son_mod
+
+    if cpts is None:
+        for b in boringen:
+            b["sonderingen"] = []
+            b["sonderingen_bro"] = "onbekend (BRO-sondeerdienst niet beschikbaar)"
+        return []
+
+    boorlijnen = []
+    for b in boringen:
+        coords = (b.get("geometry") or {}).get("coordinates")
+        lijn = (LineString([tuple(c) for c in coords])
+                if coords and len(coords) >= 2
+                else LineString([b["intredepunt_rd"], b["uittredepunt_rd"]]))
+        boorlijnen.append((b, lijn))
+        b["sonderingen"] = []
+
+    items = []
+    for cpt in cpts:
+        p = Point(cpt["x"], cpt["y"])
+        afstand_trace = route.distance(p)
+        bij_boringen = [(b, lijn.distance(p)) for b, lijn in boorlijnen
+                        if lijn.distance(p) <= SONDERING_BORING_M]
+        if afstand_trace > SONDERING_TRACE_M and not bij_boringen:
+            continue  # niet relevant voor dit tracé
+        bij_boringen.sort(key=lambda ba: ba[1])
+        relevantie = (f"nabij {', '.join(b['nr'] for b, _ in bij_boringen)}"
+                      if bij_boringen else "langs tracé")
+        items.append({
+            **_basisitem(f"SON-{len(items) + 1:03d}", "sondering"),
+            "bro_id": cpt["bro_id"],
+            "punt": (round(cpt["x"], 1), round(cpt["y"], 1)),
+            "chainage_m": round(route.project(p), 1),
+            "afstand_trace_m": round(afstand_trace, 1),
+            "einddiepte_m": cpt.get("einddiepte_m"),
+            "maaiveld_nap": cpt.get("maaiveld_nap"),
+            "kwaliteitsklasse": cpt.get("kwaliteitsklasse", ""),
+            "norm": cpt.get("norm", ""),
+            "datum": (cpt.get("datum") or "")[:10],
+            "relevantie": relevantie,
+            "boringen": [b["nr"] for b, _ in bij_boringen],
+            "bro_loket": son_mod.loket_url(cpt["bro_id"]),
+            "opmerking": "",
+            "geometry": {"type": "Point", "coordinates": [cpt["x"], cpt["y"]]},
+        })
+
+    items.sort(key=lambda i: i["chainage_m"])
+    for i, item in enumerate(items, 1):
+        item["nr"] = f"SON-{i:03d}"
+
+    # koppeling naar het boorregister: per boring de relevante sonderingen
+    per_boring: dict = {}
+    for item in items:
+        for bnr in item["boringen"]:
+            per_boring.setdefault(bnr, []).append(item)
+    for b in boringen:
+        gekoppeld = per_boring.get(b["nr"], [])
+        b["sonderingen"] = [{"nr": s["nr"], "bro_id": s["bro_id"],
+                             "bro_loket": s["bro_loket"]} for s in gekoppeld]
+        if gekoppeld:
+            b["sonderingen_bro"] = (
+                "sondering(en) binnen ± 100 m bekend in de BRO: "
+                + ", ".join(f"{s['nr']} ({s['bro_id']})" for s in gekoppeld))
+        else:
+            b["sonderingen_bro"] = (f"geen sondering binnen "
+                                    f"± {SONDERING_BORING_M:.0f} m bekend — "
+                                    f"nieuwe sondering ramen")
+    return items
+
+
+# ---------------------------------------------------------------------------
 # 6.3 Zakelijk recht (ZRO): gekruiste percelen
 # ---------------------------------------------------------------------------
 
@@ -270,11 +399,18 @@ def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0) -> l
         opp = geom.intersection(strook).area
         aanduiding = " ".join(str(props.get(k, "")) for k in
                               ("kadastraleGemeenteWaarde", "sectie", "perceelnummer"))
+        perceel = aanduiding.strip() or props.get("identificatieLokaalID", "?")
+        # eigenaar uit de BRK-import (voorbereid koppelvlak, data/brk/)
+        brk_info = brk.eigenaar_van(perceel)
+        eigenaar = ((brk_info["eigenaar"] + (f" — {brk_info['adres']}"
+                                             if brk_info.get("adres") else ""))
+                    if brk_info and brk_info.get("eigenaar")
+                    else "onbekend — BRK-eigendom niet gekoppeld (licentie)")
         items.append({
             **_basisitem(f"ZRO-{len(items) + 1:03d}", "zro",
                          mapping(geom) if geom.geom_type in ("Polygon", "MultiPolygon") else None),
-            "perceel": aanduiding.strip() or props.get("identificatieLokaalID", "?"),
-            "eigenaar": "onbekend — BRK-eigendom niet gekoppeld (licentie)",
+            "perceel": perceel,
+            "eigenaar": eigenaar,
             "ingenomen_lengte_m": round(lengte, 1),
             "chainage_m": round(route.project(snede.centroid), 1),
             "werkstrook_m2": round(opp),
@@ -333,11 +469,34 @@ def build_onderzoeken(zones_m: dict | None, boringen: list) -> list:
             f"gemeente, veldcheck nodig")
     hdd = [b for b in boringen if b["type"] == TECHNIEK_HDD]
     if hdd:
-        add("Grondonderzoek boringen (sonderingen, BRO-profielen)",
-            f"{len(hdd)} HDD-kruising(en); bodemopbouw en boorbaarheid")
-    add("NGE (niet gesprongen explosieven)",
-        "Gemeentelijke bodembelastingkaart niet als open laag beschikbaar",
-        "handmatig beoordelen (fase 2)")
+        bekend = sum(1 for b in hdd
+                     if "bekend in de BRO" in (b.get("sonderingen_bro") or ""))
+        aanleiding = f"{len(hdd)} HDD-kruising(en); bodemopbouw en boorbaarheid"
+        if bekend:
+            aanleiding += (f" — bij {bekend} boring(en) zijn al sonderingen "
+                           f"binnen ± 100 m bekend in de BRO (opvragen i.p.v. "
+                           f"nieuw ramen)")
+        add("Grondonderzoek boringen (sonderingen, BRO-profielen)", aanleiding)
+    if zones_m[ZN_STILTE] > 0:
+        add("Werkplan stiltegebied (geluidsarme uitvoering)",
+            f"{zones_m[ZN_STILTE]:.0f} m tracé in provinciaal stiltegebied")
+    if zones_m[ZN_MONUMENT] > 0:
+        add("Afstemming monumentenzorg (RCE/gemeente)",
+            f"{zones_m[ZN_MONUMENT]:.0f} m tracé binnen een rijksmonument-contour")
+    if zones_m[ZN_BUISLEIDING] > 0:
+        add("Proefsleuven / liggingbepaling buisleiding (Bevb)",
+            f"{zones_m[ZN_BUISLEIDING]:.0f} m tracé nabij een buisleiding "
+            f"gevaarlijke stoffen; exacte ligging en eisen exploitant")
+    if zones_m[ZN_NGE] > 0:
+        add("NGE-vooronderzoek (niet gesprongen explosieven)",
+            f"{zones_m[ZN_NGE]:.0f} m tracé in NGE-verdacht gebied "
+            f"(gekoppelde bodembelastingkaart, NGE_REGIONAAL); "
+            f"CS-VROO / opsporing conform WSCS-OCE")
+    else:
+        add("NGE (niet gesprongen explosieven)",
+            "Geen gekoppelde bodembelastingkaart voor dit gebied "
+            "(register NGE_REGIONAAL in pdok.py; geen landelijke open bron)",
+            "handmatig beoordelen")
     return items
 
 
@@ -346,7 +505,8 @@ def build_onderzoeken(zones_m: dict | None, boringen: list) -> list:
 # ---------------------------------------------------------------------------
 
 def build_checks(route: LineString, segments: list, crossings: list, boringen: list,
-                 zones_m: dict | None = None) -> list:
+                 zones_m: dict | None = None,
+                 bomen_rivm_fractie: float | None = None) -> list:
     checks = []
     zones_m = {**LEGE_ZONES, **(zones_m or {})}
 
@@ -472,10 +632,47 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
             f"verleggen of BEA met beschermingsmaatregelen. Bronnen: BGT-plustopografie "
             f"en gekoppelde gemeentelijke registers (BOMEN_REGIONAAL); dekking is niet "
             f"landsdekkend, veldcheck blijft nodig.")
+    elif (bomen_rivm_fractie or 0) > 0.05:
+        # geen boompunten uit BGT/registers, maar het AHN-raster ziet hier wél
+        # bomen: puntdekking ontbreekt, dus wortelzones zijn niet meegewogen
+        add("info", "Bomen — dekking", "RIVM Bomenkaart (AHN); Handboek Bomen",
+            f"Geen boompunten uit BGT of gemeentelijke registers in het zoekgebied, "
+            f"terwijl de landelijke RIVM Bomenkaart hier wel boombedekking toont "
+            f"(circa {bomen_rivm_fractie * 100:.0f}% van het gebied); wortelzones "
+            f"zijn niet meegewogen in de route — inventariseer bomen langs het "
+            f"tracé in het veld of koppel het gemeentelijke bomenregister.")
     if zones_m[ZN_ARCHEO] > 0:
         add("waarschuwing", "Archeologie", "AMK / gemeentelijke waardenkaart; Erfgoedwet",
             f"{zones_m[ZN_ARCHEO]:.0f} m tracé over AMK-terrein; onderzoek en mogelijk "
             f"begeleiding onder de vrijstellingsdiepte.")
+    if zones_m[ZN_KERING] > 0:
+        add("waarschuwing", "Waterkering", "Waterschapsverordening; legger keringen (IMWA)",
+            f"{zones_m[ZN_KERING]:.0f} m tracé binnen een waterkering met "
+            f"beschermingszone; kruising haaks en diep (of sleufloos) uitvoeren, "
+            f"vergunning waterschap vereist.")
+    if zones_m[ZN_BUISLEIDING] > 0:
+        add("waarschuwing", "Buisleiding gevaarlijke stoffen", "Bevb; NEN 3651",
+            f"{zones_m[ZN_BUISLEIDING]:.0f} m tracé in of nabij de "
+            f"belemmeringenstrook van een buisleiding; kruisings- en "
+            f"parallelligging-eisen van de exploitant gelden, proefsleuven vereist.")
+    if zones_m[ZN_MONUMENT] > 0:
+        add("waarschuwing", "Rijksmonument", "Omgevingswet; Erfgoedwet (RCE)",
+            f"{zones_m[ZN_MONUMENT]:.0f} m tracé binnen een rijksmonument-contour; "
+            f"vergunningplicht en mogelijk aangepaste uitvoeringswijze.")
+    if zones_m[ZN_NGE] > 0:
+        add("waarschuwing", "NGE-verdacht gebied", "WSCS-OCE; gemeentelijke "
+            "bodembelastingkaart",
+            f"{zones_m[ZN_NGE]:.0f} m tracé in NGE-verdacht gebied; "
+            f"NGE-vooronderzoek vóór grondroering.")
+    if zones_m[ZN_STILTE] > 0:
+        add("info", "Stiltegebied", "Provinciale omgevingsverordening",
+            f"{zones_m[ZN_STILTE]:.0f} m tracé in stiltegebied; geluidsarme "
+            f"uitvoering en mogelijk ontheffing.")
+    if zones_m[ZN_KLIC] > 0:
+        add("waarschuwing", "Bestaande netten (KLIC-import)", "CROW 500; WIBON",
+            f"{zones_m[ZN_KLIC]:.0f} m tracé binnen {1.5:g} m van bestaande "
+            f"kabels of leidingen uit de ingelezen KLIC-levering; proefsleuven "
+            f"en zorgvuldig graven (CROW 500).")
 
     add("info", "Graafveiligheid", "CROW 500; WIBON",
         "KLIC-oriëntatiemelding vereist in de ontwerpfase; deze prototype-versie "
@@ -537,7 +734,8 @@ def _wp_van(werkpakketten: list, m: float) -> str:
 def ken_werkpakketten_toe(werkpakketten: list, route: LineString,
                           segments: list, crossings: list, boringen: list,
                           moffen: list, zro: list, vergunningen: list,
-                          onderzoeken: list, checks: list) -> None:
+                          onderzoeken: list, checks: list,
+                          sonderingen: list | None = None) -> None:
     """Elke registerregel het werkpakket geven waarin hij valt (op chainage);
     zo zijn alle registers per werkpakket te sorteren en te filteren."""
     if not werkpakketten:
@@ -560,6 +758,8 @@ def ken_werkpakketten_toe(werkpakketten: list, route: LineString,
         v["werkpakket"] = kruising_wp.get(v.get("kruising"), WP_TRACEBREED)
     for o in onderzoeken:
         o["werkpakket"] = WP_TRACEBREED
+    for s in sonderingen or []:
+        s["werkpakket"] = _wp_van(werkpakketten, s["chainage_m"])
     for c in checks:
         c["werkpakket"] = (_wp_van(werkpakketten, route.project(Point(c["punt"])))
                            if c.get("punt") else WP_TRACEBREED)

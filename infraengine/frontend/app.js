@@ -1,4 +1,4 @@
-/* Kabelbed — fase 1-prototype. OpenLayers-kaart in RD New (EPSG:28992). */
+/* InfraEngine — fase 1-prototype. OpenLayers-kaart in RD New (EPSG:28992). */
 "use strict";
 
 /* ---------------------------------------------------------------- projectie */
@@ -13,8 +13,14 @@ RD.setExtent([-285401.92, 22598.08, 595401.92, 903401.92]);
 /* ------------------------------------------------------------------- lagen */
 const basisLagen = {};   // brt | grijs | lufo → ol.layer.Tile
 const zoneLagen = {};    // natura | nnn | gwb | bodem | amk → ol.layer.Tile
-const regionaleBodemLagen = [];  // regionale bodembronnen (één toggle)
-let bgtLaag = null, dkkLaag = null;
+// regionale WMS-lagen (bodem/NGE): dynamisch opgebouwd per trace/projectgebied
+// uit dezelfde registers als de backend (GET /api/regionale-bronnen)
+const regionaleLagen = { bodem: [], nge: [] };
+let bgtLaag = null, dkkLaag = null, bodemkaartLaag = null,
+    ahnLaag = null, cptLaag = null;
+// bevraagbare WMS-overlays: legenda (GetLegendGraphic) en klik-info
+// (GetFeatureInfo) gebruiken dezelfde bron als de kaartlaag zelf
+const overlayLagen = [];         // { key, titel, laag, url, layers, infoFormat? }
 
 async function wmtsLaag(capUrl, layerId, zIndex, visible) {
   const caps = new ol.format.WMTSCapabilities().read(await (await fetch(capUrl)).text());
@@ -36,6 +42,8 @@ const srcMoffen = new ol.source.Vector();
 const srcBomen = new ol.source.Vector();
 const srcWerkpakketten = new ol.source.Vector();
 const srcHighlight = new ol.source.Vector();
+const srcGrondwater = new ol.source.Vector();
+const srcGwIso = new ol.source.Vector();
 
 const KLEUR_KLASSE = {
   0: "#b9bfba", 1: "#A5C495", 2: "#C4C8CC", 3: "#C9A0C4", 4: "#E8DCB8",
@@ -61,7 +69,38 @@ function stationStyle(f) {
 
 const BOOM_WORTELZONE_M = 2.5; // gelijk aan BOOM_WORTELZONE_M in engine.py
 
+/* grondwaterputten (BRO GLD): kleur naar hoe recent de laatste meting is */
+const GW_KLEUREN = { actueel: "#1E6FB8", ouder: "#7FA8CB", historisch: "#8a8f94" };
+function gwKlasse(laatste) {
+  if (!laatste) return "historisch";
+  const dagen = (Date.now() - new Date(laatste).getTime()) / 864e5;
+  return dagen <= 366 ? "actueel" : dagen <= 5 * 366 ? "ouder" : "historisch";
+}
+
 const lagen = {
+  // isohypsen: hoogtelijnen van de grondwaterstand, label = m t.o.v. NAP
+  gwiso: new ol.layer.Vector({
+    source: srcGwIso, zIndex: 17, visible: false, declutter: true,
+    style: f => new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: "#1E6FB8", width: 1.4 }),
+      text: new ol.style.Text({
+        text: f.get("label"), placement: "line", repeat: 260,
+        font: "600 10px 'IBM Plex Mono',monospace",
+        fill: new ol.style.Fill({ color: "#1E6FB8" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 2.5 }),
+      }),
+    }),
+  }),
+  grondwater: new ol.layer.Vector({
+    source: srcGrondwater, zIndex: 18, visible: false,
+    style: f => new ol.style.Style({
+      image: new ol.style.Circle({
+        radius: 5,
+        fill: new ol.style.Fill({ color: GW_KLEUREN[gwKlasse(f.get("laatste"))] }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 1.5 }),
+      }),
+    }),
+  }),
   bomen: new ol.layer.Vector({
     source: srcBomen, zIndex: 19,
     style: (f, resolution) => [
@@ -233,6 +272,44 @@ const map = new ol.Map({
       params: { LAYERS: "Kadastralekaart", TILED: true }, crossOrigin: "anonymous",
     }),
   });
+  overlayLagen.push({ key: "dkk", titel: "Kadastrale kaart (DKK)", laag: dkkLaag,
+    url: "https://service.pdok.nl/kadaster/kadastralekaart/wms/v5_0",
+    layers: ["Kadastralekaart"] });
+  // bodemsamenstelling (BRO Bodemkaart SGM, 1:50.000): informatieve laag,
+  // weegt niet mee in het kostenoppervlak; bebouwd gebied is niet gekarteerd
+  bodemkaartLaag = new ol.layer.Tile({
+    zIndex: 2, visible: false, opacity: 0.6,
+    source: new ol.source.TileWMS({
+      url: "https://service.pdok.nl/tno/bro-bodemkaart/wms/v1_0",
+      params: { LAYERS: "soilarea", TILED: true }, crossOrigin: "anonymous",
+    }),
+  });
+  // de eigen legenda van deze WMS telt >300 bodemtypen (PNG van 760×5539 px)
+  // en is in het paneel onleesbaar; toon daarom de hoofdgrondsoorten, elk met
+  // de kleurfamilie waarin de service ze tekent (gesampled uit die legenda);
+  // het exacte bodemtype komt via de klik-info (GetFeatureInfo)
+  const bodemGroepen = [
+    ["veengronden", ["#8120fe", "#324cfe", "#aa7ffe"]],
+    ["moerige gronden (veen op zand)", ["#d34cd0", "#aa7fd0", "#327fd0"]],
+    ["podzolgronden (dekzand)", ["#fe7f49", "#feaa49", "#fe7f7c"]],
+    ["eerdgronden (donkere bovengrond)", ["#810200", "#587f49", "#817f7c"]],
+    ["zandgronden (vaaggronden)", ["#fefe00", "#fed349", "#fefea7"]],
+    ["kleigronden (zee- en rivierklei)", ["#81fed0", "#32d349", "#19aa1e", "#81aa00"]],
+    ["leem- en brikgronden (o.a. löss)", ["#fe2049", "#fe2000", "#d3aa1e"]],
+    ["oude klei (o.a. glauconietklei)", ["#32d3d0", "#19d3a7"]],
+  ];
+  const bodemkaartLegenda = bodemGroepen.map(([naam, kleuren]) => {
+    const stap = 100 / kleuren.length;
+    const stops = kleuren.map((k, i) =>
+      `${k} ${i * stap}% ${(i + 1) * stap}%`).join(",");
+    return `<div class="rij"><span class="vlek" style="width:30px;` +
+      `background:linear-gradient(90deg,${stops})"></span>${naam}</div>`;
+  }).join("") + '<div class="rij hint">hoofdgrondsoorten (vereenvoudigd); ' +
+    "klik op de kaart voor het exacte bodemtype</div>";
+  overlayLagen.push({ key: "bodemkaart", titel: "Bodemkaart: samenstelling (BRO)",
+    laag: bodemkaartLaag,
+    url: "https://service.pdok.nl/tno/bro-bodemkaart/wms/v1_0",
+    layers: ["soilarea"], legendaHtml: bodemkaartLegenda });
   // zonelagen (FO §2) — dezelfde bronnen die de backend in het kostenoppervlak
   // meeneemt, hier als visuele overlay
   const wmsOverlay = (url, layers, opacity = 0.55) => new ol.layer.Tile({
@@ -241,23 +318,50 @@ const map = new ol.Map({
       url, params: { LAYERS: layers, TILED: true }, crossOrigin: "anonymous",
     }),
   });
-  zoneLagen.natura = wmsOverlay("https://service.pdok.nl/rvo/natura2000/wms/v1_0", "natura2000");
-  zoneLagen.nnn = wmsOverlay("https://service.pdok.nl/provincies/natuurnetwerk-nederland/wms/v1_0", "PS.ProtectedSite");
-  zoneLagen.gwb = wmsOverlay("https://service.pdok.nl/provincies/grondwaterbeschermingsgebieden/wms/v1_0", "AM.DrinkingWaterProtectionArea");
-  zoneLagen.sld = wmsOverlay("https://service.pdok.nl/tno/bro-overheidsbesluit-bodemverontreiniging/wms/v1_0", "sld", 0.8);
-  zoneLagen.sad = wmsOverlay("https://service.pdok.nl/tno/bro-milieuhygienisch-bodemonderzoek/wms/v1_0", "sad", 0.75);
-  zoneLagen.bodem = wmsOverlay("https://gis.gdngeoservices.nl/standalone/services/blk_gdn/lks_blk_rd_v1/MapServer/WMSServer", "WBB_locaties", 0.8);
-  zoneLagen.bodemdek = wmsOverlay("https://gis.gdngeoservices.nl/standalone/services/blk_gdn/lks_blk_rd_v1/MapServer/WMSServer", "Beschikbaarheid_gegevens", 0.5);
-  // regionale bodembronnen (zelfde register als backend/pdok.py BODEM_REGIONAAL)
-  regionaleBodemLagen.push(
-    wmsOverlay("https://geodata.zuid-holland.nl/geoserver/bodem/wms",
-               "BS_SPOEDLOCATIES,BS_BSB_TOT_LIJST_GEGEOCODEERD,WM_STORTLOCATIES", 0.8),
-    wmsOverlay("https://maps.zaanstad.nl/geoserver/wms",
-               "geo:nazca_verontreiniging_geo,geo:bodem_bodeminformatie_activiteiten", 0.7));
-  regionaleBodemLagen.forEach(l => map.addLayer(l));
-  zoneLagen.amk = wmsOverlay("https://data.geo.cultureelerfgoed.nl/openbaar/wms", "Archeologische_Monumentenkaart_2014", 0.65);
+  const zonelaag = (key, titel, url, layers, opacity) => {
+    const laag = wmsOverlay(url, layers, opacity);
+    overlayLagen.push({ key, titel, laag, url, layers: layers.split(",") });
+    return laag;
+  };
+  zoneLagen.natura = zonelaag("natura", "Natura 2000",
+    "https://service.pdok.nl/rvo/natura2000/wms/v1_0", "natura2000");
+  zoneLagen.nnn = zonelaag("nnn", "Natuurnetwerk Nederland",
+    "https://service.pdok.nl/provincies/natuurnetwerk-nederland/wms/v1_0", "PS.ProtectedSite");
+  zoneLagen.gwb = zonelaag("gwb", "Grondwaterbescherming",
+    "https://service.pdok.nl/provincies/grondwaterbeschermingsgebieden/wms/v1_0", "AM.DrinkingWaterProtectionArea");
+  zoneLagen.sld = zonelaag("sld", "Bodem: verontreiniging/nazorg (SLD)",
+    "https://service.pdok.nl/tno/bro-overheidsbesluit-bodemverontreiniging/wms/v1_0", "sld", 0.8);
+  zoneLagen.sad = zonelaag("sad", "Bodem: onderzoeken (SAD)",
+    "https://service.pdok.nl/tno/bro-milieuhygienisch-bodemonderzoek/wms/v1_0", "sad", 0.75);
+  zoneLagen.bodem = zonelaag("bodem", "Bodemloket (Wbb)",
+    "https://gis.gdngeoservices.nl/standalone/services/blk_gdn/lks_blk_rd_v1/MapServer/WMSServer", "WBB_locaties", 0.8);
+  zoneLagen.bodemdek = zonelaag("bodemdek", "Bodemloket: dekking",
+    "https://gis.gdngeoservices.nl/standalone/services/blk_gdn/lks_blk_rd_v1/MapServer/WMSServer", "Beschikbaarheid_gegevens", 0.5);
+  // regionale bodem- en NGE-lagen komen niet hier maar per trace/projectgebied:
+  // ververRegionaleBronnen() bouwt ze dynamisch op uit GET /api/regionale-bronnen
+  // (zelfde registers als backend/pdok.py: BODEM_REGIONAAL, NGE_REGIONAAL)
+  zoneLagen.amk = zonelaag("amk", "Archeologie (AMK)",
+    "https://data.geo.cultureelerfgoed.nl/openbaar/wms", "Archeologische_Monumentenkaart_2014", 0.65);
+  zoneLagen.monument = zonelaag("monument", "Rijksmonumenten (RCE)",
+    "https://data.geo.cultureelerfgoed.nl/openbaar/wms", "rijksmonumentcontouren", 0.65);
+  zoneLagen.kering = zonelaag("kering", "Waterkeringen (legger IMWA)",
+    "https://service.pdok.nl/hwh/waterschappen-keringen-imwa/wms/v3_0", "waterkering", 0.75);
+  zoneLagen.stilte = zonelaag("stilte", "Stiltegebieden (provincie)",
+    "https://service.pdok.nl/provincies/stiltegebieden/wms/v1_0", "PS.ProtectedSite", 0.5);
+  // informatieve lagen (wegen niet mee): AHN-maaiveld en BRO-sonderingen
+  ahnLaag = wmsOverlay("https://service.pdok.nl/rws/ahn/wms/v1_0", "dtm_05m", 0.6);
+  ahnLaag.setZIndex(2);
+  overlayLagen.push({ key: "ahn", titel: "Hoogte AHN (maaiveld, DTM 0,5 m)",
+    laag: ahnLaag, url: "https://service.pdok.nl/rws/ahn/wms/v1_0",
+    layers: ["dtm_05m"] });
+  cptLaag = wmsOverlay(
+    "https://service.pdok.nl/tno/bro-geotechnischsondeeronderzoek/wms/v1_0",
+    "cpt_kenset", 0.85);
+  overlayLagen.push({ key: "cpt", titel: "Sonderingen (BRO CPT)", laag: cptLaag,
+    url: "https://service.pdok.nl/tno/bro-geotechnischsondeeronderzoek/wms/v1_0",
+    layers: ["cpt_kenset"] });
   [basisLagen.brt, basisLagen.grijs, basisLagen.lufo, bgtLaag, dkkLaag,
-   ...Object.values(zoneLagen)].forEach(l => map.addLayer(l));
+   bodemkaartLaag, ahnLaag, cptLaag, ...Object.values(zoneLagen)].forEach(l => map.addLayer(l));
 })();
 
 document.querySelectorAll("input[name=basis]").forEach(r =>
@@ -265,16 +369,142 @@ document.querySelectorAll("input[name=basis]").forEach(r =>
     for (const [k, l] of Object.entries(basisLagen)) l.setVisible(r.value === k && r.checked);
   }));
 document.getElementById("lg-bgt").addEventListener("change", e => bgtLaag && bgtLaag.setVisible(e.target.checked));
-document.getElementById("lg-dkk").addEventListener("change", e => dkkLaag && dkkLaag.setVisible(e.target.checked));
+document.getElementById("lg-dkk").addEventListener("change", e => {
+  if (dkkLaag) dkkLaag.setVisible(e.target.checked);
+  ververLegenda();
+});
+document.getElementById("lg-bodemkaart").addEventListener("change", e => {
+  if (bodemkaartLaag) bodemkaartLaag.setVisible(e.target.checked);
+  ververLegenda();
+});
+document.getElementById("lg-ahn").addEventListener("change", e => {
+  if (ahnLaag) ahnLaag.setVisible(e.target.checked);
+  ververLegenda();
+});
+document.getElementById("lg-cpt").addEventListener("change", e => {
+  if (cptLaag) cptLaag.setVisible(e.target.checked);
+  ververLegenda();
+});
 for (const [id, key] of [["lg-natura", "natura"], ["lg-nnn", "nnn"], ["lg-gwb", "gwb"],
                          ["lg-sld", "sld"], ["lg-sad", "sad"],
-                         ["lg-bodem", "bodem"], ["lg-bodemdek", "bodemdek"], ["lg-amk", "amk"]])
-  document.getElementById(id).addEventListener("change", e =>
-    zoneLagen[key] && zoneLagen[key].setVisible(e.target.checked));
-document.getElementById("lg-bodemreg").addEventListener("change", e =>
-  regionaleBodemLagen.forEach(l => l.setVisible(e.target.checked)));
-document.getElementById("lg-bomen").addEventListener("change", e => lagen.bomen.setVisible(e.target.checked));
-document.getElementById("lg-seg").addEventListener("change", e => lagen.segments.setVisible(e.target.checked));
+                         ["lg-bodem", "bodem"], ["lg-bodemdek", "bodemdek"], ["lg-amk", "amk"],
+                         ["lg-monument", "monument"], ["lg-kering", "kering"],
+                         ["lg-stilte", "stilte"]])
+  document.getElementById(id).addEventListener("change", e => {
+    if (zoneLagen[key]) zoneLagen[key].setVisible(e.target.checked);
+    ververLegenda();
+  });
+// regionale lagen: de toggle bedient alle dynamisch opgebouwde lagen van die soort
+for (const [id, soort] of [["lg-bodemreg", "bodem"], ["lg-nge", "nge"]])
+  document.getElementById(id).addEventListener("change", e => {
+    regionaleLagen[soort].forEach(l => l.setVisible(e.target.checked));
+    ververLegenda();
+  });
+document.getElementById("lg-bomen").addEventListener("change", e => {
+  lagen.bomen.setVisible(e.target.checked);
+  ververLegenda();
+});
+
+/* --------------------- grondwaterstanden (BRO GLD): live datalaag
+   Putlocaties laden per kaartbeeld via de backend (PDOK OGC API); de
+   actuele stand per put wordt pas bij een klik live uit de BRO gehaald
+   (toonGrondwaterPopup). Informatief — weegt niet mee in het tracé. */
+let gwVolgnr = 0;
+let gwMelding = "";   // legendaregel: te ver uitgezoomd / afgekapt / storing
+
+async function laadGrondwaterPutten() {
+  if (!lagen.grondwater.getVisible()) return;
+  const volgnr = ++gwVolgnr;
+  const bbox = map.getView().calculateExtent(map.getSize());
+  try {
+    const r = await fetch("api/grondwater/putten?bbox=" +
+      bbox.map(v => v.toFixed(0)).join(","));
+    const d = await r.json();
+    if (volgnr !== gwVolgnr || !lagen.grondwater.getVisible()) return;
+    if (!r.ok) {  // bbox te groot (zoom verder in) of dienst onbereikbaar
+      srcGrondwater.clear();
+      gwMelding = d.detail || "dienst niet bereikbaar";
+      ververLegenda();
+      return;
+    }
+    srcGrondwater.clear();
+    d.putten.forEach(p => {
+      const f = new ol.Feature(new ol.geom.Point([p.x, p.y]));
+      f.set("gw", p);
+      f.set("laatste", p.laatste);
+      srcGrondwater.addFeature(f);
+    });
+    gwMelding = d.afgekapt
+      ? "niet alle putten getoond — zoom verder in"
+      : (d.putten.length ? "" : "geen putten in dit kaartbeeld");
+    ververLegenda();
+  } catch (e) {
+    if (volgnr !== gwVolgnr) return;
+    gwMelding = "dienst niet bereikbaar";
+    ververLegenda();
+  }
+}
+/* isohypsen: hoogtelijnen uit de actuele standen van de putten in beeld;
+   de backend haalt de standen live op (eerste keer per gebied kan dat
+   even duren) en interpoleert ze tot contourlijnen in m t.o.v. NAP */
+let gwIsoVolgnr = 0;
+let gwIsoMelding = "";
+let gwIsoInfo = "";   // legendaregel: interval + aantal gebruikte putten
+
+async function laadGwIsohypsen() {
+  if (!lagen.gwiso.getVisible()) return;
+  const volgnr = ++gwIsoVolgnr;
+  const bbox = map.getView().calculateExtent(map.getSize());
+  gwIsoMelding = "isohypsen berekenen… (eerste keer per gebied tot ± 1 min)";
+  ververLegenda();
+  try {
+    const r = await fetch("api/grondwater/isohypsen?bbox=" +
+      bbox.map(v => v.toFixed(0)).join(","));
+    const d = await r.json();
+    if (volgnr !== gwIsoVolgnr || !lagen.gwiso.getVisible()) return;
+    if (!r.ok) {
+      srcGwIso.clear();
+      gwIsoMelding = d.detail || "dienst niet bereikbaar";
+      gwIsoInfo = "";
+      ververLegenda();
+      return;
+    }
+    srcGwIso.clear();
+    d.isohypsen.forEach(l => {
+      const f = new ol.Feature(new ol.geom.LineString(l.coords));
+      f.set("label", l.stand_m_nap.toFixed(2));
+      srcGwIso.addFeature(f);
+    });
+    gwIsoMelding = d.isohypsen.length ? "" :
+      "grondwaterstand vrijwel vlak in dit beeld — geen lijnen";
+    gwIsoInfo = `interval ${d.interval_m} m · ${d.putten_gebruikt} putten` +
+      (d.bereik_m_nap ? ` · ${d.bereik_m_nap[0]} … ${d.bereik_m_nap[1]} m NAP` : "");
+    ververLegenda();
+  } catch (e) {
+    if (volgnr !== gwIsoVolgnr) return;
+    gwIsoMelding = "dienst niet bereikbaar";
+    gwIsoInfo = "";
+    ververLegenda();
+  }
+}
+
+map.on("moveend", () => { laadGrondwaterPutten(); laadGwIsohypsen(); });
+document.getElementById("lg-grondwater").addEventListener("change", e => {
+  lagen.grondwater.setVisible(e.target.checked);
+  if (e.target.checked) laadGrondwaterPutten();
+  else { srcGrondwater.clear(); gwMelding = ""; }
+  ververLegenda();
+});
+document.getElementById("lg-gwiso").addEventListener("change", e => {
+  lagen.gwiso.setVisible(e.target.checked);
+  if (e.target.checked) laadGwIsohypsen();
+  else { srcGwIso.clear(); gwIsoMelding = ""; gwIsoInfo = ""; }
+  ververLegenda();
+});
+document.getElementById("lg-seg").addEventListener("change", e => {
+  lagen.segments.setVisible(e.target.checked);
+  ververLegenda();
+});
 document.getElementById("lg-alt").addEventListener("change", e => {
   srcRoutes.getFeatures().forEach(f => { if (!f.get("actief")) f.set("verborgen", e.target.checked); });
   lagen.routes.setStyle(f => {
@@ -331,14 +561,30 @@ map.on("click", evt => {
       if (f.get("bor") || f.get("kr")) { hit = f; return true; }
       return false;
     }, { hitTolerance: 8, layerFilter: l => l === lagen.crossings });
-    if (hit) toonKaartPopup(hit.get("bor"), hit.get("kr"), evt.coordinate);
-    else sluitPopup();
+    if (hit) { toonKaartPopup(hit.get("bor"), hit.get("kr"), evt.coordinate); return; }
+    let put = null;
+    map.forEachFeatureAtPixel(evt.pixel, f => !!(put = f.get("gw")),
+      { hitTolerance: 8, layerFilter: l => l === lagen.grondwater });
+    if (put) { toonGrondwaterPopup(put, evt.coordinate); return; }
+    // geen boring/kruising/put geraakt: zichtbare datalagen op dit punt bevragen
+    let seg = null;
+    map.forEachFeatureAtPixel(evt.pixel, f => {
+      seg = f.get("seg");
+      return !!seg;
+    }, { hitTolerance: 6, layerFilter: l => l === lagen.segments });
+    toonLaagInfo(evt.coordinate, seg);
   }
 });
 map.on("pointermove", evt => {
-  if (mode !== "pan" || evt.dragging) return;
+  if (evt.dragging) return;
+  if (svSleepbaar(evt.pixel)) {  // Street View-marker is sleepbaar over het tracé
+    map.getTargetElement().style.cursor = "grab";
+    return;
+  }
+  if (mode !== "pan") { map.getTargetElement().style.cursor = ""; return; }
   const hit = map.hasFeatureAtPixel(evt.pixel,
-    { hitTolerance: 8, layerFilter: l => l === lagen.crossings });
+    { hitTolerance: 8,
+      layerFilter: l => l === lagen.crossings || l === lagen.grondwater });
   map.getTargetElement().style.cursor = hit ? "pointer" : "";
 });
 
@@ -355,6 +601,15 @@ function sluitPopup() { kaartPopup.setPosition(undefined); }
 function popupRij(label, waarde) {
   return waarde == null || waarde === "" ? "" :
     `<div class="rij"><span>${label}</span><span>${waarde}</span></div>`;
+}
+
+function sonderingLinks(b) {
+  // koppeling boorregister → sonderingenregister (SON-nr + BRO-loketlink)
+  if (b.sonderingen && b.sonderingen.length)
+    return b.sonderingen.map(s =>
+      `${s.nr} — <a href="${s.bro_loket}" target="_blank" rel="noopener">${s.bro_id} ↗</a>`
+    ).join("<br>");
+  return b.sonderingen_bro || "";
 }
 
 function toonKaartPopup(b, k, coord) {
@@ -376,6 +631,11 @@ function toonKaartPopup(b, k, coord) {
       popupRij("Uittrede (RD)", rd(b.uittredepunt_rd)) +
       popupRij("Dekking-eis", b.dekking_eis) +
       popupRij("Mantelbuis", b.mantelbuis) +
+      popupRij("Maaiveld (AHN)", b.maaiveld_min_nap != null
+        ? `${b.maaiveld_min_nap} – ${b.maaiveld_max_nap} m NAP` +
+          (b.verval_m != null ? ` (verval ${b.verval_m} m)` : "") : "") +
+      popupRij("Sonderingen (BRO)", sonderingLinks(b)) +
+      popupRij("Bestaande netten", b.bestaande_netten) +
       (b.recht === false ? popupRij("Rechtheid",
         `<span class="chip kritiek">niet recht</span> wijkt tot ${b.afwijking_recht_m} m af`) : "") +
       popupRij("Werkterrein", wtChip && (wtChip +
@@ -394,6 +654,9 @@ function toonKaartPopup(b, k, coord) {
         (k.kruislengte_m && k.kruislengte_m > k.breedte_m + 0.5
           ? ` (${k.kruislengte_m} m langs tracé)` : "")) +
       popupRij("Noodzaak", k.noodzaak) +
+      popupRij("Legger", k.legger_categorie ? k.legger_categorie +
+        (k.legger_naam ? ` — ${k.legger_naam}` : "") : "") +
+      popupRij("Wegnaam (NWB)", k.wegnaam) +
       popupRij("Richtlijn", k.richtlijn) +
       popupRij("Bevoegd gezag", k.bevoegd_gezag) +
       (k.detail ? `<p class="opm">${k.detail}</p>` : "");
@@ -402,6 +665,135 @@ function toonKaartPopup(b, k, coord) {
     `<button class="sluit" title="Sluiten">×</button><h3>${kop}</h3>${inhoud}`;
   popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
   kaartPopup.setPosition(coord);
+}
+
+/* ------------------- popup: grondwaterput (BRO GLD), stand live ophalen */
+function gwSparkline(reeks) {
+  if (!reeks || reeks.length < 2) return "";
+  const ts = reeks.map(p => p[0]), ws = reeks.map(p => p[1]);
+  const [t0, t1] = [Math.min(...ts), Math.max(...ts)];
+  const [w0, w1] = [Math.min(...ws), Math.max(...ws)];
+  const B = 264, H = 56, M = 4;
+  const x = t => M + (B - 2 * M) * (t1 > t0 ? (t - t0) / (t1 - t0) : 0.5);
+  const y = w => H - M - (H - 2 * M) * (w1 > w0 ? (w - w0) / (w1 - w0) : 0.5);
+  const pts = reeks.map(p => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+  return `<svg width="${B}" height="${H}" style="display:block;margin:6px 0 2px">` +
+    `<polyline points="${pts}" fill="none" stroke="#1E6FB8" stroke-width="1.3"/>` +
+    `<circle cx="${x(t1).toFixed(1)}" cy="${y(reeks[reeks.length - 1][1]).toFixed(1)}"` +
+    ' r="2.6" fill="#C8322B"/></svg>';
+}
+
+async function toonGrondwaterPopup(put, coord) {
+  const kop = `<button class="sluit" title="Sluiten">×</button>` +
+    `<h3>Grondwaterstand — ${rlEsc(put.bro_id)}</h3>`;
+  const basis = popupRij("Onderzoek", rlEsc((put.eerste || "?") + " t/m " + (put.laatste || "?")));
+  popupEl.innerHTML = kop + basis +
+    '<p class="opm">Actuele stand live ophalen bij de BRO…</p>';
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord);
+  const volgnr = ++infoVolgnr;
+  let inhoud;
+  try {
+    const r = await fetch("api/grondwater/stand/" + encodeURIComponent(put.bro_id));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    const datum = t => new Date(t).toLocaleDateString("nl-NL");
+    inhoud =
+      popupRij("Laatste stand", `<strong>${d.laatste.stand_m_nap.toFixed(2)} m ` +
+        `t.o.v. NAP</strong> (${datum(d.laatste.tijd_ms)})`) +
+      popupRij("Status", rlEsc(d.laatste.type)) +
+      popupRij("Bereik", `${d.min_m_nap.toFixed(2)} … ${d.max_m_nap.toFixed(2)} m NAP`) +
+      popupRij("Metingen", `${d.aantal} (${datum(d.periode_ms[0])} – ${datum(d.periode_ms[1])})`) +
+      gwSparkline(d.reeks) +
+      '<p class="opm">Bron: BRO-uitgifteservice (GLD), live opgehaald.</p>';
+  } catch (e) {
+    inhoud = `<p class="opm">Stand ophalen mislukt: ${rlEsc(String(e.message || e))}</p>`;
+  }
+  // intussen elders geklikt of popup gesloten: dit antwoord is verouderd
+  if (volgnr !== infoVolgnr || !kaartPopup.getPosition()) return;
+  popupEl.innerHTML = kop + basis + inhoud;
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord);
+}
+
+/* ------------------------- klik-info uit de datalagen (WMS GetFeatureInfo)
+   In navigeermodus bevraagt een klik alle aangevinkte datalagen op dat punt
+   en toont de attributen per laag in de kaartpopup; een geraakt tracésegment
+   komt er als eerste blok bij. Per laag wordt het eerste antwoordformaat dat
+   de service ondersteunt onthouden (PDOK/GeoServer: json; ArcGIS: geojson of
+   platte tekst). */
+let infoVolgnr = 0;
+const INFO_VERBERG = /^(geom|geometry|shape.*|boundedby|the_geom|objectid|gml_id|fid)$/i;
+
+function infoEigenschappen(props) {
+  const rijen = Object.entries(props || {})
+    .filter(([k, w]) => w != null && String(w).trim() !== ""
+      && typeof w !== "object" && !INFO_VERBERG.test(k))
+    .slice(0, 12)
+    .map(([k, w]) => popupRij(rlEsc(k.replace(/_/g, " ")), rlEsc(String(w))));
+  return rijen.join("") || '<p class="opm">object zonder attributen</p>';
+}
+
+async function laagInfoDeel(o, coord, resolutie) {
+  const formaten = o.infoFormat ? [o.infoFormat]
+    : ["application/json", "application/geo+json", "text/plain"];
+  for (const fmt of formaten) {
+    const url = o.laag.getSource().getFeatureInfoUrl(coord, resolutie, RD,
+      { INFO_FORMAT: fmt, FEATURE_COUNT: 5 });
+    if (!url) return "";
+    try {
+      const r = await fetch(url);
+      if (!r.ok) continue;
+      const tekst = await r.text();
+      if (fmt === "text/plain") {
+        o.infoFormat = fmt;
+        // alleen tonen als er attribuutregels ("naam = waarde") in staan
+        if (!/^\s*\w[\w .-]*=/m.test(tekst)) return "";
+        return `<section class="laag"><h4>${rlEsc(o.titel)}</h4>` +
+          `<pre>${rlEsc(tekst.trim())}</pre></section>`;
+      }
+      const d = JSON.parse(tekst); // xml-foutantwoord → volgend formaat proberen
+      o.infoFormat = fmt;
+      const fs = d.features || [];
+      if (!fs.length) return "";
+      return `<section class="laag"><h4>${rlEsc(o.titel)}</h4>` +
+        fs.map(f => infoEigenschappen(f.properties))
+          .join('<div class="scheiding"></div>') + "</section>";
+    } catch (e) { /* formaat niet ondersteund of service onbereikbaar */ }
+  }
+  return "";
+}
+
+function segmentInfoDeel(seg) {
+  if (!seg) return "";
+  return `<section class="laag"><h4>Tracésegment ${rlEsc(seg.nr)}</h4>` +
+    popupRij("Ligging", rlEsc(seg.ligging)) +
+    popupRij("Werkpakket", rlEsc(seg.werkpakket)) +
+    popupRij("Chainage", `${seg.van_m}–${seg.tot_m} m`) +
+    popupRij("Lengte", seg.lengte_m + " m") + "</section>";
+}
+
+async function toonLaagInfo(coord, seg) {
+  const actief = overlayLagen.filter(o => o.laag.getVisible());
+  if (!actief.length && !seg) { sluitPopup(); return; }
+  const volgnr = ++infoVolgnr;
+  const kop = '<button class="sluit" title="Sluiten">×</button><h3>Datalagen op dit punt</h3>';
+  popupEl.innerHTML = kop + `<div class="lagen">${segmentInfoDeel(seg)}` +
+    (actief.length ? '<p class="opm">Gegevens ophalen…</p>' : "") + "</div>";
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord);
+  if (!actief.length) return;
+  const resolutie = map.getView().getResolution();
+  const delen = await Promise.all(actief.map(o => laagInfoDeel(o, coord, resolutie)));
+  // intussen elders geklikt of popup gesloten: dit antwoord is verouderd
+  if (volgnr !== infoVolgnr || !kaartPopup.getPosition()) return;
+  const inhoud = segmentInfoDeel(seg) + delen.filter(Boolean).join("");
+  popupEl.innerHTML = kop +
+    `<div class="lagen">${inhoud ||
+      '<p class="opm">Geen objecten op dit punt in de aangevinkte datalagen.</p>'}</div>` +
+    popupRij("RD", `<span class="mono">${coord.map(x => x.toFixed(1)).join(", ")}</span>`);
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord); // autoPan opnieuw: de inhoud kan groter zijn
 }
 
 /* ------------------------------------------------------------ wegingsprofiel */
@@ -417,19 +809,30 @@ const WEIGHT_LABELS = {
   bodem_verdacht: "× onderzoekslocatie (SAD/Wbb)",
   bodem_elders: "× bodemdata elders (signaal)", archeologie: "× archeologie (AMK)",
   boom_wortelzone: "× wortelzone bomen",
+  stiltegebied: "× stiltegebied (provincie)",
+  monument: "× rijksmonument (RCE)",
+  nge_verdacht: "× NGE-verdacht gebied",
+  kering: "× waterkering + zone (IMWA)",
+  buisleiding: "× buisleiding (Bevb)",
+  klic_netdichtheid: "× bestaande netten (KLIC-import)",
   water_kruising: "watergang (kruisprijs/m)",
   spoor_kruising: "spoor (kruisprijs/m)",
 };
 let defaultWeights = {};
 async function laadDefaults() {
+  // standaardprofiel = fabriekswaarden + overrides uit actieve richtlijnen
+  // (beheerscherm ⚖); richtlijn_bronnen zegt welke waarde uit welke richtlijn komt
   const d = await (await fetch("api/defaults")).json();
   defaultWeights = d.weights;
+  const bronnen = d.richtlijn_bronnen || {};
   svKey = d.google_maps_key || "";
   const tbl = document.getElementById("weights-table");
   tbl.innerHTML = "";
   for (const [k, v] of Object.entries(defaultWeights)) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${WEIGHT_LABELS[k] || k}</td>
+    const badge = bronnen[k]
+      ? `<span class="rl-badge" title="Uit richtlijn: ${rlEsc(bronnen[k])}">⚖</span>` : "";
+    tr.innerHTML = `<td>${WEIGHT_LABELS[k] || k}${badge}</td>
       <td><input type="number" step="0.1" min="0" data-w="${k}" value="${v}"></td>`;
     tbl.appendChild(tr);
   }
@@ -493,8 +896,91 @@ function updateUI() {
       ? `${n} stations; zoekgebied wordt automatisch rond de stations bepaald. Punten zijn versleepbaar.`
       : `${n} stations; volgorde = plaatsingsvolgorde (streng). Punten zijn versleepbaar.`;
   srcStations.changed();
+  planRegionaleBronnen();
 }
-[srcArea, srcStations].forEach(s => { s.on("addfeature", updateUI); s.on("removefeature", updateUI); });
+[srcArea, srcStations].forEach(s => {
+  s.on("addfeature", updateUI); s.on("removefeature", updateUI);
+  s.on("changefeature", planRegionaleBronnen);  // verslepen (Modify)
+});
+
+/* Regionale bronnen: afhankelijk van het trace/projectgebied vraagt de
+   frontend de backend welke regionale registers (bodem, NGE, bomen) hier van
+   toepassing zijn — dezelfde registers die in het kostenoppervlak meewegen —
+   en bouwt daar de kaartlagen en de labels bij de laag-vinkjes uit op. */
+let regionaleBronnenKey = null;   // laatst verwerkte bbox (dedupe + race-guard)
+let regionaleTimer = 0;
+
+function gebiedExtent() {
+  // getekend of automatisch bepaald projectgebied; anders stations ± 150 m
+  // (zelfde zoekruimte als AUTO_GEBIED_BUFFER_M in main.py); null zonder invoer
+  if (srcArea.getFeatures().length) return srcArea.getExtent();
+  if (srcStations.getFeatures().length) {
+    const [x1, y1, x2, y2] = srcStations.getExtent();
+    return [x1 - 150, y1 - 150, x2 + 150, y2 + 150];
+  }
+  return null;
+}
+
+function planRegionaleBronnen() {
+  clearTimeout(regionaleTimer);
+  regionaleTimer = setTimeout(ververRegionaleBronnen, 400);
+}
+
+async function ververRegionaleBronnen() {
+  const ext = gebiedExtent();
+  const key = ext ? ext.map(v => Math.round(v)).join(",") : "";
+  if (key === regionaleBronnenKey) return;
+  regionaleBronnenKey = key;
+  let bronnen = { bodem: [], nge: [], bomen: [] };
+  if (ext) {
+    try {
+      bronnen = await (await fetch("api/regionale-bronnen?bbox=" + key)).json();
+    } catch { /* backend onbereikbaar: geen regionale lagen */ }
+    if (key !== regionaleBronnenKey) return;  // intussen is het gebied gewijzigd
+  }
+  for (const [soort, key2, titelPrefix, opacity] of
+       [["bodem", "bodemreg", "Bodem regionaal", 0.8],
+        ["nge", "nge", "NGE-verdacht", 0.6]]) {
+    regionaleLagen[soort].forEach(l => {
+      map.removeLayer(l);
+      const i = overlayLagen.findIndex(o => o.laag === l);
+      if (i >= 0) overlayLagen.splice(i, 1);
+    });
+    regionaleLagen[soort] = [];
+    // één kaartlaag per service; de bronlagen van die service gebundeld
+    const perUrl = new Map();
+    for (const b of bronnen[soort] || []) {
+      const e = perUrl.get(b.url) || { regio: b.naam.split(":")[0], layers: [] };
+      e.layers.push(b.layer);
+      perUrl.set(b.url, e);
+    }
+    const aan = document.getElementById("lg-" + key2).checked;
+    for (const [url, e] of perUrl) {
+      const laag = new ol.layer.Tile({
+        zIndex: 3, visible: aan, opacity,
+        source: new ol.source.TileWMS({
+          url, params: { LAYERS: e.layers.join(","), TILED: true },
+          crossOrigin: "anonymous",
+        }),
+      });
+      overlayLagen.push({ key: key2, titel: `${titelPrefix}: ${e.regio}`,
+                          laag, url, layers: e.layers });
+      map.addLayer(laag);
+      regionaleLagen[soort].push(laag);
+    }
+    const info = document.getElementById(`lg-${key2}-info`);
+    if (info) info.textContent = !ext ? ""
+      : perUrl.size
+        ? `— ${[...perUrl.values()].map(e => e.regio).join(", ")}`
+        : "— geen bron voor dit gebied";
+  }
+  const infoBomen = document.getElementById("lg-bomen-info");
+  if (infoBomen) infoBomen.textContent = !ext ? ""
+    : (bronnen.bomen || []).length
+      ? `— register ${bronnen.bomen.map(b => b.naam.split(":")[0]).join(", ")}`
+      : "— alleen BGT";
+  ververLegenda();
+}
 
 const statusEl = document.getElementById("status");
 
@@ -542,6 +1028,10 @@ async function bereken() {
         ? `\nCorridor automatisch verbreed (blokkade omzeild) bij deeltraject ` +
           resultaat.corridor_verbreed.map(v => `${v.deeltraject} (±${v.breedte_m} m)`).join(", ")
         : "") +
+      ((resultaat.richtlijnen_toegepast || []).length
+        ? `\nRichtlijnen toegepast: ` + resultaat.richtlijnen_toegepast
+            .map(r => `${r.naam} (${r.parameters} par.)`).join("; ")
+        : "") +
       (resultaat.variant_fouten.length ? `\nNiet gelukt: ${resultaat.variant_fouten.map(f => f.variant).join(", ")}` : "") +
       (resultaat.laag_fouten && resultaat.laag_fouten.length
         ? `\nZonelagen niet geladen: ${resultaat.laag_fouten.map(f => f.split(":")[0]).join(", ")}` : "") +
@@ -550,7 +1040,12 @@ async function bereken() {
       ((resultaat.bomen || []).length
         ? `\nBomen: ${resultaat.bomen.length} (${(resultaat.bomen_bronnen || []).join("; ")})`
         : "\nBomen: geen open bomendata in dit gebied (BGT-plustopografie leeg, " +
-          "geen gemeentelijk register gekoppeld)");
+          "geen gemeentelijk register gekoppeld)" +
+          ((resultaat.bomen_rivm_fractie || 0) > 0.05
+            ? ` — let op: RIVM Bomenkaart (AHN) toont hier wél ` +
+              `~${Math.round(resultaat.bomen_rivm_fractie * 100)}% boombedekking, ` +
+              `veldcheck nodig`
+            : ""));
     // automatisch afgeleid zoekgebied (of de corridor) tonen als er geen
     // gebied is getekend; gemarkeerd als "auto" zodat het niet als getekend
     // projectgebied wordt teruggestuurd bij een herberekening
@@ -565,6 +1060,7 @@ async function bereken() {
       resultaat.gemeente ? "· " + resultaat.gemeente : "";
     document.getElementById("btn-exp-geojson").disabled = false;
     document.getElementById("btn-exp-xlsx").disabled = false;
+    document.getElementById("btn-exp-dxf").disabled = false;
     document.querySelectorAll(".btn-nota").forEach(b => { b.disabled = false; });
     toonResultaat();
     // bij een lang tracé het volledige resultaat in beeld brengen
@@ -605,6 +1101,7 @@ function toonResultaat() {
   v.segmenten.forEach(s => {
     const f = new ol.Feature(geojson.readGeometry(s.geometry));
     f.set("klasse", s.klasse);
+    f.set("seg", s);  // voor de klik-info in de kaartpopup
     srcSegments.addFeature(f);
   });
   const kortTechniek = t => t.includes("HDD") ? "HDD" : t.includes("Persing") ? "PERS"
@@ -651,7 +1148,7 @@ function toonResultaat() {
     if (i === actieveVariant) o.selected = true;
     sel.appendChild(o);
   });
-  toonLegenda(v);
+  ververLegenda();
   toonTab();
 }
 document.getElementById("variant-select").addEventListener("change", e => {
@@ -659,16 +1156,101 @@ document.getElementById("variant-select").addEventListener("change", e => {
   toonResultaat();
 });
 
-function toonLegenda(v) {
+/* Legenda: segmentklassen van het berekende tracé plus, per aangevinkte
+   datalaag, de legenda-afbeeldingen die de WMS-service zelf publiceert — de
+   kleuren kloppen dan altijd met de kaartweergave. De afbeeldings-URL komt
+   uit de LegendURL in de service-capabilities (PDOK kent geen
+   GetLegendGraphic); lukt dat niet, dan is GetLegendGraphic de terugval.
+   Een overlay met een eigen `legendaHtml` (bodemkaart: de service-legenda is
+   te groot voor het paneel) toont die in plaats van de afbeeldingen. */
+const legendaCapCache = {};   // service-url → Promise<{laagnaam: [legenda-png-urls]}>
+let legendaTeller = 0;
+
+function legendaGrafiek(url, laag) {
+  return url.split("?")[0] +
+    "?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetLegendGraphic&FORMAT=image%2Fpng" +
+    "&SLD_VERSION=1.1.0&LAYER=" + encodeURIComponent(laag);
+}
+
+function legendaUrlsUitCapabilities(url) {
+  return legendaCapCache[url] ??=
+    fetch(url.split("?")[0] + "?service=WMS&request=GetCapabilities")
+      .then(r => r.text())
+      .then(xml => {
+        const doc = new DOMParser().parseFromString(xml, "text/xml");
+        const m = {};
+        // het Bodemloket (ArcGIS) codeert de &'s in zijn LegendURL als %26
+        const href = or => or.getAttribute("xlink:href").replace(/%26/g, "&");
+        for (const laagEl of doc.querySelectorAll("Layer")) {
+          const naam = [...laagEl.children].find(c => c.localName === "Name");
+          if (!naam) continue;
+          const eigenStijl = [...laagEl.children].find(c => c.localName === "Style");
+          const ors = eigenStijl
+            ? [eigenStijl.querySelector("LegendURL OnlineResource")]
+            : // groepslaag zonder eigen stijl: de legenda van elke sublaag
+              [...laagEl.querySelectorAll(":scope > Layer")].map(sub =>
+                sub.querySelector("Style LegendURL OnlineResource"));
+          m[naam.textContent] = ors.filter(Boolean).map(href);
+        }
+        return m;
+      })
+      .catch(() => ({}));  // capabilities onbereikbaar: alleen de terugval
+}
+
+async function vulLegendaAfbeeldingen(houder, o, teller) {
+  const urls = await legendaUrlsUitCapabilities(o.url);
+  if (teller !== legendaTeller || !houder.isConnected) return; // intussen herbouwd
+  houder.innerHTML = o.layers.map(l =>
+    (urls[l] && urls[l].length ? urls[l] : [legendaGrafiek(o.url, l)]).map(u =>
+      `<img src="${rlEsc(u)}" alt="legenda ${rlEsc(l)}" loading="lazy"` +
+      ' onerror="this.remove()">').join("")).join("");
+}
+
+function ververLegenda() {
   const el = document.getElementById("legenda");
-  const klassen = [...new Set(v.segmenten.map(s => s.klasse))];
-  const namen = { 0: "onbekend", 1: "berm/groen", 2: "voetpad", 3: "fietspad", 4: "parkeervlak",
-    5: "rijbaan", 6: "privaat (erf/agrarisch)", 7: "onverhard", 8: "watergang", 9: "spoor",
-    10: "pand", 11: "verboden", 12: "bos/natuur" };
-  el.innerHTML = "<strong>Ligging segmenten</strong>" + klassen.map(k =>
-    `<div class="rij"><span class="vlek" style="background:${KLEUR_KLASSE[k]}"></span>${namen[k]}</div>`
-  ).join("");
-  el.style.display = "block";
+  const teller = ++legendaTeller;
+  const delen = [];
+  if (resultaat && lagen.segments.getVisible()) {
+    const v = resultaat.varianten[actieveVariant];
+    const klassen = [...new Set(v.segmenten.map(s => s.klasse))];
+    const namen = { 0: "onbekend", 1: "berm/groen", 2: "voetpad", 3: "fietspad", 4: "parkeervlak",
+      5: "rijbaan", 6: "privaat (erf/agrarisch)", 7: "onverhard", 8: "watergang", 9: "spoor",
+      10: "pand", 11: "verboden", 12: "bos/natuur" };
+    delen.push("<strong>Ligging segmenten</strong>" + klassen.map(k =>
+      `<div class="rij"><span class="vlek" style="background:${KLEUR_KLASSE[k]}"></span>${namen[k]}</div>`
+    ).join(""));
+  }
+  if (lagen.bomen.getVisible() && !srcBomen.isEmpty())
+    delen.push('<div class="rij"><span class="vlek boom"></span>boom + wortelzone</div>');
+  if (lagen.grondwater.getVisible() || lagen.gwiso.getVisible()) {
+    const put = kleur => `<span class="vlek" style="width:11px;height:11px;` +
+      `border-radius:50%;background:${kleur};border:1.5px solid #fff;` +
+      `box-shadow:0 0 0 1px #ccc"></span>`;
+    let blok = "<strong>Grondwaterstanden (BRO GLD)</strong>";
+    if (lagen.grondwater.getVisible())
+      blok +=
+        `<div class="rij">${put(GW_KLEUREN.actueel)}laatste meting &lt; 1 jaar</div>` +
+        `<div class="rij">${put(GW_KLEUREN.ouder)}laatste meting &lt; 5 jaar</div>` +
+        `<div class="rij">${put(GW_KLEUREN.historisch)}ouder / onbekend</div>` +
+        (gwMelding ? `<div class="rij">⚠ ${rlEsc(gwMelding)}</div>` : "") +
+        '<div class="rij hint">klik op een put voor de actuele stand</div>';
+    if (lagen.gwiso.getVisible())
+      blok +=
+        '<div class="rij"><span class="vlek" style="background:#1E6FB8"></span>' +
+        "isohypse (m t.o.v. NAP)</div>" +
+        (gwIsoInfo ? `<div class="rij hint">${rlEsc(gwIsoInfo)}</div>` : "") +
+        (gwIsoMelding ? `<div class="rij">⚠ ${rlEsc(gwIsoMelding)}</div>` : "");
+    delen.push(blok);
+  }
+  const zichtbaar = overlayLagen.filter(o => o.laag.getVisible());
+  zichtbaar.forEach((o, i) => delen.push(
+    `<details open><summary>${rlEsc(o.titel)}</summary>` +
+    (o.legendaHtml ?? `<div class="lg-imgs" data-i="${i}">…</div>`) +
+    "</details>"));
+  el.innerHTML = delen.join("");
+  el.style.display = delen.length ? "block" : "none";
+  zichtbaar.forEach((o, i) => { if (!o.legendaHtml)
+    vulLegendaAfbeeldingen(el.querySelector(`.lg-imgs[data-i="${i}"]`), o, teller); });
 }
 
 /* ------------------------------------------------------------------ panelen */
@@ -815,13 +1397,14 @@ function toonTab() {
           td(`<span class="chip">${g.status}</span>`)],
       })));
   } else if (actieveTab === "boringen") {
-    t = tabel(["Nr", "WP", "Type", "Obstakel", "Noodzaak", "Lengte", "Intrede (RD)", "Uittrede (RD)", "Dekking-eis", "Mantelbuis", "Werkterrein"],
+    t = tabel(["Nr", "WP", "Type", "Obstakel", "Noodzaak", "Lengte", "Intrede (RD)", "Uittrede (RD)", "Dekking-eis", "Mantelbuis", "Sonderingen (BRO)", "Werkterrein"],
       v.boringen.map(b => ({
         cells: [td(b.nr), td(b.werkpakket),
           td(b.type + (b.type_oorspronkelijk ? `<br><s>${b.type_oorspronkelijk}</s>` : "")),
           td(b.obstakel), td(b.noodzaak), tdn(b.lengte_m + " m"),
           tdn(b.intredepunt_rd.join(", ")), tdn(b.uittredepunt_rd.join(", ")),
           td(b.dekking_eis), td(b.mantelbuis),
+          td(sonderingLinks(b)),
           td(wtCel({ oordeel: b.werkterrein_oordeel, intrede_m2: b.werkterrein_intrede_m2,
             intrede_eis_m2: b.werkterrein_intrede_eis_m2, uittrede_m2: b.werkterrein_uittrede_m2,
             uittrede_eis_m2: b.werkterrein_uittrede_eis_m2, opmerking: b.werkterrein_opmerking }))],
@@ -829,12 +1412,31 @@ function toonTab() {
       })));
     if (!v.boringen.length)
       el.innerHTML = '<p class="leeg">Geen boringen: alle kruisingen kunnen open of er zijn geen kruisingen.</p>';
+  } else if (actieveTab === "sonderingen") {
+    t = tabel(["Nr", "WP", "BRO-ID", "Chainage", "Afstand tracé", "Einddiepte",
+               "Maaiveld", "Klasse", "Datum", "Relevantie", "BRO-loket"],
+      (v.sonderingen || []).map(s => ({
+        cells: [td(s.nr), td(s.werkpakket), td(s.bro_id),
+          tdn(s.chainage_m + " m"), tdn(s.afstand_trace_m + " m"),
+          tdn(s.einddiepte_m != null ? s.einddiepte_m + " m" : ""),
+          tdn(s.maaiveld_nap != null ? s.maaiveld_nap + " m NAP" : ""),
+          td(s.kwaliteitsklasse), td(s.datum),
+          td(s.boringen && s.boringen.length
+            ? `nabij ${s.boringen.join(", ")}` : "langs tracé"),
+          td(`<a href="${s.bro_loket}" target="_blank" rel="noopener">loket ↗</a>`)],
+        zoom: s.punt,
+      })));
+    if (!(v.sonderingen || []).length)
+      el.innerHTML = '<p class="leeg">Geen bestaande sonderingen (BRO) binnen de zoekafstand van het tracé.</p>';
   } else if (actieveTab === "onderzoeken") {
-    t = tabel(["Nr", "Onderzoek", "Aanleiding", "Conclusie", "Status"],
+    t = tabel(["Nr", "Onderzoek", "Aanleiding", "Conclusie", "Status",
+               "AI-bureauonderzoek"],
       (v.onderzoeken || []).map(o => ({
         cells: [td(o.nr), td(o.soort), td(o.aanleiding),
-          td(o.conclusie), td(`<span class="chip">${o.status}</span>`)],
+          td(o.conclusie), td(`<span class="chip">${o.status}</span>`),
+          td(`<span class="bureau-cel" data-nr="${o.nr}">…</span>`)],
       })));
+    setTimeout(laadBureauOpties, 0);  // knoppen/validiteit invullen zodra de tabel staat
     const zones = Object.entries(v.zones || {});
     if (zones.length) {
       const p = document.createElement("p");
@@ -1203,40 +1805,198 @@ zd("zd-upload").addEventListener("change", () => {
   lezer.readAsDataURL(file);
 });
 
+/* ------------------------------------------------- beheer: richtlijnen (⚖) */
+/* Richtlijndocumenten uploaden; de backend laat de AI ze vertalen naar
+   rekenparameters (wegingsprofiel, kruisingsbeslistabel, boor-uitloop,
+   werkterrein-eisen). Actieve richtlijnen gelden als nieuwe standaard bij
+   elke berekening; het wegingsprofiel-paneel toont ⚖ bij richtlijnwaarden. */
+const rlOverlay = document.getElementById("rl-overlay");
+const rlLijstEl = document.getElementById("rl-lijst");
+const rlStatusEl = document.getElementById("rl-status");
+let rlData = null;
+
+function rlEsc(t) {
+  return String(t ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function rlVerzoek(url, opties) {
+  const r = await fetch(url, opties);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+  rlData = await r.json();
+  renderRichtlijnen();
+  await laadDefaults(); // wegingsprofiel-tabel ververst met richtlijn-standaarden
+}
+
+function renderRichtlijnen() {
+  const items = (rlData && rlData.richtlijnen) || [];
+  const cat = (rlData && rlData.catalogus) || {};
+  const bronnen = (rlData && rlData.overrides && rlData.overrides.bronnen) || {};
+  rlStatusEl.textContent = rlData && !rlData.api_key
+    ? "geen ANTHROPIC_API_KEY — interpretatie niet beschikbaar" : "";
+  if (!items.length) {
+    rlLijstEl.innerHTML = `<p class="leeg">Nog geen richtlijnen geüpload.</p>`;
+    return;
+  }
+  rlLijstEl.innerHTML = items.map(m => {
+    const it = m.interpretatie || {};
+    const chip = it.status === "ok"
+      ? (m.actief ? `<span class="chip ok">actief</span>`
+                  : `<span class="chip info">inactief</span>`)
+      : it.status === "fout" ? `<span class="chip kritiek">interpretatie mislukt</span>`
+      : `<span class="chip waarschuwing">nog niet geïnterpreteerd</span>`;
+    const params = (it.parameters || []).map(p => {
+      const c = cat[p.sleutel] || {};
+      const overschreven = bronnen[p.sleutel] && bronnen[p.sleutel] !== m.naam;
+      return `<tr${overschreven ? ' class="overschreven" title="Overschreven door een later geüploade richtlijn"' : ""}>
+        <td>${rlEsc(c.omschrijving || p.sleutel)}</td>
+        <td class="num">${p.waarde}<span class="eenheid"> ${rlEsc(p.eenheid || "")}</span></td>
+        <td class="num std">${p.standaard}</td>
+        <td>${rlEsc(p.motivering)}${p.citaat
+          ? `<div class="citaat">“${rlEsc(p.citaat)}”</div>` : ""}</td></tr>`;
+    }).join("");
+    return `<article class="rl-item" data-id="${rlEsc(m.id)}">
+      <header>
+        <label class="rl-actief" title="Actieve richtlijnen werken door in de eerstvolgende berekening">
+          <input type="checkbox" data-actie="actief" ${m.actief ? "checked" : ""}
+            ${it.status !== "ok" ? "disabled" : ""}> actief</label>
+        <strong>${rlEsc(m.naam)}</strong> ${chip}
+        <span class="mono">${rlEsc(m.bestandsnaam)} · ${rlEsc((m.geupload || "").replace("T", " "))}</span>
+        <span class="spacer"></span>
+        <button data-actie="interpreteer" title="Document opnieuw door de AI laten interpreteren">↻ Opnieuw</button>
+        <button data-actie="verwijder" class="rl-verwijder" title="Richtlijn verwijderen">✕</button>
+      </header>
+      ${it.samenvatting ? `<p class="rl-samenvatting">${rlEsc(it.samenvatting)}</p>` : ""}
+      ${it.status === "fout" ? `<p class="rl-fout">${rlEsc(it.fout)}</p>` : ""}
+      ${params ? `<table class="rl-params">
+          <tr><th>Parameter</th><th>Waarde</th><th>Standaard</th><th>Motivering uit de richtlijn</th></tr>
+          ${params}</table>`
+        : it.status === "ok" ? `<p class="hint">Geen op parameters afbeeldbare voorschriften gevonden.</p>` : ""}
+      ${(it.niet_gemapt || []).length ? `<details class="rl-nietgemapt">
+          <summary>${it.niet_gemapt.length} voorschrift(en) niet automatisch toe te passen</summary>
+          <ul>${it.niet_gemapt.map(x => `<li>${rlEsc(x)}</li>`).join("")}</ul></details>` : ""}
+    </article>`;
+  }).join("");
+}
+
+rlLijstEl.addEventListener("click", async e => {
+  const knop = e.target.closest("[data-actie]");
+  if (!knop) return;
+  const id = knop.closest(".rl-item").dataset.id;
+  try {
+    if (knop.dataset.actie === "verwijder") {
+      if (!confirm("Richtlijn en interpretatie verwijderen?")) return;
+      await rlVerzoek("api/richtlijnen/" + encodeURIComponent(id), { method: "DELETE" });
+    } else if (knop.dataset.actie === "actief") {
+      await rlVerzoek("api/richtlijnen/actief", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, actief: knop.checked }),
+      });
+    } else if (knop.dataset.actie === "interpreteer") {
+      knop.disabled = true; knop.textContent = "… bezig";
+      await rlVerzoek("api/richtlijnen/interpreteer", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+    }
+  } catch (err) {
+    alert("Actie mislukt: " + err.message);
+    laadRichtlijnen(); // toestand terugzetten (bijv. checkbox of knoptekst)
+  }
+});
+
+async function laadRichtlijnen() {
+  try {
+    await rlVerzoek("api/richtlijnen");
+  } catch (e) {
+    rlLijstEl.innerHTML = `<p class="leeg">Richtlijnen laden mislukt: ${rlEsc(e.message)}</p>`;
+  }
+}
+
+document.getElementById("btn-richtlijnen").addEventListener("click", () => {
+  rlOverlay.classList.remove("dicht");
+  laadRichtlijnen();
+});
+document.getElementById("rl-sluit").addEventListener("click", () =>
+  rlOverlay.classList.add("dicht"));
+rlOverlay.addEventListener("click", e => {
+  if (e.target === rlOverlay) rlOverlay.classList.add("dicht");
+});
+
+document.getElementById("rl-upload-knop").addEventListener("click", () =>
+  document.getElementById("rl-upload").click());
+document.getElementById("rl-upload").addEventListener("change", () => {
+  const veld = document.getElementById("rl-upload");
+  const file = veld.files[0];
+  if (!file) return;
+  const knop = document.getElementById("rl-upload-knop");
+  const lezer = new FileReader();
+  lezer.onload = async () => {
+    knop.disabled = true;
+    knop.textContent = "… uploaden en interpreteren (kan een minuut duren)";
+    try {
+      await rlVerzoek("api/richtlijnen/upload", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bestandsnaam: file.name, data_base64: lezer.result }),
+      });
+    } catch (e) {
+      alert("Uploaden mislukt: " + e.message);
+    } finally {
+      knop.disabled = false;
+      knop.textContent = "+ Richtlijn uploaden";
+      veld.value = "";
+    }
+  };
+  lezer.readAsDataURL(file);
+});
+
 /* ------------------------------------------------------------------- export */
 document.getElementById("btn-exp-geojson").addEventListener("click", () =>
   window.open("api/export/geojson?variant=" + actieveVariant));
 document.getElementById("btn-exp-xlsx").addEventListener("click", () =>
   window.open("api/export/xlsx?variant=" + actieveVariant));
+document.getElementById("btn-exp-dxf").addEventListener("click", () =>
+  window.open("api/export/dxf?variant=" + actieveVariant + "&projectnaam=" +
+    encodeURIComponent(document.getElementById("project-naam").value.trim())));
 
 /* -------------------------------------------- Street View langs het tracé
    Loop door het berekende tracé: klik met de Street View-tool op (of naast)
-   het tracé, of gebruik de knoppen/schuif in het paneel. Zonder sleutel wordt
-   het beeld ingebed via Googles sleutelloze embed-iframe (ongedocumenteerd
-   pb-formaat, geen API-sleutel nodig); met een GOOGLE_MAPS_API_KEY
+   het tracé, versleep de blauwe marker over het tracé (het beeld loopt mee),
+   of gebruik de knoppen/schuif/pijltjestoetsen in het paneel. Zonder sleutel
+   wordt het beeld ingebed via Googles sleutelloze embed-iframe (ongedocumen-
+   teerd pb-formaat, geen API-sleutel nodig); met een GOOGLE_MAPS_API_KEY
    (api/defaults) wordt het interactieve JS-panorama gebruikt — lopen ín het
-   beeld beweegt dan ook de kaartmarker mee. "↗ Google Maps" opent hetzelfde
-   punt met kijkrichting in een nieuw tabblad. */
+   beeld beweegt dan ook de kaartmarker mee. Het grijze oog toont waar de
+   camera werkelijk staat (die staat op de weg, het tracé vaak in de berm).
+   "↗ Google Maps" opent hetzelfde punt met kijkrichting in een nieuw tabblad. */
 
 const srcStreetview = new ol.source.Vector();
-map.addLayer(new ol.layer.Vector({
+const svLaag = new ol.layer.Vector({
   source: srcStreetview, zIndex: 31,
-  style: f => [
-    new ol.style.Style({  // kijkrichting-kegel
+  style: f => f.get("kind") === "camera" ? [
+    new ol.style.Style({  // kijkrichting-kegel op de werkelijke camerapositie
       image: new ol.style.RegularShape({
         points: 3, radius: 13, rotateWithView: true,
         rotation: ((f.get("heading") || 0) * Math.PI) / 180,
         fill: new ol.style.Fill({ color: "rgba(26,115,232,.30)" }),
       }),
     }),
-    new ol.style.Style({  // positie (pegman-blauw, contrasteert met het rode tracé)
+    new ol.style.Style({
       image: new ol.style.Circle({
-        radius: 5.5, fill: new ol.style.Fill({ color: "#1A73E8" }),
+        radius: 4, fill: new ol.style.Fill({ color: "#5F6368" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 1.5 }),
+      }),
+    }),
+  ] : [
+    new ol.style.Style({  // positie op het tracé (pegman-blauw, sleepbaar)
+      image: new ol.style.Circle({
+        radius: 6.5, fill: new ol.style.Fill({ color: "#1A73E8" }),
         stroke: new ol.style.Stroke({ color: "#fff", width: 2 }),
       }),
     }),
   ],
-}));
+});
+map.addLayer(svLaag);
 
 let svKey = "";                     // uit api/defaults; leeg = fallback zonder inbedding
 let svPano = null, svSvc = null, svGoogleBelofte = null;
@@ -1300,10 +2060,21 @@ function svChainageBij(coord) {  // dichtstbijzijnde punt op de route → chaina
   return bestM;
 }
 
-function svZetMarker(coord, heading) {
-  let f = srcStreetview.getFeatures()[0];
-  if (!f) { f = new ol.Feature(new ol.geom.Point(coord)); srcStreetview.addFeature(f); }
+function svFeature(kind) {
+  return srcStreetview.getFeatures().find(f => f.get("kind") === kind) || null;
+}
+
+function svZetMarker(coord) {  // blauwe stip op het tracé
+  let f = svFeature("trace");
+  if (!f) { f = new ol.Feature(new ol.geom.Point(coord)); f.set("kind", "trace"); srcStreetview.addFeature(f); }
   else f.setGeometry(new ol.geom.Point(coord));
+}
+
+function svZetCamera(coord, heading) {  // werkelijke camerapositie; null = verbergen
+  let f = svFeature("camera");
+  if (!coord) { if (f) srcStreetview.removeFeature(f); return; }
+  if (!f) { f = new ol.Feature(); f.set("kind", "camera"); srcStreetview.addFeature(f); }
+  f.setGeometry(new ol.geom.Point(coord));
   f.set("heading", heading);
 }
 
@@ -1357,6 +2128,7 @@ function svToonFrame(coord, heading) {  // sleutelloze inbedding (iframe)
       if (mijn !== svFrameVolgnr) return;  // inmiddels verder gestapt
       if (!pano) {
         fr.style.display = "none";
+        svZetCamera(null);
         svMelding("Geen Street View-beeld binnen 250 m van dit punt (het tracé " +
           "loopt hier niet langs een gefotografeerde weg). Stap verder of " +
           "bekijk het punt via ↗ Google Maps.");
@@ -1368,6 +2140,7 @@ function svToonFrame(coord, heading) {  // sleutelloze inbedding (iframe)
       const panoRd = proj4("EPSG:4326", "EPSG:28992", [pano.lon, pano.lat]);
       const afstand = Math.hypot(panoRd[0] - coord[0], panoRd[1] - coord[1]);
       if (afstand > 12) heading = svBearing(panoRd, coord);
+      svZetCamera(panoRd, heading);
       svMelding(afstand > 40
         ? `Dichtstbijzijnde beeld staat ± ${Math.round(afstand)} m van het ` +
           "tracé; de camera is op het tracépunt gericht."
@@ -1378,7 +2151,9 @@ function svToonFrame(coord, heading) {  // sleutelloze inbedding (iframe)
         `!2m2!1d${pano.lat.toFixed(6)}!2d${pano.lon.toFixed(6)}` +
         `!3f${Math.round(heading)}!4f0!5f0.7820865974627469`;
     } catch (e) {
-      if (mijn === svFrameVolgnr) { fr.style.display = "none"; svMelding(e.message); }
+      if (mijn === svFrameVolgnr) {
+        fr.style.display = "none"; svZetCamera(null); svMelding(e.message);
+      }
     }
   }, 250);
 }
@@ -1396,6 +2171,7 @@ function svLaadGoogle() {
   return svGoogleBelofte;
 }
 
+let svLaatstGezet = null;  // pano-id die wijzelf zetten (vs. lopen ín het beeld)
 async function svInitPano() {
   if (svPano) return;
   const gm = await svLaadGoogle();
@@ -1404,16 +2180,22 @@ async function svInitPano() {
     pov: { heading: 0, pitch: 0 },
     addressControl: false, motionTracking: false, enableCloseButton: false,
   });
-  // lopen kan ook ín het beeld (Google-pijlen): de kaartmarker volgt mee
+  // lopen kan ook ín het beeld (Google-pijlen): camera- en tracémarker volgen mee
   svPano.addListener("position_changed", () => {
     const p = svPano.getPosition();
     if (!p) return;
     const rd = proj4("EPSG:4326", "EPSG:28992", [p.lng(), p.lat()]);
-    const f = srcStreetview.getFeatures()[0];
-    if (f) f.setGeometry(new ol.geom.Point(rd));
+    svZetCamera(rd, svPano.getPov().heading);
+    // alleen bij navigatie dóór de gebruiker (niet door onze eigen setPano):
+    // chainage bijwerken zodat schuif, teller en blauwe marker meelopen
+    if (svPano.getPano() === svLaatstGezet || !svCum) return;
+    svLaatstGezet = svPano.getPano();
+    const m = svChainageBij(rd);
+    const op = svPuntOp(m);
+    if (Math.hypot(op[0] - rd[0], op[1] - rd[1]) < 150) svToonPositie(m);
   });
   svPano.addListener("pov_changed", () => {
-    const f = srcStreetview.getFeatures()[0];
+    const f = svFeature("camera");
     if (f) f.set("heading", svPano.getPov().heading);
   });
 }
@@ -1424,19 +2206,26 @@ function svMelding(tekst) {  // html of "" (verbergen)
   el.innerHTML = tekst || "";
 }
 
-async function svToon(m) {
-  if (!svCum) return;
+function svToonPositie(m) {  // marker, teller, schuif en externe link — geen beeld laden
+  if (!svCum) return false;
   const tot = svCum[svCum.length - 1];
   svChainage = Math.max(0, Math.min(m, tot));
   const coord = svPuntOp(svChainage);
   const heading = svHeadingOp(svChainage);
-  svZetMarker(coord, heading);
+  svZetMarker(coord);
   sv("sv-positie").textContent = `${Math.round(svChainage)} / ${Math.round(tot)} m`;
   sv("sv-slider").max = Math.round(tot);
   sv("sv-slider").value = Math.round(svChainage);
   const [lon, lat] = rdNaarWgs(coord);
   sv("sv-extern").href = "https://www.google.com/maps/@?api=1&map_action=pano" +
     `&viewpoint=${lat.toFixed(6)},${lon.toFixed(6)}&heading=${Math.round(heading)}`;
+  return true;
+}
+
+async function svLaadBeeld() {  // beeld op de huidige chainage laden
+  const coord = svPuntOp(svChainage);
+  let heading = svHeadingOp(svChainage);
+  const [lon, lat] = rdNaarWgs(coord);
   if (!svKey) { svToonFrame(coord, heading); return; }  // sleutelloos iframe
   try {
     await svInitPano();
@@ -1456,16 +2245,34 @@ async function svToon(m) {
         "tracé; de camera is op het tracépunt gericht."
       : "");
     svPano.setVisible(true);
+    svLaatstGezet = r.data.location.pano;  // eigen update: chainage niet terugzetten
     svPano.setPano(r.data.location.pano);
     svPano.setPov({ heading, pitch: 0 });
   } catch (e) {
+    if (e.message === "Google Maps-script laden mislukt") {
+      svKey = "";                       // sleutel onbruikbaar → sleutelloos verder
+      svToonFrame(coord, heading);
+      return;
+    }
     if (svPano) svPano.setVisible(false);
+    svZetCamera(null);
     svMelding(e.message && e.message.includes("mislukt")
       ? e.message
       : "Geen Street View-beeld binnen 250 m van dit punt (het tracé loopt hier " +
         "niet langs een gefotografeerde weg). Stap verder of " +
         "bekijk het punt via ↗ Google Maps.");
   }
+}
+
+function svToon(m) {
+  if (svToonPositie(m)) svLaadBeeld();
+}
+
+let svLaadTimer = null;
+function svToonVertraagd(m) {  // tijdens slepen/schuiven: marker direct, beeld even later
+  if (!svToonPositie(m)) return;
+  clearTimeout(svLaadTimer);
+  svLaadTimer = setTimeout(svLaadBeeld, 300);
 }
 
 function svOpen(coord) {
@@ -1480,6 +2287,7 @@ function svOpen(coord) {
 function svSluit() {
   svStopLopen();
   clearTimeout(svFrameTimer);
+  clearTimeout(svLaadTimer);
   sv("sv-paneel").classList.add("dicht");
   srcStreetview.clear();
   if (mode === "street") setMode("pan");
@@ -1505,7 +2313,7 @@ sv("sv-terug").addEventListener("click", () => { svStopLopen(); svToon(svChainag
 sv("sv-vooruit").addEventListener("click", () => { svStopLopen(); svToon(svChainage + svStap()); });
 sv("sv-slider").addEventListener("input", () => {
   svStopLopen();
-  svToon(parseFloat(sv("sv-slider").value));
+  svToonVertraagd(parseFloat(sv("sv-slider").value));  // beeld volgt de schuif met korte pauze
 });
 sv("sv-play").addEventListener("click", () => {
   if (svTimer) { svStopLopen(); return; }
@@ -1515,6 +2323,39 @@ sv("sv-play").addEventListener("click", () => {
     if (!svCum || svChainage >= svCum[svCum.length - 1]) { svStopLopen(); return; }
     svToon(svChainage + svStap());
   }, 1800);
+});
+
+/* Marker over het tracé slepen: het Street View-beeld loopt mee. */
+function svSleepbaar(pixel) {
+  if (sv("sv-paneel").classList.contains("dicht") || !svCum) return false;
+  return !!map.forEachFeatureAtPixel(pixel,
+    f => f.get("kind") === "trace",
+    { hitTolerance: 10, layerFilter: l => l === svLaag });
+}
+
+map.addInteraction(new (class extends ol.interaction.Pointer {
+  handleDownEvent(evt) {
+    if (!svSleepbaar(evt.pixel)) return false;
+    svStopLopen();
+    return true;  // sleep starten; kaartpan en andere interacties blokkeren
+  }
+  handleDragEvent(evt) {
+    svToonVertraagd(svChainageBij(evt.coordinate));
+  }
+  handleUpEvent() {
+    clearTimeout(svLaadTimer);
+    svLaadBeeld();
+    return false;
+  }
+})());
+
+/* Pijltjestoetsen: langs het tracé stappen zolang het paneel open is. */
+document.addEventListener("keydown", e => {
+  if (sv("sv-paneel").classList.contains("dicht")) return;
+  if (e.target.closest("input, select, textarea") || e.target.isContentEditable) return;
+  if (sv("sv-pano").contains(document.activeElement)) return;  // Google-pijlen in het beeld
+  if (e.key === "ArrowRight") { e.preventDefault(); svStopLopen(); svToon(svChainage + svStap()); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); svStopLopen(); svToon(svChainage - svStap()); }
 });
 
 /* ------------------------------------------------- ontwerpnota's (VO/DO/UO)
@@ -1528,6 +2369,8 @@ const NOTA_FOUT_MARK = "[NOTA-FOUT]";
 let notaAbort = null;
 let notaMarkdown = "";
 let notaFase = "";
+let docModus = "nota";   // "nota" of "bureau" — bepaalt het download-endpoint
+let bureauNr = "";       // OND-nummer van het lopende bureauonderzoek
 
 /* Begrensde Markdown → HTML (zelfde subset als backend/nota.py) */
 function mdNaarHtml(md) {
@@ -1587,7 +2430,7 @@ function notaTitelblok(fase) {
   const datum = new Date().toLocaleDateString("nl-NL",
     { day: "2-digit", month: "2-digit", year: "numeric" });
   return `<div class="nota-titelblok">
-    <div class="nota-kicker">Kabelbed · Ontwerpnota middenspanningstracé</div>
+    <div class="nota-kicker">InfraEngine · Ontwerpnota middenspanningstracé</div>
     <div class="nota-fase">${NOTA_FASEN[fase]} <span>(${fase})</span></div>
     <table class="nota-meta">
       <tr><td>Project</td><td>${proj}</td></tr>
@@ -1615,6 +2458,7 @@ async function startNota(fase) {
   const status = document.getElementById("nota-substatus");
   const dl = document.getElementById("nota-download");
 
+  docModus = "nota";
   notaFase = fase;
   notaMarkdown = "";
   overlay.classList.remove("dicht");
@@ -1683,10 +2527,15 @@ document.getElementById("nota-download").addEventListener("click", async () => {
   status.textContent = "Word-document opmaken…";
   try {
     const naam = document.getElementById("project-naam").value.trim();
-    const r = await fetch("api/nota/docx", {
+    const url = docModus === "bureau" ? "api/bureau/docx" : "api/nota/docx";
+    const body = docModus === "bureau"
+      ? { nr: bureauNr, variant: actieveVariant,
+          projectnaam: naam, markdown: notaMarkdown }
+      : { fase: notaFase, variant: actieveVariant,
+          projectnaam: naam, markdown: notaMarkdown };
+    const r = await fetch(url, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fase: notaFase, variant: actieveVariant,
-                             projectnaam: naam, markdown: notaMarkdown }),
+      body: JSON.stringify(body),
     });
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
@@ -1697,16 +2546,160 @@ document.getElementById("nota-download").addEventListener("click", async () => {
     const m = cd.match(/filename="([^"]+)"/);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = m ? m[1] : `${notaFase}-nota.docx`;
+    a.download = m ? m[1] : (docModus === "bureau"
+      ? `bureauonderzoek_${bureauNr}.docx` : `${notaFase}-nota.docx`);
     a.click();
     URL.revokeObjectURL(a.href);
     status.textContent = "Word-document gedownload.";
+    if (docModus === "bureau") {
+      // register lokaal bijwerken (backend deed dat al in LAST_RESULT)
+      const o = (resultaat.varianten[actieveVariant].onderzoeken || [])
+        .find(x => x.nr === bureauNr);
+      if (o) {
+        o.conclusie = "AI-bureauonderzoek uitgevoerd — toetsing vereist";
+        o.status = "concept (AI)";
+        if (actieveTab === "onderzoeken") toonResultaat();
+      }
+    }
   } catch (e) {
     status.textContent = `Fout bij downloaden: ${e.message}`;
   } finally {
     dl.disabled = false;
   }
 });
+
+/* ------------------------------------------------- AI-bureauonderzoeken
+   Per onderzoek uit het register kan de AI een bureauonderzoek uitvoeren
+   als alle benodigde data gekoppeld is. De backend bepaalt per soort ook
+   de juridische status: bruikbaar na toetsing, deskundige/veldwerk nodig,
+   of wettelijk voorbehouden aan een gecertificeerd bureau. */
+
+const BUREAU_CHIP = { zelf: "info", bureau_aanbevolen: "waarschuwing",
+                      bureau_verplicht: "kritiek" };
+
+async function laadBureauOpties() {
+  let opties;
+  try {
+    const r = await fetch(`api/bureau/opties?variant=${actieveVariant}`);
+    if (!r.ok) return;
+    opties = (await r.json()).opties;
+  } catch { return; }
+  for (const o of opties) {
+    const cel = document.querySelector(`.bureau-cel[data-nr="${o.nr}"]`);
+    if (!cel) continue;
+    cel.textContent = "";
+    if (!o.uitvoerbaar) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = "niet automatisch";
+      chip.title = o.reden;
+      cel.appendChild(chip);
+      continue;
+    }
+    const knop = document.createElement("button");
+    knop.className = "btn-bureau";
+    knop.textContent = "▶ Uitvoeren (AI)";
+    knop.title = "Bureauonderzoek door AI uitvoeren op de gekoppelde data";
+    knop.addEventListener("click", () => startBureau(o));
+    const chip = document.createElement("span");
+    chip.className = `chip ${BUREAU_CHIP[o.validiteit.status] || ""}`;
+    chip.textContent = o.validiteit.label;
+    chip.title = `${o.validiteit.grondslag}\n\n${o.validiteit.toelichting}`;
+    cel.appendChild(knop);
+    cel.appendChild(document.createTextNode(" "));
+    cel.appendChild(chip);
+  }
+}
+
+function bureauTitelblok(o) {
+  const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const proj = document.getElementById("project-naam").value.trim() || "zonder naam";
+  const v = resultaat.varianten[actieveVariant];
+  const datum = new Date().toLocaleDateString("nl-NL",
+    { day: "2-digit", month: "2-digit", year: "numeric" });
+  return `<div class="nota-titelblok">
+    <div class="nota-kicker">InfraEngine · Bureauonderzoek</div>
+    <div class="nota-fase">${esc(o.soort)} <span>(${esc(o.nr)})</span></div>
+    <table class="nota-meta">
+      <tr><td>Project</td><td>${esc(proj)}</td></tr>
+      <tr><td>Gemeente</td><td>${esc(resultaat.gemeente || "onbekend")}</td></tr>
+      <tr><td>Variant</td><td>${esc(v.naam)} — ${Math.round(v.lengte_m)} m</td></tr>
+      <tr><td>Datum</td><td>${datum}</td></tr>
+      <tr><td>Validiteit</td><td>${esc(o.validiteit.label)}</td></tr>
+      <tr><td>Status</td><td>Concept — AI-gegenereerd, toetsing vereist</td></tr>
+    </table>
+  </div>`;
+}
+
+async function startBureau(o) {
+  const overlay = document.getElementById("nota-overlay");
+  const sheet = document.getElementById("nota-sheet");
+  const wrap = document.getElementById("nota-sheetwrap");
+  const status = document.getElementById("nota-substatus");
+  const dl = document.getElementById("nota-download");
+
+  docModus = "bureau";
+  bureauNr = o.nr;
+  notaMarkdown = "";
+  overlay.classList.remove("dicht");
+  document.getElementById("nota-koptitel").textContent =
+    `Bureauonderzoek — ${o.soort}`;
+  const titelblok = bureauTitelblok(o);
+  sheet.innerHTML = titelblok;
+  sheet.classList.add("bezig");
+  dl.disabled = true;
+  status.textContent = "AI onderzoekt…";
+
+  notaAbort = new AbortController();
+  const t0 = Date.now();
+  const tik = setInterval(() => {
+    status.textContent = `AI onderzoekt… ${Math.round((Date.now() - t0) / 1000)}s`;
+  }, 1000);
+
+  let renderGepland = false;
+  const render = () => {
+    renderGepland = false;
+    const md = notaMarkdown.split(NOTA_FOUT_MARK)[0];
+    sheet.innerHTML = titelblok + mdNaarHtml(md);
+    wrap.scrollTop = wrap.scrollHeight;
+  };
+
+  try {
+    const naam = document.getElementById("project-naam").value.trim();
+    const r = await fetch(`api/bureau/stream?nr=${encodeURIComponent(o.nr)}` +
+                          `&variant=${actieveVariant}` +
+                          `&projectnaam=${encodeURIComponent(naam)}`,
+                          { signal: notaAbort.signal });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || `HTTP ${r.status}`);
+    }
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      notaMarkdown += decoder.decode(value, { stream: true });
+      if (!renderGepland) { renderGepland = true; setTimeout(render, 120); }
+    }
+    notaMarkdown += decoder.decode();
+    render();
+    if (notaMarkdown.includes(NOTA_FOUT_MARK)) {
+      const fout = notaMarkdown.split(NOTA_FOUT_MARK)[1].trim();
+      status.textContent = `Fout: ${fout}`;
+    } else {
+      status.textContent = `Gereed (${Math.round((Date.now() - t0) / 1000)}s).`;
+      dl.disabled = false;
+    }
+  } catch (e) {
+    if (e.name !== "AbortError")
+      status.textContent = `Fout: ${e.message}`;
+  } finally {
+    clearInterval(tik);
+    sheet.classList.remove("bezig");
+    notaAbort = null;
+  }
+}
 
 document.querySelectorAll(".btn-nota").forEach(btn =>
   btn.addEventListener("click", () => startNota(btn.dataset.fase)));

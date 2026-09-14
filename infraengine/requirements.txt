@@ -8,3 +8,4 @@ numpy==2.4.6
 scikit-image==0.26.0
 openpyxl==3.1.5
 pillow==12.3.0
+ezdxf==1.4.4

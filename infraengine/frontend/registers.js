@@ -1,4 +1,4 @@
-/* Kabelbed — registerpagina (FO §6): alle registers op een eigen pagina
+/* InfraEngine — registerpagina (FO §6): alle registers op een eigen pagina
    (#registers) in tabellen met sorteren, kolomfilters, vrije zoektekst en
    inline bewerken; de kaart schuift mee naar het rechterpaneel en zoomt naar
    de geselecteerde rij.
@@ -133,11 +133,45 @@ const REG_DEF = {
         toon: r => r.uittredepunt_rd.join(", ") },
       { k: "dekking_eis", label: "Dekking-eis", edit: true },
       { k: "mantelbuis", label: "Mantelbuis", edit: true },
+      { k: "sonderingen", label: "Sonderingen (BRO)",
+        toon: r => (r.sonderingen && r.sonderingen.length)
+          ? r.sonderingen.map(s => `${s.nr} (${s.bro_id})`).join(", ")
+          : (r.sonderingen_bro || ""),
+        sorteer: r => (r.sonderingen || []).length },
       { k: "werkterrein_oordeel", label: "Werkterrein",
         chip: r => WT_CHIP[r.werkterrein_oordeel] ?? "" },
       { k: "status", label: "Status", edit: { opties: REG_STATUS_UITVOERING },
         chip: () => "" },
       { k: "verantwoordelijke", label: "Verantwoordelijke", edit: true },
+    ],
+  },
+  sonderingen: {
+    titel: "Sonderingen",
+    data: v => v.sonderingen || [],
+    zoom: r => r.punt,
+    leeg: "Geen bestaande sonderingen (BRO) binnen de zoekafstand van het tracé.",
+    kolommen: [
+      { k: "nr", label: "Nr" },
+      { k: "werkpakket", label: "WP" },
+      { k: "bro_id", label: "BRO-ID" },
+      { k: "chainage_m", label: "Chainage (m)", num: true },
+      { k: "afstand_trace_m", label: "Afstand tracé (m)", num: true },
+      { k: "einddiepte_m", label: "Einddiepte (m)", num: true },
+      { k: "maaiveld_nap", label: "Maaiveld (m NAP)", num: true },
+      { k: "kwaliteitsklasse", label: "Klasse" },
+      { k: "norm", label: "Norm" },
+      { k: "datum", label: "Datum" },
+      { k: "relevantie", label: "Relevantie", edit: true,
+        toon: r => (r.boringen && r.boringen.length)
+          ? `nabij ${r.boringen.join(", ")}` : (r.relevantie || "langs tracé") },
+      { k: "bro_loket", label: "BRO-loket", knop: r => ({
+          tekst: "loket ↗",
+          titel: "Sondering openen in het BRO-loket",
+          klik: () => window.open(r.bro_loket, "_blank", "noopener"),
+        }) },
+      { k: "opmerking", label: "Opmerking", edit: true },
+      { k: "status", label: "Status", edit: { opties: REG_STATUS_UITVOERING },
+        chip: () => "" },
     ],
   },
   onderzoeken: {

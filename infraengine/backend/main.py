@@ -1,10 +1,11 @@
-"""Kabelbed — Fase 1-prototype (FO §9).
+"""InfraEngine — Fase 1-prototype (FO §9).
 
 FastAPI-backend: datalagen ophalen, tracé rekenen, registers vullen,
 exporteren. Serveert ook de frontend (map ../frontend) op /.
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
 import math
@@ -21,8 +22,15 @@ from pydantic import BaseModel, Field
 from shapely.geometry import LineString, MultiPoint, Point, Polygon, mapping
 from shapely.ops import unary_union
 
+import ahn
+import brk
+import engine
+import grondwater
+import klic
 import nota as nota_mod
 import pdok
+import richtlijnen as rl_mod
+import sonderingen as son_mod
 import zro as zro_mod
 from calculatie import build_raw_calculatie
 from engine import (
@@ -30,12 +38,12 @@ from engine import (
     build_painter, build_segments,
     detect_crossings, propose_moffen, route_chunk, shortest_path,
     straighten_iteratief, zone_lengtes, _free_station, _techniek_voor_kruising,
-    DEFAULT_WEIGHTS, BOOM_WORTELZONE_M,
+    DEFAULT_WEIGHTS,
 )
 from registers import (
     VARIANT_PROFIELEN, build_boringen, build_checks, build_kosten,
-    build_mca_row, build_onderzoeken, build_planning, build_vergunningen,
-    build_werkpakketten, build_zro, ken_werkpakketten_toe,
+    build_mca_row, build_onderzoeken, build_planning, build_sonderingen,
+    build_vergunningen, build_werkpakketten, build_zro, ken_werkpakketten_toe,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,7 +64,20 @@ CORRIDOR_VANAF_M = 2500.0
 CHUNK_M = 1500.0
 CORRIDOR_BREEDTE_M = 160.0
 NAAD_RADIUS_M = 60.0
-CORRIDOR_CEL = 1.0
+# 0,5 m: bij 1 m krijgt een smalle stoep of berm (± 1,5 m) vaak geen enkel
+# celmidden en verdwijnt hij uit het raster — het tracé belandt dan onnodig
+# op de rijbaan of mist een doorgang
+CORRIDOR_CEL = 0.5
+
+# Waterkering (IMWA): beschermingszone rond de keringlijn die als weging
+# meetelt en de waterschapsvergunning triggert
+KERING_ZONE_M = 15.0
+# KLIC-import: buffer rond bestaande netten (weging) en zoekafstand voor de
+# melding "bestaande netten nabij" bij boringen
+KLIC_BUFFER_M = 1.5
+KLIC_ZOEK_M = 5.0
+# hoogteprofiel langs het volledige tracé alleen voor korte tracés (AHN-WCS)
+HOOGTEPROFIEL_MAX_M = 5000.0
 
 # Zelfherstellend zoeken: vindt een deeltraject binnen de standaardcorridor
 # geen doorgang (Natura 2000, aaneengesloten bebouwing, verboden zone), dan
@@ -65,9 +86,52 @@ CORRIDOR_CEL = 1.0
 BREEDTE_ESCALATIE = (CORRIDOR_BREEDTE_M, 2 * CORRIDOR_BREEDTE_M,
                      4 * CORRIDOR_BREEDTE_M, 8 * CORRIDOR_BREEDTE_M)
 
-app = FastAPI(title="Kabelbed", version="0.1")
+app = FastAPI(title="InfraEngine", version="0.1")
+
+# Basic-auth voor de hele app, alleen actief als BASIC_AUTH_WACHTWOORD is
+# gezet. Voor hosting zonder eigen reverse proxy (bijv. Render): de app
+# heeft geen eigen gebruikersbeheer en de API kan bestanden schrijven en
+# API-tegoed verbruiken, dus zonder slagboom niet openbaar zetten. Achter
+# Caddy (docker-compose) blijft de variabele leeg en doet Caddy de auth.
+BASIC_AUTH_GEBRUIKER = os.getenv("BASIC_AUTH_GEBRUIKER", "infraengine")
+BASIC_AUTH_WACHTWOORD = os.getenv("BASIC_AUTH_WACHTWOORD", "")
+
+if BASIC_AUTH_WACHTWOORD:
+    import secrets
+
+    from fastapi import Request
+    from fastapi.responses import Response
+
+    @app.middleware("http")
+    async def _basic_auth(request: Request, call_next):
+        if request.url.path == "/healthz":  # health check van het platform
+            return await call_next(request)
+        header = request.headers.get("authorization", "")
+        ok = False
+        if header.startswith("Basic "):
+            try:
+                user, _, pw = base64.b64decode(header[6:]).decode().partition(":")
+                ok = (secrets.compare_digest(user, BASIC_AUTH_GEBRUIKER)
+                      and secrets.compare_digest(pw, BASIC_AUTH_WACHTWOORD))
+            except Exception:
+                ok = False
+        if not ok:
+            return Response(status_code=401, content="Inloggen vereist",
+                            headers={"WWW-Authenticate": 'Basic realm="InfraEngine"'})
+        return await call_next(request)
 
 LAST_RESULT: dict | None = None  # voor exports (single-user prototype)
+
+
+@app.get("/healthz")
+def healthz():
+    """Onbeveiligde health check (Render e.d.); geeft geen data prijs."""
+    return {"status": "ok"}
+
+# Wegingsprofiel-overrides uit actieve richtlijnen (beheerscherm ⚖); gezet
+# aan het begin van elke berekening. Volgorde: standaard < richtlijn <
+# expliciete gebruikersinstelling < variantprofiel.
+RL_WEIGHTS: dict = {}
 
 # Voortgang van de lopende berekening (single-user prototype); de frontend
 # pollt GET /api/progress zolang een lange berekening loopt.
@@ -149,6 +213,7 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         f_amk = ex.submit(pdok.fetch_amk, bbox)
         f_bomen = ex.submit(pdok.fetch_bomen, bbox)
         f_bomen_reg = ex.submit(pdok.fetch_bomen_regionaal, bbox)
+        f_boomdek = ex.submit(pdok.fetch_bomenkaart_dekking, bbox)
         f_reg = ex.submit(pdok.regionale_bodem_masks, bbox, dims.ncols, dims.nrows)
         f_nnn = mask(pdok.NNN_WMS, "PS.ProtectedSite")
         f_gwb = mask(pdok.GWB_WMS, "AM.DrinkingWaterProtectionArea")
@@ -157,6 +222,14 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         f_sad = mask(pdok.SAD_WMS, "sad")
         f_wbb = mask(pdok.BODEMLOKET_WMS, "WBB_locaties")
         f_dek = mask(pdok.BODEMLOKET_WMS, "Beschikbaarheid_gegevens")
+        f_stilte = mask(pdok.STILTE_WMS, "PS.ProtectedSite")
+        f_nwb = ex.submit(pdok.fetch_nwb_wegvakken, bbox)
+        f_legger = ex.submit(pdok.fetch_legger_watergangen, bbox)
+        f_kering = ex.submit(pdok.fetch_keringen, bbox)
+        f_monument = ex.submit(pdok.fetch_rijksmonumenten, bbox)
+        f_nge = ex.submit(pdok.regionale_nge_masks, bbox, dims.ncols, dims.nrows)
+        f_buis = ex.submit(pdok.regionale_buisleiding_masks, bbox,
+                           dims.ncols, dims.nrows)
 
         bgt = veilig("bgt", f_bgt, {})
         percelen = veilig("dkk-percelen", f_perc, [])
@@ -165,11 +238,27 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         amk = veilig("amk", f_amk, [])
         bomen_bgt = veilig("bomen (BGT vegetatieobject)", f_bomen, [])
         bomen_reg, bomen_bronnen = veilig("bomen (regionaal)", f_bomen_reg, ([], []))
+        bomen_rivm = veilig("bomenkaart RIVM (dekking)", f_boomdek, None)
         reg_verontreinigd, reg_onderzoek, bodem_bronnen = veilig(
             "bodem regionaal", f_reg, ([], [], []))
+        nwb = veilig("nwb-wegvakken", f_nwb, [])
+        legger_water = veilig("legger watergangen (IMWA)", f_legger, [])
+        keringen = veilig("waterkeringen (IMWA)", f_kering, [])
+        monumenten = veilig("rijksmonumenten (RCE)", f_monument, [])
+        nge_masks, nge_bronnen = veilig("nge regionaal", f_nge, ([], []))
+        buis_masks, buis_bronnen = veilig("buisleidingen", f_buis, ([], []))
         nnn_mask, gwb_mask = f_nnn.result(), f_gwb.result()
         sld1, sld2 = f_sld1.result(), f_sld2.result()
         sad, wbb, dek = f_sad.result(), f_wbb.result(), f_dek.result()
+        stilte_mask = f_stilte.result()
+
+    # bestaande netten uit een eventuele KLIC-import (lokaal bestand; leeg
+    # zolang er geen KLIC-toegang is — voorbereid koppelvlak)
+    try:
+        klic_geoms = klic.fetch_geoms(bbox)
+    except Exception as e:
+        fouten.append(f"klic-import: {e}")
+        klic_geoms = []
 
     # bomen samenvoegen met ontdubbeling (~2 m raster): dezelfde boom kan in de
     # BGT én een gemeentelijk register staan; het register gaat voor (kroon)
@@ -181,7 +270,7 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
             continue
         bomen_gezien.add(sleutel)
         bomen.append((g, p))
-    boom_zones = [(g, max(BOOM_WORTELZONE_M, (p.get("kroon_m") or 0.0) / 2.0))
+    boom_zones = [(g, max(engine.BOOM_WORTELZONE_M, (p.get("kroon_m") or 0.0) / 2.0))
                   for g, p in bomen]
 
     zone_data = {
@@ -193,10 +282,18 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         "bodem_mask": _or_masks(sld1, sld2, *reg_verontreinigd),
         "bodem_onderzoek_mask": _or_masks(sad, wbb, *reg_onderzoek),
         "bodem_dekking_mask": dek,
+        "stilte_mask": stilte_mask,
+        "monument": [g for g, _ in monumenten],
+        "nge_mask": _or_masks(*nge_masks) if nge_masks else None,
+        # keringlijnen + beschermingszone als weging; kruisen mag, maar kost
+        "keringen": [g.buffer(KERING_ZONE_M) for g, _ in keringen],
+        "buisleiding_mask": _or_masks(*buis_masks) if buis_masks else None,
+        "klic": [g.buffer(KLIC_BUFFER_M) for g, _ in klic_geoms],
     }
     for naam, sleutel in (("natuurnetwerk", "nnn_mask"), ("grondwaterbescherming", "gwb_mask"),
                           ("bodem BRO SLD", "bodem_mask"),
-                          ("bodem BRO SAD/Wbb", "bodem_onderzoek_mask")):
+                          ("bodem BRO SAD/Wbb", "bodem_onderzoek_mask"),
+                          ("stiltegebieden", "stilte_mask")):
         if zone_data[sleutel] is None:
             fouten.append(f"{naam}: WMS-masker niet beschikbaar")
     return {
@@ -204,9 +301,78 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         "zone_data": zone_data, "boom_zones": boom_zones,
         "bomen_bronnen": ((["BGT vegetatieobject"] if bomen_bgt else [])
                           + list(bomen_bronnen)),
+        "bomen_rivm_fractie": bomen_rivm,
         "bodem_bronnen": list(bodem_bronnen),
+        "nge_bronnen": list(nge_bronnen),
+        "buisleiding_bronnen": list(buis_bronnen),
+        "nwb": nwb, "legger_water": legger_water, "keringen": keringen,
+        "klic_geoms": klic_geoms,
         "laag_fouten": fouten,
     }
+
+
+def _verrijk_boringen(route: LineString, boringen: list) -> None:
+    """Boringen verrijken met BRO-sonderingen, AHN-hoogteprofiel en KLIC-netten.
+
+    Tolerant: een falende dienst levert "onbekend", geen fout. De KLIC-melding
+    komt uit de lokale import (voorbereid koppelvlak) en blijft "niet
+    gekoppeld" zolang er geen levering is ingelezen.
+    """
+    klic_ok = klic.status()["gekoppeld"]
+    b_route = route.bounds
+    klic_geoms = (klic.fetch_geoms((b_route[0] - 50, b_route[1] - 50,
+                                    b_route[2] + 50, b_route[3] + 50))
+                  if klic_ok else [])
+    for b in boringen:
+        # sonderingen_bro en de koppeling naar het sonderingenregister worden
+        # in registers.build_sonderingen gezet (BRO-kenmerken, niet de WMS)
+        coords = (b.get("geometry") or {}).get("coordinates")
+        if coords and len(coords) >= 2:
+            try:
+                profiel = ahn.profiel_langs_lijn(
+                    coords, stap_m=2.0 if b["lengte_m"] <= 60 else 5.0)
+            except Exception:
+                profiel = None
+            if profiel:
+                b["hoogteprofiel"] = [[m, z] for m, z in profiel]
+                b.update(ahn.profiel_samenvatting(profiel))
+        if not klic_ok:
+            b["bestaande_netten"] = "onbekend — KLIC niet gekoppeld (licentie)"
+        else:
+            lijn = LineString([tuple(c) for c in coords]) if coords else None
+            n = sum(1 for g, _ in klic_geoms
+                    if lijn is not None and g.distance(lijn) <= KLIC_ZOEK_M)
+            b["bestaande_netten"] = (
+                f"{n} net(ten) binnen {KLIC_ZOEK_M:g} m (KLIC-import)" if n
+                else f"geen netten binnen {KLIC_ZOEK_M:g} m (KLIC-import)")
+
+
+def _sonderingen_register(route: LineString, boringen: list,
+                          laag_fouten: list) -> list:
+    """Sonderingenregister vullen uit de BRO; falen wordt gemeld, niet fataal."""
+    try:
+        cpts = son_mod.langs_route(list(route.coords))
+    except Exception as e:
+        melding = f"sonderingen (BRO CPT): {e}"
+        if melding not in laag_fouten:
+            laag_fouten.append(melding)
+        cpts = None
+    return build_sonderingen(route, cpts, boringen)
+
+
+def _trace_hoogteprofiel(route: LineString) -> tuple:
+    """(profiel, samenvatting) langs het tracé (AHN); (None, {}) bij falen
+    of te lange tracés."""
+    if route.length > HOOGTEPROFIEL_MAX_M:
+        return None, {}
+    try:
+        stap = max(5.0, route.length / 400)
+        profiel = ahn.profiel_langs_lijn(list(route.coords), stap_m=stap)
+    except Exception:
+        profiel = None
+    if not profiel:
+        return None, {}
+    return [[m, z] for m, z in profiel], ahn.profiel_samenvatting(profiel)
 
 
 # ---------------------------------------------------------------------------
@@ -308,10 +474,11 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     gemeenten: list = []
     bomen_alle: list = []
     bomen_gezien: set = set()
+    bomen_rivm_fracties: list = []
     percelen_alle: dict = {}
     laag_fouten: dict = {}
     bgt_fouten: dict = {}
-    bron_namen = {"bodem": [], "bomen": []}
+    bron_namen = {"bodem": [], "bomen": [], "nge": [], "buisleiding": []}
     t_data = 0.0
 
     def merk_data(data: dict) -> None:
@@ -324,7 +491,9 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             bgt_fouten[naam] = bgt_fouten.get(naam, 0) + 1
         if data["gemeente"] and data["gemeente"] not in gemeenten:
             gemeenten.append(data["gemeente"])
-        for soort, sleutel in (("bodem", "bodem_bronnen"), ("bomen", "bomen_bronnen")):
+        for soort, sleutel in (("bodem", "bodem_bronnen"), ("bomen", "bomen_bronnen"),
+                               ("nge", "nge_bronnen"),
+                               ("buisleiding", "buisleiding_bronnen")):
             for naam in data[sleutel]:
                 if naam not in bron_namen[soort]:
                     bron_namen[soort].append(naam)
@@ -338,6 +507,8 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             if sleutel not in bomen_gezien:
                 bomen_gezien.add(sleutel)
                 bomen_alle.append((g, r))
+        if data.get("bomen_rivm_fractie") is not None:
+            bomen_rivm_fracties.append(data["bomen_rivm_fractie"])
 
     verbreed: list = []  # [{deeltraject, breedte_m}] voor de melding aan de gebruiker
 
@@ -385,7 +556,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 if st["fout"]:
                     continue
                 _voortgang(f"deeltraject {i + 1}/{len(chunks)}: route rekenen ({naam})")
-                weights = {**DEFAULT_WEIGHTS, **req.weights, **overrides}
+                weights = {**DEFAULT_WEIGHTS, **RL_WEIGHTS, **req.weights, **overrides}
                 start = tuple(st["coords"][-1]) if st["coords"] else tuple(waypoints[0])
 
                 coords = grid = None
@@ -418,6 +589,10 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                     deel = LineString(coords)
                     deel = straighten_iteratief(deel, bgt_deel, grid)
                     kruisingen = detect_crossings(deel, bgt_deel)
+                    engine.verrijk_kruisingen(kruisingen,
+                                              datas[breedte]["legger_water"],
+                                              datas[breedte]["nwb"],
+                                              pdok.waterschap_naam)
                     beoordeel_werkterreinen(deel, kruisingen, grid)
                     segmenten = build_segments(deel, grid)
                     zl = zone_lengtes(deel, grid)
@@ -444,6 +619,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     gemeente = " / ".join(gemeenten) if gemeenten else None
     percelen = list(percelen_alle.values())
     varianten, fouten = [], []
+    son_fouten: list = []  # BRO-sondeerdienst-fouten (gedeeld over varianten)
     for naam in profielen:
         st = staat[naam]
         if st["fout"]:
@@ -456,13 +632,18 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         moffen = propose_moffen(route, kruisingen, segmenten, req.haspel_m)
         vergunningen = build_vergunningen(segmenten, kruisingen, gemeente, zones_m)
         boringen = build_boringen(route, kruisingen)
+        _verrijk_boringen(route, boringen)
+        son_register = _sonderingen_register(route, boringen, son_fouten)
+        hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
         onderzoeken = build_onderzoeken(zones_m, boringen)
         zro = build_zro(route, percelen)
-        checks = build_checks(route, segmenten, kruisingen, boringen, zones_m)
+        checks = build_checks(route, segmenten, kruisingen, boringen, zones_m,
+                              bomen_rivm_fractie=(max(bomen_rivm_fracties)
+                                                  if bomen_rivm_fracties else None))
         werkpakketten = build_werkpakketten(route, req.stations)
         ken_werkpakketten_toe(werkpakketten, route, segmenten, kruisingen,
                               boringen, moffen, zro, vergunningen,
-                              onderzoeken, checks)
+                              onderzoeken, checks, son_register)
         planning = build_planning(werkpakketten, vergunningen, onderzoeken,
                                   boringen, zro)
         kosten = build_kosten(segmenten, kruisingen, zro, moffen, onderzoeken)
@@ -473,15 +654,18 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         mca = build_mca_row(naam, route, segmenten, kruisingen, zro, vergunningen, kosten)
         varianten.append({
             "naam": naam,
-            "wegingsprofiel": {**DEFAULT_WEIGHTS, **req.weights, **profielen[naam]},
+            "wegingsprofiel": {**DEFAULT_WEIGHTS, **RL_WEIGHTS, **req.weights, **profielen[naam]},
             "route": mapping(route),
             "lengte_m": round(route.length, 1),
             "kruisingen": kruisingen,
             "segmenten": segmenten,
             "zones": {ZONE_NAMES[bit]: m for bit, m in zones_m.items() if m > 0},
+            "hoogteprofiel": hoogteprofiel,
+            "hoogte": hoogte_info,
             "moffen": moffen,
             "vergunningen": vergunningen,
             "boringen": boringen,
+            "sonderingen": son_register,
             "onderzoeken": onderzoeken,
             "zro": zro,
             "toetsing": checks,
@@ -520,11 +704,19 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         "rekentijd_s": {"datalagen": round(t_data, 1),
                         "route": round(time.time() - t0 - t_data, 1)},
         "bgt_fouten": [f"{naam} ({n}× deeltraject)" for naam, n in sorted(bgt_fouten.items())],
-        "laag_fouten": [f"{naam} ({n}× deeltraject)" for naam, n in sorted(laag_fouten.items())],
+        "laag_fouten": ([f"{naam} ({n}× deeltraject)"
+                         for naam, n in sorted(laag_fouten.items())]
+                        + son_fouten),
         "bodem_bronnen_regionaal": bron_namen["bodem"],
+        "nge_bronnen_regionaal": bron_namen["nge"],
+        "buisleiding_bronnen": bron_namen["buisleiding"],
+        "klic": klic.status(),
+        "brk": brk.status(),
         "gebied": mapping(corridor),
         "bomen": [[round(g.x, 2), round(g.y, 2), round(r, 1)] for g, r in bomen_alle],
         "bomen_bronnen": bron_namen["bomen"],
+        "bomen_rivm_fractie": (round(max(bomen_rivm_fracties), 3)
+                               if bomen_rivm_fracties else None),
         "varianten": varianten,
         "variant_fouten": fouten,
         "stations": req.stations,
@@ -533,10 +725,15 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
 
 @app.post("/api/compute")
 def compute(req: ComputeRequest):
-    global LAST_RESULT
+    global LAST_RESULT, RL_WEIGHTS
     t0 = time.time()
     if len(req.stations) < 2:
         raise HTTPException(400, "Plaats minimaal twee MS-stations.")
+
+    # actieve richtlijnen (beheerscherm ⚖) toepassen: engine-drempels worden
+    # gereset en overschreven; wegingsprofiel-overrides gaan onder req.weights
+    rl_over = rl_mod.pas_toe()
+    RL_WEIGHTS = rl_over["weights"]
 
     waypoints = _insert_via(req.stations, req.via)
     hemelsbreed = sum(math.hypot(b[0] - a[0], b[1] - a[1])
@@ -551,9 +748,9 @@ def compute(req: ComputeRequest):
             # lang tracé: per deeltraject rekenen (een eventueel getekend
             # projectgebied wordt genegeerd; verboden zones blijven gelden)
             result = _compute_corridor(req, waypoints, hemelsbreed, t0)
-            LAST_RESULT = result
-            return result
-        result = _compute_gebied(req, waypoints, t0)
+        else:
+            result = _compute_gebied(req, waypoints, t0)
+        result["richtlijnen_toegepast"] = rl_over["actief"]
         LAST_RESULT = result
         return result
     finally:
@@ -585,7 +782,9 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
 
     xmin, ymin, xmax, ymax = gebied.bounds
     bbox = (xmin - BBOX_BUFFER_M, ymin - BBOX_BUFFER_M, xmax + BBOX_BUFFER_M, ymax + BBOX_BUFFER_M)
-    cell = 0.5 if km2 <= 1.0 else 1.0
+    # 0,5 m waar het kan; grotere gebieden 0,75 m — bij 1 m verliest het raster
+    # smalle stoepen en bermen (± 1,5 m) en schampt het tracé over de rijbaan
+    cell = 0.5 if km2 <= 1.5 else 0.75
 
     # --- datalagen (open bronnen), parallel ---
     _voortgang("datalagen ophalen bij PDOK")
@@ -605,26 +804,32 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
     for naam, overrides in profielen.items():
         try:
             _voortgang(f"route rekenen ({naam})")
-            weights = {**DEFAULT_WEIGHTS, **req.weights, **overrides}
+            weights = {**DEFAULT_WEIGHTS, **RL_WEIGHTS, **req.weights, **overrides}
             grid = painter.build(weights)
             for wp in waypoints:
                 _free_station(grid, wp)
             route = LineString(shortest_path(grid, waypoints))
             route = straighten_iteratief(route, bgt, grid)
             crossings = detect_crossings(route, bgt)
+            engine.verrijk_kruisingen(crossings, data["legger_water"],
+                                      data["nwb"], pdok.waterschap_naam)
             beoordeel_werkterreinen(route, crossings, grid)
             segments = build_segments(route, grid)
             zones_m = zone_lengtes(route, grid)
             moffen = propose_moffen(route, crossings, segments, req.haspel_m)
             vergunningen = build_vergunningen(segments, crossings, gemeente, zones_m)
             boringen = build_boringen(route, crossings)
+            _verrijk_boringen(route, boringen)
+            son_register = _sonderingen_register(route, boringen, laag_fouten)
+            hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
             onderzoeken = build_onderzoeken(zones_m, boringen)
             zro = build_zro(route, percelen)
-            checks = build_checks(route, segments, crossings, boringen, zones_m)
+            checks = build_checks(route, segments, crossings, boringen, zones_m,
+                                  bomen_rivm_fractie=data.get("bomen_rivm_fractie"))
             werkpakketten = build_werkpakketten(route, req.stations)
             ken_werkpakketten_toe(werkpakketten, route, segments, crossings,
                                   boringen, moffen, zro, vergunningen,
-                                  onderzoeken, checks)
+                                  onderzoeken, checks, son_register)
             planning = build_planning(werkpakketten, vergunningen, onderzoeken,
                                       boringen, zro)
             kosten = build_kosten(segments, crossings, zro, moffen, onderzoeken)
@@ -641,9 +846,12 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
                 "kruisingen": crossings,
                 "segmenten": segments,
                 "zones": {ZONE_NAMES[bit]: m for bit, m in zones_m.items() if m > 0},
+                "hoogteprofiel": hoogteprofiel,
+                "hoogte": hoogte_info,
                 "moffen": moffen,
                 "vergunningen": vergunningen,
                 "boringen": boringen,
+                "sonderingen": son_register,
                 "onderzoeken": onderzoeken,
                 "zro": zro,
                 "toetsing": checks,
@@ -669,9 +877,14 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
         "bgt_fouten": bgt.get("_errors", []),
         "laag_fouten": laag_fouten,
         "bodem_bronnen_regionaal": data["bodem_bronnen"],
+        "nge_bronnen_regionaal": data["nge_bronnen"],
+        "buisleiding_bronnen": data["buisleiding_bronnen"],
+        "klic": klic.status(),
+        "brk": brk.status(),
         "gebied": mapping(gebied),
         "bomen": [[round(g.x, 2), round(g.y, 2), round(r, 1)] for g, r in boom_zones],
         "bomen_bronnen": data["bomen_bronnen"],
+        "bomen_rivm_fractie": data.get("bomen_rivm_fractie"),
         "varianten": varianten,
         "variant_fouten": fouten,
         "stations": req.stations,
@@ -700,6 +913,7 @@ BEWERKBARE_VELDEN = {
     "boringen": {"type", "mantelbuis", "dekking_eis", "noodzaak", "status",
                  "verantwoordelijke"},
     "onderzoeken": {"soort", "aanleiding", "conclusie", "status", "verantwoordelijke"},
+    "sonderingen": {"relevantie", "opmerking", "status", "verantwoordelijke"},
     "moffen": {"opmerking"},
     "werkpakketten": {"naam"},
     "planning": {"status", "toelichting"},
@@ -727,6 +941,72 @@ def get_progress():
         return {"actief": True, "stap": PROGRESS.get("stap", ""),
                 "bezig_s": round(time.time() - PROGRESS.get("t0", time.time()), 1)}
     return {"actief": False}
+
+
+@app.get("/api/regionale-bronnen")
+def regionale_bronnen(bbox: str):
+    """Regionale bronnen (bodem/NGE/buisleiding/bomen) die het gebied raken.
+
+    bbox = 'xmin,ymin,xmax,ymax' in RD. De frontend bouwt hiermee de
+    regionale kaartlagen per trace/projectgebied op uit dezelfde registers
+    (pdok.py) die het kostenoppervlak voeden.
+    """
+    try:
+        delen = tuple(float(x) for x in bbox.split(","))
+        if len(delen) != 4:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
+    return pdok.regionale_bronnen_voor_bbox(delen)
+
+
+# ---------------------------------------------------------------------------
+# Grondwaterstanden (BRO GLD) — informatieve live kaartlaag
+# ---------------------------------------------------------------------------
+
+@app.get("/api/grondwater/putten")
+def grondwater_putten(bbox: str):
+    """GLD-putten in het kaartbeeld; bbox = 'xmin,ymin,xmax,ymax' in RD."""
+    try:
+        delen = tuple(float(x) for x in bbox.split(","))
+        if len(delen) != 4:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
+    try:
+        return grondwater.putten(delen)
+    except grondwater.DienstError as e:
+        raise HTTPException(502, str(e))
+    except grondwater.GrondwaterError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/grondwater/isohypsen")
+def grondwater_isohypsen(bbox: str):
+    """Isohypsen (hoogtelijnen grondwaterstand, m NAP) voor het kaartbeeld."""
+    try:
+        delen = tuple(float(x) for x in bbox.split(","))
+        if len(delen) != 4:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
+    try:
+        return grondwater.isohypsen(delen)
+    except grondwater.DienstError as e:
+        raise HTTPException(502, str(e))
+    except grondwater.GrondwaterError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/grondwater/stand/{bro_id}")
+def grondwater_stand(bro_id: str):
+    """Actuele grondwaterstand + meetreeks van één put, live uit de BRO."""
+    try:
+        return grondwater.stand(bro_id)
+    except grondwater.DienstError as e:
+        raise HTTPException(502, str(e))
+    except grondwater.GrondwaterError as e:
+        raise HTTPException(404, str(e))
 
 
 @app.post("/api/register/update")
@@ -761,7 +1041,8 @@ def export_geojson(variant: int = 0):
         feats.append({"type": "Feature",
                       "properties": {"laag": "kruising", **{k: c.get(k) for k in
                                      ("nr", "soort", "breedte_m", "kruislengte_m",
-                                      "techniek", "bevoegd_gezag", "noodzaak")},
+                                      "techniek", "bevoegd_gezag", "noodzaak",
+                                      "legger_categorie", "wegnaam")},
                                      "werkpakket": c.get("werkpakket", "")},
                       "geometry": {"type": "Point", "coordinates": list(c["punt"])}})
     for b in v.get("boringen", []):
@@ -772,7 +1053,10 @@ def export_geojson(variant: int = 0):
         feats.append({"type": "Feature",
                       "properties": {"laag": "boring", **{k: b.get(k) for k in
                                      ("nr", "type", "obstakel", "kruising", "lengte_m",
-                                      "uitloop_m", "dekking_eis", "noodzaak")},
+                                      "uitloop_m", "dekking_eis", "noodzaak",
+                                      "maaiveld_min_nap", "maaiveld_max_nap",
+                                      "verval_m", "sonderingen_bro",
+                                      "bestaande_netten")},
                                      "werkpakket": b.get("werkpakket", "")},
                       "geometry": boorlijn})
         feats.append({"type": "Feature",
@@ -787,6 +1071,15 @@ def export_geojson(variant: int = 0):
         feats.append({"type": "Feature", "properties": {"laag": "mof", "nr": m["nr"],
                                                         "werkpakket": m.get("werkpakket", "")},
                       "geometry": {"type": "Point", "coordinates": list(m["punt"])}})
+    for s in v.get("sonderingen", []):
+        feats.append({"type": "Feature",
+                      "properties": {"laag": "sondering", **{k: s.get(k) for k in
+                                     ("nr", "bro_id", "einddiepte_m", "maaiveld_nap",
+                                      "kwaliteitsklasse", "norm", "datum",
+                                      "relevantie", "bro_loket")},
+                                     "boringen": ", ".join(s.get("boringen", [])),
+                                     "werkpakket": s.get("werkpakket", "")},
+                      "geometry": s["geometry"]})
     for b in LAST_RESULT.get("bomen", []):
         feats.append({"type": "Feature",
                       "properties": {"laag": "boom", "wortelzone_r_m": b[2]},
@@ -808,7 +1101,19 @@ def export_geojson(variant: int = 0):
     data = json.dumps(fc, ensure_ascii=False).encode()
     return StreamingResponse(io.BytesIO(data), media_type="application/geo+json",
                              headers={"Content-Disposition":
-                                      f'attachment; filename="kabelbed_{variant}.geojson"'})
+                                      f'attachment; filename="infraengine_{variant}.geojson"'})
+
+
+@app.get("/api/export/dxf")
+def export_dxf(variant: int = 0, projectnaam: str = ""):
+    import dxf_export
+
+    v = _need_result(variant)
+    data = dxf_export.maak_dxf(v, LAST_RESULT["stations"],
+                               LAST_RESULT.get("bomen", []), projectnaam)
+    return StreamingResponse(io.BytesIO(data), media_type="application/dxf",
+                             headers={"Content-Disposition":
+                                      f'attachment; filename="infraengine_{variant}.dxf"'})
 
 
 @app.get("/api/export/xlsx")
@@ -858,10 +1163,13 @@ def export_xlsx(variant: int = 0):
             s["lengte_m"]] for s in v["segmenten"]])
     sheet("Kruisingen",
           ["Nr", "Werkpakket", "Soort", "Breedte haaks (m)", "Langs tracé (m)",
-           "Techniek", "Noodzaak", "Detail", "Richtlijn", "Bevoegd gezag"],
+           "Techniek", "Noodzaak", "Legger-categorie", "Wegnaam (NWB)",
+           "Detail", "Richtlijn", "Bevoegd gezag"],
           [[c["nr"], c.get("werkpakket", ""), c["soort"], c["breedte_m"],
             c.get("kruislengte_m", ""), c["techniek"],
-            c.get("noodzaak", ""), c["detail"], c["richtlijn"], c["bevoegd_gezag"]]
+            c.get("noodzaak", ""), c.get("legger_categorie", ""),
+            c.get("wegnaam", ""),
+            c["detail"], c["richtlijn"], c["bevoegd_gezag"]]
            for c in v["kruisingen"]])
     sheet("Vergunningen",
           ["Nr", "Werkpakket", "Item", "Bevoegd gezag", "Trigger", "Doorlooptijd (wk)",
@@ -874,6 +1182,8 @@ def export_xlsx(variant: int = 0):
           ["Nr", "Werkpakket", "Type", "Kruising", "Obstakel", "Noodzaak",
            "Lengte (m)", "Intrede (RD)",
            "Uittrede (RD)", "Dekking-eis", "Mantelbuis",
+           "Maaiveld (m NAP)", "Verval (m)", "Sonderingen (BRO)",
+           "Bestaande netten",
            "Werkterrein", "Werkruimte intrede (m2)", "Werkruimte uittrede (m2)",
            "Werkterrein opmerking", "Status", "Verantwoordelijke"],
           [[b["nr"], b.get("werkpakket", ""),
@@ -883,6 +1193,10 @@ def export_xlsx(variant: int = 0):
             f"{b['intredepunt_rd'][0]}, {b['intredepunt_rd'][1]}",
             f"{b['uittredepunt_rd'][0]}, {b['uittredepunt_rd'][1]}",
             b["dekking_eis"], b["mantelbuis"],
+            ("" if b.get("maaiveld_min_nap") is None else
+             f"{b['maaiveld_min_nap']} – {b['maaiveld_max_nap']}"),
+            b.get("verval_m", ""),
+            b.get("sonderingen_bro", ""), b.get("bestaande_netten", ""),
             b["werkterrein_oordeel"],
             "" if b["werkterrein_intrede_m2"] is None else
             f"{b['werkterrein_intrede_m2']} (eis {b['werkterrein_intrede_eis_m2']})",
@@ -906,6 +1220,18 @@ def export_xlsx(variant: int = 0):
            "Werkstrook (m2)", "Aard recht", "Vergoeding eenmalig (EUR)",
            "Vergoeding jaarlijks (EUR)", "Grondslag vergoeding", "Status",
            "Bijlagen"], zro_rows)
+    sheet("Sonderingen",
+          ["Nr", "Werkpakket", "BRO-ID", "X (RD)", "Y (RD)", "Chainage (m)",
+           "Afstand tracé (m)", "Einddiepte (m)", "Maaiveld (m NAP)",
+           "Kwaliteitsklasse", "Norm", "Datum", "Relevantie", "Boringen",
+           "BRO-loket", "Opmerking"],
+          [[s["nr"], s.get("werkpakket", ""), s["bro_id"], s["punt"][0],
+            s["punt"][1], s["chainage_m"], s["afstand_trace_m"],
+            s.get("einddiepte_m", ""), s.get("maaiveld_nap", ""),
+            s.get("kwaliteitsklasse", ""), s.get("norm", ""), s.get("datum", ""),
+            s.get("relevantie", ""), ", ".join(s.get("boringen", [])),
+            s.get("bro_loket", ""), s.get("opmerking", "")]
+           for s in v.get("sonderingen", [])])
     sheet("Onderzoeken",
           ["Nr", "Onderzoek", "Aanleiding", "Conclusie", "Status", "Verantwoordelijke"],
           [[o["nr"], o["soort"], o["aanleiding"], o["conclusie"], o["status"],
@@ -945,7 +1271,7 @@ def export_xlsx(variant: int = 0):
     buf.seek(0)
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="kabelbed_registers_{variant}.xlsx"'})
+        headers={"Content-Disposition": f'attachment; filename="infraengine_registers_{variant}.xlsx"'})
 
 
 DOCX_MEDIA = ("application/vnd.openxmlformats-officedocument"
@@ -985,6 +1311,65 @@ def nota_docx(req: NotaDocxRequest):
             LAST_RESULT, req.fase, req.variant, req.projectnaam, req.markdown)
     except nota_mod.NotaError as e:
         raise HTTPException(422, str(e))
+    return StreamingResponse(
+        io.BytesIO(docx), media_type=DOCX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="{naam}"'})
+
+
+@app.get("/api/bureau/opties")
+def bureau_opties(variant: int = 0):
+    """Per onderzoek uit het register: is een AI-bureauonderzoek mogelijk
+    met de gekoppelde data, en wat is de juridische status van dat rapport
+    (bruikbaar na toetsing / deskundige nodig / gecertificeerd bureau
+    wettelijk vereist)?"""
+    import bureau as bureau_mod
+
+    _need_result(variant)
+    return {"opties": bureau_mod.opties(LAST_RESULT, variant)}
+
+
+@app.get("/api/bureau/stream")
+def bureau_stream(nr: str, variant: int = 0, projectnaam: str = ""):
+    """AI-bureauonderzoek live laten uitvoeren: streamt het rapport als
+    Markdown terwijl het ontstaat (zelfde flow als de ontwerpnota)."""
+    import bureau as bureau_mod
+
+    _need_result(variant)
+    try:
+        gen = bureau_mod.stream_bureau(LAST_RESULT, variant, nr, projectnaam)
+    except nota_mod.NotaError as e:
+        raise HTTPException(503, str(e))
+    return StreamingResponse(gen, media_type="text/plain; charset=utf-8",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+class BureauDocxRequest(BaseModel):
+    nr: str
+    variant: int = 0
+    projectnaam: str = ""
+    markdown: str
+
+
+@app.post("/api/bureau/docx")
+def bureau_docx(req: BureauDocxRequest):
+    """Het gestreamde bureauonderzoek omzetten naar een opgemaakt
+    Word-document en het onderzoekenregister bijwerken (rapportnaam +
+    conclusie), zodat de status ook in de exports terugkomt."""
+    import bureau as bureau_mod
+
+    v = _need_result(req.variant)
+    try:
+        naam, docx = bureau_mod.rapport_docx(
+            LAST_RESULT, req.variant, req.nr, req.projectnaam, req.markdown)
+    except nota_mod.NotaError as e:
+        raise HTTPException(422, str(e))
+    for o in v.get("onderzoeken", []):
+        if o["nr"] == req.nr:
+            o["rapport"] = naam
+            o["conclusie"] = ("AI-bureauonderzoek uitgevoerd — "
+                              "toetsing vereist")
+            o["status"] = "concept (AI)"
     return StreamingResponse(
         io.BytesIO(docx), media_type=DOCX_MEDIA,
         headers={"Content-Disposition": f'attachment; filename="{naam}"'})
@@ -1049,11 +1434,82 @@ def project_load(name: str):
 
 @app.get("/api/defaults")
 def defaults():
-    return {"weights": DEFAULT_WEIGHTS, "class_names": CLASS_NAMES,
+    # actieve richtlijnen gelden als nieuwe standaard voor het wegingsprofiel;
+    # richtlijn_bronnen vertelt de frontend welke waarde uit welke richtlijn komt
+    rl_over = rl_mod.actieve_overrides()
+    return {"weights": {**DEFAULT_WEIGHTS, **rl_over["weights"]},
+            "class_names": CLASS_NAMES,
             "variant_profielen": list(VARIANT_PROFIELEN),
+            "richtlijn_bronnen": rl_over["bronnen"],
+            "richtlijnen_actief": [a["naam"] for a in rl_over["actief"]],
             # optioneel: ingebedde Street View (GOOGLE_MAPS_API_KEY in de
-            # omgeving of kabelbed/.env; leeg = fallback via google.com/maps)
+            # omgeving of infraengine/.env; leeg = fallback via google.com/maps)
             "google_maps_key": os.getenv("GOOGLE_MAPS_API_KEY", "")}
+
+
+# ---------------------------------------------------------------------------
+# Beheer: richtlijnen voor de tracébepaling (upload + AI-interpretatie)
+# ---------------------------------------------------------------------------
+
+class RichtlijnUpload(BaseModel):
+    bestandsnaam: str
+    data_base64: str
+
+
+class RichtlijnActie(BaseModel):
+    id: str
+    actief: bool = True
+
+
+@app.get("/api/richtlijnen")
+def richtlijnen_overzicht():
+    return rl_mod.overzicht()
+
+
+@app.post("/api/richtlijnen/upload")
+def richtlijnen_upload(req: RichtlijnUpload):
+    data = req.data_base64.split(",", 1)[-1]  # eventueel data-URL-prefix strippen
+    try:
+        inhoud = base64.b64decode(data)
+    except Exception:
+        raise HTTPException(400, "Bestand is geen geldige base64-inhoud.")
+    try:
+        meta = rl_mod.bewaar(req.bestandsnaam, inhoud)
+    except rl_mod.RichtlijnError as e:
+        raise HTTPException(400, str(e))
+    try:
+        rl_mod.interpreteer(meta["id"])
+    except rl_mod.RichtlijnError as e:
+        rl_mod.markeer_fout(meta["id"], str(e))
+    return rl_mod.overzicht()
+
+
+@app.post("/api/richtlijnen/interpreteer")
+def richtlijnen_interpreteer(req: RichtlijnActie):
+    try:
+        rl_mod.interpreteer(req.id)
+    except rl_mod.RichtlijnError as e:
+        rl_mod.markeer_fout(req.id, str(e))
+        raise HTTPException(422, str(e))
+    return rl_mod.overzicht()
+
+
+@app.post("/api/richtlijnen/actief")
+def richtlijnen_actief(req: RichtlijnActie):
+    try:
+        rl_mod.zet_actief(req.id, req.actief)
+    except rl_mod.RichtlijnError as e:
+        raise HTTPException(404, str(e))
+    return rl_mod.overzicht()
+
+
+@app.delete("/api/richtlijnen/{rid}")
+def richtlijnen_verwijder(rid: str):
+    try:
+        rl_mod.verwijder(rid)
+    except rl_mod.RichtlijnError as e:
+        raise HTTPException(404, str(e))
+    return rl_mod.overzicht()
 
 
 # ---------------------------------------------------------------------------

@@ -1,16 +1,26 @@
-# Render-blueprint: koppel de repo op https://dashboard.render.com en Render
-# leest dit bestand automatisch. Zet ANTHROPIC_API_KEY daarna handmatig in
-# het dashboard (Environment) — geheimen horen niet in de repo.
+# Render Blueprint — koppel de repo via "New > Blueprint"; Render leest dit
+# bestand op de repo-root. Bij de eerste deploy vraagt Render om de waarden
+# van de sync:false-variabelen: ANTHROPIC_API_KEY (nota's) en
+# BASIC_AUTH_WACHTWOORD (de enige slagboom voor de app — verplicht
+# invullen). Optioneel via het dashboard: GOOGLE_MAPS_API_KEY (interactief
+# Street View-panorama) en BASIC_AUTH_GEBRUIKER (standaard "infraengine").
 services:
   - type: web
-    name: kabelbed
-    runtime: python
-    plan: free
-    rootDir: kabelbed
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    name: infraengine
+    runtime: docker
+    rootDir: infraengine
+    region: frankfurt   # dicht bij de PDOK-services
+    # standard (2 GB): de rasters van grotere gebieden/corridors passen niet
+    # in de 512 MB van starter (en free heeft geen persistente schijf)
+    plan: standard
+    numInstances: 1     # vereist: rekenstaat en caches leven in het proces
+    healthCheckPath: /healthz
+    disk:
+      name: infraengine-data
+      mountPath: /app/data
+      sizeGB: 1
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
       - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: BASIC_AUTH_WACHTWOORD
         sync: false
