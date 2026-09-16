@@ -29,6 +29,7 @@ import grondwater
 import klic
 import nota as nota_mod
 import pdok
+import proces as proces_mod
 import richtlijnen as rl_mod
 import sonderingen as son_mod
 import zro as zro_mod
@@ -151,6 +152,7 @@ class ComputeRequest(BaseModel):
     weights: dict = Field(default_factory=dict, description="Wegingsprofiel-overrides")
     variants: bool = Field(default=False, description="Ook de drie varianten rekenen")
     haspel_m: float = Field(default=500.0)
+    projectnaam: str = Field(default="", description="Voor de proces-triggers")
 
 
 def _or_masks(*masks):
@@ -752,6 +754,16 @@ def compute(req: ComputeRequest):
             result = _compute_gebied(req, waypoints, t0)
         result["richtlijnen_toegepast"] = rl_over["actief"]
         LAST_RESULT = result
+        # proces-trigger: data-gedreven processtappen van de actieve fase
+        # automatisch bijwerken (registers, WBS, raming, planning, …)
+        if req.projectnaam:
+            try:
+                bijgewerkt = proces_mod.event_trace_berekend(
+                    req.projectnaam, result)
+                if bijgewerkt:
+                    result["proces_bijgewerkt"] = bijgewerkt
+            except Exception:
+                pass  # procesadministratie mag een berekening nooit blokkeren
         return result
     finally:
         PROGRESS["actief"] = False
@@ -1665,6 +1677,239 @@ def zro_bijlage_download(slug: str, bestand: str):
                                                         "application/octet-stream")
     return FileResponse(pad, media_type=media,
                         headers={"Content-Disposition": f'inline; filename="{pad.name}"'})
+
+
+# ---------------------------------------------------------------------------
+# Procesondersteuning: intake (IV) → VO → DO → UO → overdracht (tollgates)
+# ---------------------------------------------------------------------------
+
+class ProcesStapActie(BaseModel):
+    project: str
+    stap: str
+    actie: str  # start | gereed | goedkeur | afkeur | nvt | heropen
+    toelichting: str = ""
+    verantwoordelijke: str = ""
+    door: str = ""
+
+
+class ProcesTollgate(BaseModel):
+    project: str
+    fase: str
+    besluit: str  # genomen | afgekeurd
+    door: str
+    toelichting: str = ""
+
+
+class ProcesAiRun(BaseModel):
+    project: str
+    stap: str
+    variant: int = 0
+
+
+class ProcesDocOpslaan(BaseModel):
+    project: str
+    stap: str
+    markdown: str
+    variant: int = 0
+
+
+class ProcesConfigUpdate(BaseModel):
+    fases: dict = Field(default_factory=dict)
+    stappen: dict = Field(default_factory=dict)
+    ai_automatisch: bool | None = None
+
+
+class ProcesIntakeUpload(BaseModel):
+    project: str
+    bestandsnaam: str
+    data_base64: str
+
+
+class ProcesIntakeDoc(BaseModel):
+    project: str
+    markdown: str
+
+
+class ProcesRisicoGenereer(BaseModel):
+    project: str
+    variant: int = 0
+    fase: str = ""
+
+
+class ProcesRisicoUpdate(BaseModel):
+    project: str
+    nr: str
+    veld: str = ""
+    waarde: str | int | None = None
+
+
+def _proces_fout(e: Exception):
+    if isinstance(e, proces_mod.ProcesError):
+        raise HTTPException(422, str(e))
+    raise
+
+
+@app.get("/api/proces/overzicht")
+def proces_overzicht(project: str):
+    return proces_mod.overzicht(project, LAST_RESULT)
+
+
+@app.get("/api/proces/sjabloon")
+def proces_sjabloon():
+    """Voor de adminomgeving: het volledige stappenmodel + configuratie."""
+    cfg = proces_mod.laad_config()
+    return {"fasen": proces_mod.FASEN,
+            "stappen": [{**s,
+                         **proces_mod._stap_config(cfg, s),
+                         "standaard_uitvoering": s["uitvoering"]}
+                        for s in proces_mod.STAPPEN],
+            "ai_automatisch": cfg.get("ai_automatisch", True)}
+
+
+@app.post("/api/proces/config")
+def proces_config_opslaan(req: ProcesConfigUpdate):
+    body = {"fases": req.fases, "stappen": req.stappen}
+    if req.ai_automatisch is not None:
+        body["ai_automatisch"] = req.ai_automatisch
+    return proces_mod.bewaar_config(body)
+
+
+@app.post("/api/proces/stap")
+def proces_stap(req: ProcesStapActie):
+    try:
+        return proces_mod.stap_actie(
+            req.project, req.stap, req.actie, toelichting=req.toelichting,
+            verantwoordelijke=req.verantwoordelijke, door=req.door)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/proces/tollgate")
+def proces_tollgate(req: ProcesTollgate):
+    try:
+        return proces_mod.tollgate_besluit(
+            req.project, req.fase, req.besluit, door=req.door,
+            toelichting=req.toelichting)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/proces/ai/run")
+def proces_ai_run(req: ProcesAiRun):
+    """Data-gedreven stap (data:*) direct uitvoeren vanuit het resultaat."""
+    try:
+        return proces_mod.voer_data_cap_uit(
+            req.project, req.stap, LAST_RESULT, req.variant)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/proces/ai/stream")
+def proces_ai_stream(project: str, stap: str, variant: int = 0):
+    """AI-conceptdocument (doc:*/nota:*) live streamen (Markdown)."""
+    try:
+        gen = proces_mod.stream_doc(project, stap, LAST_RESULT, variant)
+    except (proces_mod.ProcesError, nota_mod.NotaError) as e:
+        raise HTTPException(503, str(e))
+    return StreamingResponse(gen, media_type="text/plain; charset=utf-8",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/proces/ai/document")
+def proces_ai_document(req: ProcesDocOpslaan):
+    """Gestreamde concept-Markdown opslaan als Word-artefact bij de stap."""
+    try:
+        return proces_mod.bewaar_doc(req.project, req.stap, req.markdown,
+                                     LAST_RESULT, req.variant)
+    except (proces_mod.ProcesError, nota_mod.NotaError) as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/proces/intake/upload")
+def proces_intake_upload(req: ProcesIntakeUpload):
+    data = req.data_base64.split(",", 1)[-1]
+    try:
+        inhoud = base64.b64decode(data)
+    except Exception:
+        raise HTTPException(400, "Bestand is geen geldige base64-inhoud.")
+    try:
+        return proces_mod.intake_upload(req.project, req.bestandsnaam, inhoud)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/proces/intake/stream")
+def proces_intake_stream(project: str):
+    try:
+        gen = proces_mod.stream_intake(project)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(503, str(e))
+    return StreamingResponse(gen, media_type="text/plain; charset=utf-8",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/proces/intake/document")
+def proces_intake_document(req: ProcesIntakeDoc):
+    try:
+        return proces_mod.bewaar_intake(req.project, req.markdown)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/proces/risico/genereer")
+def proces_risico_genereer(req: ProcesRisicoGenereer):
+    try:
+        return proces_mod.genereer_risico(req.project, LAST_RESULT,
+                                          req.variant, req.fase)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/proces/risico/update")
+def proces_risico_update(req: ProcesRisicoUpdate):
+    try:
+        return proces_mod.risico_update(req.project, req.nr, req.veld,
+                                        req.waarde)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.delete("/api/proces/risico")
+def proces_risico_verwijder(project: str, nr: str):
+    try:
+        return proces_mod.risico_verwijder(project, nr)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/proces/risico/xlsx")
+def proces_risico_xlsx(project: str):
+    data = proces_mod.risico_xlsx(project)
+    naam = f"risicoregister_{proces_mod._slug(project)}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument"
+                   ".spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{naam}"'})
+
+
+@app.get("/api/proces/artefact")
+def proces_artefact(project: str, bestand: str):
+    """Download van een in het procesdossier opgeslagen artefact."""
+    naam = Path(bestand).name  # geen padtraversal
+    pad = proces_mod.artefact_dir(project) / naam
+    if not pad.exists():
+        raise HTTPException(404, "Artefact niet gevonden.")
+    media = {".pdf": "application/pdf", ".md": "text/markdown; charset=utf-8",
+             ".txt": "text/plain; charset=utf-8",
+             ".docx": "application/vnd.openxmlformats-officedocument"
+                      ".wordprocessingml.document"}.get(
+        pad.suffix.lower(), "application/octet-stream")
+    return FileResponse(pad, media_type=media,
+                        headers={"Content-Disposition":
+                                 f'inline; filename="{pad.name}"'})
 
 
 app.mount("/", StaticFiles(directory=ROOT / "frontend", html=True), name="frontend")

@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="registers.css">
+<link rel="stylesheet" href="proces.css">
 </head>
 <body>
 <header id="topbar">
@@ -17,6 +18,7 @@
   <span class="spacer"></span>
   <button id="btn-richtlijnen" title="Beheer: richtlijndocumenten (ontwerphandboek, AVOI, keur) uploaden; de AI vertaalt ze naar rekenparameters voor de tracébepaling">⚖ Richtlijnen</button>
   <button id="btn-registers" title="Alle registers op één pagina: bewerken, filteren, sorteren">▤ Registers</button>
+  <button id="btn-proces" title="Procesondersteuning: intake (IV) → VO → DO → UO met tollgates, AI-stappen en goedkeuringen">◫ Proces</button>
   <button id="btn-new" title="Nieuw leeg project starten">+ Nieuw</button>
   <input id="project-naam" type="text" placeholder="projectnaam" spellcheck="false">
   <button id="btn-save" title="Project opslaan (invoer én berekend tracé)">Opslaan</button>
@@ -306,9 +308,67 @@
   </div>
 </div>
 
+<div id="proces-pagina">
+  <div id="proces-kop">
+    <button id="btn-proces-terug" title="Terug naar het ontwerp">‹ Ontwerp</button>
+    <h2>Proces</h2>
+    <span id="proces-project" class="mono"></span>
+    <nav id="proces-tabs"></nav>
+    <span class="spacer"></span>
+    <span id="proces-status" class="mono"></span>
+    <button id="btn-proces-admin" title="Adminomgeving: stappen en producten aan/uit, uitvoering per stap (AI / mens / hybride)">⚙ Admin</button>
+    <button id="btn-proces-verversen" title="Overzicht verversen">⟳</button>
+  </div>
+  <div id="proces-layout">
+    <aside id="proces-zijbalk">
+      <section>
+        <h3>Wacht op jou</h3>
+        <div id="proces-taken"><p class="leeg">Geen openstaande taken.</p></div>
+      </section>
+      <section>
+        <h3>Meldingen</h3>
+        <div id="proces-meldingen"><p class="leeg">Nog geen meldingen.</p></div>
+      </section>
+    </aside>
+    <div id="proces-inhoud"><p class="leeg">Kies of open eerst een project in de kopbalk.</p></div>
+  </div>
+
+  <div id="proces-doc-overlay" hidden>
+    <div id="proces-doc-venster">
+      <div id="proces-doc-kop">
+        <strong id="proces-doc-titel">AI-concept</strong>
+        <span id="proces-doc-status" class="mono"></span>
+        <span class="spacer"></span>
+        <button id="proces-doc-opslaan" disabled>Opslaan als product (Word)</button>
+        <button id="proces-doc-sluiten">Sluiten</button>
+      </div>
+      <div id="proces-doc-wrap"><div id="proces-doc-sheet"></div></div>
+    </div>
+  </div>
+
+  <div id="proces-admin-overlay" hidden>
+    <div id="proces-admin-venster">
+      <div id="proces-admin-kop">
+        <strong>Adminomgeving — processtappen en producten</strong>
+        <span class="spacer"></span>
+        <label class="admin-vlag"><input type="checkbox" id="admin-ai-auto">
+          AI-stappen automatisch uitvoeren na elke berekening</label>
+        <button id="proces-admin-opslaan">Opslaan</button>
+        <button id="proces-admin-sluiten">Sluiten</button>
+      </div>
+      <p class="hint">Vink stappen/producten aan of uit en kies per stap wie hem uitvoert:
+        <strong>AI</strong> (voert uit, direct gereed), <strong>Hybride</strong> (AI maakt het
+        concept, de mens keurt goed) of <strong>Mens</strong> (handmatig). Stappen zonder
+        automatisering kunnen alleen door de mens. Fasen zijn als geheel uit te schakelen.</p>
+      <div id="proces-admin-inhoud"></div>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
 <script src="app.js"></script>
 <script src="registers.js"></script>
+<script src="proces.js"></script>
 </body>
 </html>

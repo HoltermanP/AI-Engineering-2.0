@@ -1008,6 +1008,7 @@ async function bereken() {
       weights: leesWeights(),
       variants: document.getElementById("opt-varianten").checked,
       haspel_m: parseFloat(document.getElementById("opt-haspel").value) || 500,
+      projectnaam: document.getElementById("project-naam").value.trim(),
     };
     const r = await fetch("api/compute", {
       method: "POST", headers: { "Content-Type": "application/json" },

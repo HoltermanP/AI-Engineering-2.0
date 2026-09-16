@@ -55,76 +55,208 @@ FASE_NAMEN = {
     "UO": "Uitvoeringsgereed Ontwerp",
 }
 
+# Vast hoofdstukkenformat naar de HVP/Liander-ontwikkelnota's (UKZ DO-ApD2
+# en UO-ApD1): 1 Inleiding (scope, werkgebied, werkpakkettentabel,
+# afwijkingen, leeswijzer) · 2 Gerelateerde documenten · 3 Ontwerp (per
+# verbinding/werkpakket + CAR-verzekering) · 4 Omgeving (stakeholders per
+# werkpakket, onderzoeken, seizoensbeperkingen, vergunningen) ·
+# 5 Randvoorwaarden (risico's, eisen, planning met mijlpalen, V&G, raming,
+# controle en review) · 6 Restpunten (tabel). Het VO-format is hiervan
+# afgeleid, met de variantenafweging (MCA) in hoofdstuk 3.
+_FMT_KOP = (
+    "Houd exact het vaste ontwikkelnota-format van de netbeheerder aan:\n"
+    "Begin met `# {fase} Ontwikkelnota | <projectnaam>` en direct daarna, "
+    "zonder kop, drie kleine tabellen:\n"
+    "1) Verificatietabel (rijen: Opdrachtgever; Opgesteld door; Verificatie; "
+    "Autorisatie; Vrijgave; Datum; Versie) — vul onbekende namen als "
+    "[IN TE VULLEN: naam];\n"
+    "2) Projectteam (kolommen Naam | Functie | Organisatie) met de rollen "
+    "ontwerpleider, projectbeheerser, omgevingsmanager, projectleider, "
+    "planner en technisch manager als invulregels;\n"
+    "3) Versiebeheer (kolommen Versie | Datum | Status | Toelichting) met "
+    "één regel: 0.1, vandaag, 'Concept ter review', 'AI-gegenereerd concept'.\n"
+    "Daarna deze hoofdstukken, met exact deze nummers en titels:\n"
+)
+
+_FMT_STAART = (
+    "\n`## 6. Restpunten` — tabel (Nummer | Omschrijving | Status) met de "
+    "concrete openstaande punten uit de data: knelpunten uit de toetsing, "
+    "niet-gevestigde ZRO's, openstaande onderzoeken, boringen die nog "
+    "definitief moeten worden, ontbrekende koppelingen (KLIC/BRK). Status "
+    "per punt: 'Nog opstarten' of 'Lopend'.\n\n"
+    "Invulregels: gebruik overal de echte aantallen, lengtes, nummers "
+    "(WP-, HDD-/BOR-, VRG-, OND-, ZRO-, RIS-) en bedragen uit de "
+    "projectdata. Documentverwijzingen die de applicatie niet kent schrijf "
+    "je als generieke verwijzing tussen rechte haken, bijvoorbeeld "
+    "[verificatieplan] of [IN TE VULLEN: link raming]."
+)
+
 NOTA_FASEN = {
     "VO": {
-        "titel": "Voorlopig Ontwerp (VO) — Ontwerpnota",
-        "doel": (
-            "Een VO-nota: onderbouw de variantenafweging en de keuze voor de "
-            "voorkeursvariant. Behandel de uitgangspunten en het projectgebied, "
-            "de vergeleken varianten met de MCA (lengte, kruisingen, privaat "
-            "terrein, percelen, vergunningen, kosten, doorlooptijd), de "
-            "ruimtelijke aandachtspunten en zones (natuur, bodem, archeologie, "
-            "bomen, grondwaterbescherming), een eerste beeld van de benodigde "
-            "vergunningen en onderzoeken, de risico's en onzekerheden (ook "
-            "beperkingen in de gebruikte data), een indicatieve kostenraming en "
-            "de vervolgstappen richting het Definitief Ontwerp."
-        ),
+        "titel": "VO Ontwikkelnota",
+        "doel": _FMT_KOP.format(fase="VO") + (
+            "`## 1. Inleiding` — doelzin (ontwerpscope als input voor de "
+            "VO-fase); `### 1.1 Scope van de opdracht` (wat wordt ontworpen: "
+            "MS-tracé tussen de stations, aantal verbindingen); `### 1.2 Scope "
+            "werkgebied` (gebied, gemeente(n), totale tracélengte, verwijzing "
+            "[overzichtstekening]); `### 1.3 Werkpakketten` — tabel "
+            "(Werkpakket | Van | Naar | Meters) uit de werkpakketten-data met "
+            "totaalregel; `### 1.4 Afwijkingsregister/wijzigingen` (procedure + "
+            "verwijzing [afwijkingenregister]); `### 1.5 Leeswijzer`.\n"
+            "`## 2. Gerelateerde documenten` — documentenlijst-verwijzing; "
+            "`### 2.1 Generieke ontwerprichtlijnen` — tabel met de toegepaste "
+            "richtlijndocumenten uit de data (richtlijnen_toegepast) en "
+            "invulregels voor de S- en W-normbladen van de netbeheerder.\n"
+            "`## 3. Ontwerp` — het VO-hart: `### 3.1 Variantenafweging` met "
+            "de MCA-tabel over alle varianten (lengte, kruisingen, boringen, "
+            "privaat terrein, kosten) en de onderbouwde keuze voor de "
+            "**voorkeursvariant**; `### 3.2 Beschrijving voorkeurstracé` — "
+            "per verbinding/werkpakket het tracéverloop op hoofdlijnen "
+            "(ligging berm/voetpad/rijbaan, belangrijkste kruisingen met "
+            "voorgestelde techniek en HDD-/boringnummers); `### 3.3 "
+            "CAR-verzekering` — toets: aanneemsom > €20.000.000 of een boring "
+            "> €250.000 vereist aanvullende CAR; toets op de RAW-calculatie.\n"
+            "`## 4. Omgeving` — `### 4.1 Stakeholders per werkpakket`: per "
+            "werkpakket een tabel (Stakeholder | Vergunning, toestemming | "
+            "Perceel (indien privaat)) uit het vergunningen- en ZRO-register; "
+            "`### 4.2 Stakeholders` (bevoegde gezagen, ZRO-eigenaren, "
+            "omwonenden); `### 4.3 Conditionerende onderzoeken` — de in de "
+            "VO-fase uit te voeren quickscans/bureauonderzoeken uit het "
+            "onderzoeksregister met per onderzoek aanleiding en status; "
+            "`### 4.4 Seizoensbeperkingen` (broedseizoen, gesloten seizoen "
+            "keringen); `### 4.5 Vergunningen` (eerste beeld + strategie, "
+            "verwijzing [vergunningenregister]).\n"
+            "`## 5. Randvoorwaarden` — `### 5.1 Risico's en "
+            "beheersmaatregelen`: top-risico's uit het risicoregister als "
+            "tabel (ID | Risico | Score | Belangrijkste beheersmaatregel), "
+            "RISMAN-ordening hoog→laag; `### 5.2 Eisen` (verificatie-aanpak, "
+            "toetsing); `### 5.3 Planning` — mijlpalentabel (VO gereed, DO "
+            "gereed, UO gereed, geplande start uitvoering, IBN-datum) — "
+            "afleiden uit de planning-weken of [IN TE VULLEN]; `### 5.4 V&G "
+            "plan ontwerp`; `### 5.5 Raming` (indicatieve aannemingssom uit "
+            "de RAW-calculatie); `### 5.6 Controle en review` (tollgate TM2, "
+            "reviewproces bouwteam).")
+        + _FMT_STAART,
     },
     "DO": {
-        "titel": "Definitief Ontwerp (DO) — Ontwerpnota",
-        "doel": (
-            "Een DO-nota: leg de definitieve tracékeuze vast en werk die uit. "
-            "Behandel het gekozen tracé met ligging per segment, alle "
-            "kruisingen met de gekozen techniek en het bevoegd gezag, de "
-            "boringen (type, lengte, dekking-eis, mantelbuis, werkterrein-"
-            "beoordeling), de vergunningen- en meldingenstrategie met "
-            "doorlooptijden en kritiek pad, de ZRO-strategie per perceel met "
-            "de actuele dossierstatus en vergoedingen, de stand en opgave van "
-            "de (veld)onderzoeken, de resultaten van de toetsing met de "
-            "afhandeling van knelpunten, de kostenraming en de restpunten "
-            "richting het Uitvoeringsgereed Ontwerp."
-        ),
+        "titel": "DO Ontwikkelnota",
+        "doel": _FMT_KOP.format(fase="DO") + (
+            "`## 1. Inleiding` — doelzin (ontwerpscope als input voor de "
+            "DO-fase); `### 1.1 Scope van de opdracht`; `### 1.2 Scope "
+            "werkgebied` (gebied, gemeente(n), totale tracélengte); "
+            "`### 1.3 Werkpakketten` — tabel (Werkpakket | Van | Naar | "
+            "Meters) met totaalregel; `### 1.4 Afwijkingsregister/"
+            "wijzigingen`; `### 1.5 Leeswijzer`.\n"
+            "`## 2. Gerelateerde documenten` — `### 2.1 Generieke "
+            "ontwerprichtlijnen` — tabel met de toegepaste "
+            "richtlijndocumenten (richtlijnen_toegepast) en invulregels voor "
+            "de S- en W-normbladen.\n"
+            "`## 3. Ontwerp` — de kern van het DO: groepeer het tracé in "
+            "logische verbindingen (reeksen werkpakketten) en beschrijf per "
+            "verbinding `### 3.x Verbinding x – WPxx t/m WPyy – <meters> "
+            "meters` het tracéverloop als lopende tekst, zoals een "
+            "ontwerpleider dat doet: aan welke zijde van welke weg, waar "
+            "wordt overgestoken (persing), welke watergangen/wegen/spoor met "
+            "welke techniek en welk boringnummer worden gekruist, moffen aan "
+            "begin- en eindpunt, en sluit elke verbinding af met "
+            "**Restpunten:** (bijv. boringen nog in concept, definitief in "
+            "UO). Afsluitend `### 3.x CAR-verzekering` — toets aanneemsom "
+            "> €20.000.000 / boring > €250.000 op de RAW-calculatie.\n"
+            "`## 4. Omgeving` — `### 4.1 Stakeholders per werkpakket`: per "
+            "werkpakket een tabel (Stakeholder | Vergunning, toestemming | "
+            "Perceel (indien privaat)) uit vergunningen- en ZRO-register; "
+            "`### 4.2 Stakeholders`; `### 4.3 Conditionerende onderzoeken` — "
+            "per onderzoek uit het onderzoeksregister de stand en conclusie; "
+            "`### 4.4 Aanvullende conditionerende onderzoeken` (vervolg op "
+            "de quickscans, wat loopt nog); `### 4.5 Seizoensbeperkingen`; "
+            "`### 4.6 Vergunningen` (aanvraag na akkoord DO, verwijzing "
+            "[vergunningenregister]).\n"
+            "`## 5. Randvoorwaarden` — `### 5.1 Risico's en "
+            "beheersmaatregelen` (top-risico's uit het risicoregister als "
+            "tabel, RISMAN hoog→laag); `### 5.2 Eisen` (eisenverificatie, "
+            "toetsingsresultaten); `### 5.3 Planning` — mijlpalentabel (DO "
+            "gereed, UO gereed, contract getekend, geplande start uitvoering "
+            "(GSU), IBN-datum) uit de planning-weken of [IN TE VULLEN], plus "
+            "de planning per werkpakket; `### 5.4 V&G plan ontwerp` (VGM-O, "
+            "GO!-doelstelling); `### 5.5 Raming` (aannemingssom uit de "
+            "RAW-calculatie); `### 5.6 Controle en review` (tollgate T3 als "
+            "basis voor de review, indienen in [VISI]).")
+        + _FMT_STAART,
     },
     "UO": {
-        "titel": "Uitvoeringsgereed Ontwerp (UO) — Ontwerpnota",
-        "doel": (
-            "Een UO-nota: maak het ontwerp uitvoeringsgereed. Behandel de "
-            "uitvoeringswijze per tracédeel (open sleuf per ligging, sleufloze "
-            "technieken), alle boringen met in- en uittredepunten in RD-"
-            "coördinaten, boorplan-plicht en werkterreinen, het moffenplan met "
-            "haspellengtes, de graafveiligheid (CROW 500, KLIC/WIBON-melding, "
-            "vooronderzoek verontreinigde bodem), de voorwaarden uit "
-            "vergunningen en meldingen die in de uitvoering doorwerken, de "
-            "ZRO-stand (welke rechten zijn gevestigd, waar mag nog niet "
-            "gewerkt worden), openstaande onderzoeken en toetsingspunten die "
-            "vóór de start afgerond moeten zijn, uitvoeringsrisico's met "
-            "beheersmaatregelen en een logische werkvolgorde."
-        ),
+        "titel": "UO Ontwikkelnota",
+        "doel": _FMT_KOP.format(fase="UO") + (
+            "`## 1. Inleiding` — `### 1.1 Scope van de opdracht`; `### 1.2 "
+            "Scope werkgebied`; `### 1.3 Werkpakketten` — tabel (Werkpakket "
+            "| Van | Naar | Meters) met totaalregel; `### 1.4 "
+            "Afwijkingsregister/wijzigingen` (afwijkingenregister + "
+            "VTW-overzicht); `### 1.5 Leeswijzer`.\n"
+            "`## 2. Gerelateerde documenten` — `### 2.1 Generieke "
+            "ontwerprichtlijnen` — tabel toegepaste richtlijnen + "
+            "invulregels S-/W-bladen.\n"
+            "`## 3. Ontwerp` — uitvoeringsgereed: `### 3.1 HDD-boringen "
+            "detailoverzicht` — tabel van alle boringen (Nr | Techniek | "
+            "Lengte m | Intredepunt RD | Uittredepunt RD | Status) uit het "
+            "boorregister; daarna per werkpakket `### 3.x Werkpakket WPxx – "
+            "(<van> – <naar>) – <meters> meters` met de uitvoeringswijze "
+            "(sleufwerk per ligging, boringen definitief, moffen op "
+            "haspellengte) en verwijzingen naar [werkplan civiel werk], "
+            "[werkplan warm werk], [bedieningsplan] en [keuringsplan]; "
+            "afsluitend `### 3.x CAR-verzekering` — toets aanneemsom "
+            "> €20.000.000 / boring > €250.000.\n"
+            "`## 4. Omgeving` — `### 4.1 Stakeholders per werkpakket` "
+            "(tabellen Stakeholder | Vergunning, toestemming | Perceel); "
+            "`### 4.2 Stakeholders`; `### 4.3 Communicatie` "
+            "(bewonersbrieven, BouwApp, omgevingsmanager realisatie); "
+            "`### 4.4 Conditionerende onderzoeken` — stand van alle "
+            "onderzoeken met conclusies en doorwerking naar de uitvoering "
+            "(MKB-begeleiding, ecologische vrijgave, werkprotocollen); "
+            "`### 4.5 Seizoensbeperkingen` (broedseizoen medio maart–"
+            "augustus, ecologische vrijgave vóór start); `### 4.6 "
+            "Vergunningen` (status aangevraagd/verleend, verwijzing "
+            "[vergunningenregister]); `### 4.7 Verkeersmaatregelenplan` "
+            "(borging veilige uitvoering, verwijzing [verkeersplan]).\n"
+            "`## 5. Randvoorwaarden` — het geaccepteerde DO geldt als "
+            "vertrekpunt; `### 5.1 Risico's en beheersmaatregelen` "
+            "(top-risico's uit het risicoregister, RISMAN hoog→laag); "
+            "`### 5.2 Eisen` (eisenverificatie UO); `### 5.3 Planning` — "
+            "mijlpalentabel (UO gereed, contract getekend, GSU, IBN-datum) "
+            "uit de planning-weken of [IN TE VULLEN]; `### 5.4 V&G plan "
+            "uitvoering` (VGM-U, GO!-doelstelling); `### 5.5 Raming` "
+            "(aannemingssom uit de RAW-calculatie, opgebouwd per "
+            "werkpakket); `### 5.6 Controle en review` (tollgate T4 als "
+            "Stop/GO, review kernteam, indienen in [VISI]).")
+        + _FMT_STAART,
     },
 }
 
 SYSTEM = (
     "Je bent een senior ontwerpleider kabelinfrastructuur bij een Nederlandse "
-    "netbeheerder. Je schrijft ontwerpnota's voor middenspanningstracés "
+    "netbeheerder. Je schrijft ontwikkelnota's voor middenspanningstracés "
     "volgens de fasering VO (Voorlopig Ontwerp), DO (Definitief Ontwerp) en "
-    "UO (Uitvoeringsgereed Ontwerp). Je schrijft in het Nederlands, zakelijk "
-    "en concreet, en baseert je uitsluitend op de aangeleverde projectdata. "
-    "Noem concrete aantallen, lengtes, bedragen en registratienummers uit de "
-    "data (bedragen als € 1.234). Verzin niets: waar data ontbreekt of "
-    "indicatief is (bijv. geen KLIC- of BRK-koppeling, indicatieve tarieven, "
-    "falende datalagen) benoem je dat expliciet als aandachtspunt.\n\n"
+    "UO (Uitvoeringsgereed Ontwerp), in het vaste ontwikkelnota-format van "
+    "het bouwteam (hoofdstukken Inleiding, Gerelateerde documenten, Ontwerp, "
+    "Omgeving, Randvoorwaarden, Restpunten). Je schrijft in het Nederlands, "
+    "zakelijk en concreet, en baseert je uitsluitend op de aangeleverde "
+    "projectdata. Noem concrete aantallen, lengtes, bedragen en "
+    "registratienummers uit de data (bedragen als € 1.234). Verzin geen "
+    "feiten: waar data ontbreekt of indicatief is (bijv. geen KLIC- of "
+    "BRK-koppeling, indicatieve tarieven, falende datalagen) benoem je dat "
+    "expliciet, of zet je een gemarkeerde invulplek [IN TE VULLEN: …]. "
+    "Verwijzingen naar externe documenten die de applicatie niet kent "
+    "schrijf je als generieke verwijzing tussen rechte haken, zoals in het "
+    "format: zie [LINK].\n\n"
     "OPMAAK — schrijf de nota in deze begrensde Markdown en niets anders:\n"
-    "- Begin direct met de titelregel: `# <titel van de nota>` (één regel, "
-    "zonder de fase-afkorting erin).\n"
-    "- Daarna `## Samenvatting` (2-4 alinea's), gevolgd door genummerde "
-    "hoofdstukken: `## 1. <titel>`, `## 2. <titel>` … met waar zinvol "
-    "subkoppen `### 1.1 <titel>`.\n"
+    "- Begin direct met de titelregel `# …` en volg daarna exact de "
+    "hoofdstukindeling die in de opdracht wordt voorgeschreven "
+    "(`## 1. <titel>` … `### 1.1 <titel>`); geen extra hoofdstukken op "
+    "topniveau, geen samenvatting vooraf.\n"
     "- Opsommingen met `- `; kernbegrippen of oordelen **vet**.\n"
     "- Gebruik Markdown-tabellen (met kopregel en scheidingsregel `|---|`) "
-    "voor registeroverzichten: de MCA-vergelijking, kruisingen, boringen, "
-    "vergunningen, onderzoeken, ZRO-percelen, kosten en risico's. Houd "
-    "tabellen op maximaal 6 kolommen en vat lange registers samen tot de "
-    "relevante rijen.\n"
+    "voor de voorgeschreven tabellen en registeroverzichten (werkpakketten, "
+    "MCA, stakeholders per werkpakket, boringen, mijlpalen, risico's, "
+    "restpunten). Houd tabellen op maximaal 6 kolommen en vat lange "
+    "registers samen tot de relevante rijen.\n"
     "- Geen code-blokken, links, afbeeldingen, voetnoten of HTML."
 )
 
@@ -225,6 +357,9 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
         "zro_status_totalen": zro_status_totalen,
         "zro": _cap(zro_rijen, 100, "ZRO-percelen"),
         "toetsing": v.get("toetsing", []),
+        # kans- en risicoregister uit het procesdossier (procespagina),
+        # RISMAN-geordend — voedt hoofdstuk 5.1 van de ontwikkelnota
+        "risicoregister": _risicoregister(projectnaam),
         "moffen_aantal": len(v.get("moffen", [])),
         "moffen": _cap(_zonder_geometrie(v.get("moffen", [])), 40, "moffen"),
         "werkpakketten": _zonder_geometrie(v.get("werkpakketten", [])),
@@ -256,6 +391,22 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
 # ---------------------------------------------------------------------------
 # Generatie: Markdown-stroom uit het model
 # ---------------------------------------------------------------------------
+
+def _risicoregister(projectnaam: str) -> list:
+    """Top-risico's uit het procesdossier (data/proces/<project>.json)."""
+    if not projectnaam:
+        return []
+    try:
+        import proces as proces_mod
+        rijen = proces_mod.laad_state(projectnaam).get("risico", [])
+    except Exception:
+        return []
+    return [{k: r.get(k) for k in
+             ("nr", "omschrijving", "oorzaak", "gevolg", "aspect", "stadium",
+              "allocatie", "werkpakket", "kans", "score", "status",
+              "maatregelen")}
+            for r in rijen[:25]]
+
 
 def _check_fase(fase: str) -> str:
     fase = fase.upper()
@@ -600,7 +751,7 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
 
     P = []
     # --- titelpagina ---
-    P.append(_para("InfraEngine · Ontwerpnota middenspanningstracé",
+    P.append(_para("InfraEngine · Ontwikkelnota middenspanningstracé",
                    style="NotaKicker"))
     P.append(_para(FASE_NAMEN[fase] + f" ({fase})", style="NotaTitel"))
     P.append(_para(titel, style="NotaSubtitel"))

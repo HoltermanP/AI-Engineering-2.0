@@ -225,15 +225,27 @@ onbereikbaar (en een lopende berekening breekt af).
    - Eigen bijlagen toevoegen (bijv. correspondentie of eigendomsbewijs).
    Dossiers zijn persistent per perceel (`data/zro/<perceel>/`) en de
    status loopt mee in het ZRO-register en de Excel-export.
-7. **Ontwerpnota's met AI (VO / DO / UO)** — knoppen in het Export-paneel.
+7. **Ontwikkelnota's met AI (VO / DO / UO)** — knoppen in het Export-paneel.
    De backend bundelt alle beschikbare data van het berekende tracé
    (varianten + MCA, segmenten, kruisingen, boringen, vergunningen,
-   onderzoeken, ZRO incl. dossierstatus, toetsing, moffen, kosten én de
-   bekende databeperkingen) en laat Claude (`claude-opus-4-8`) daar een
-   fase-specifieke ontwerpnota van schrijven: VO (variantenafweging en
-   voorkeursvariant), DO (definitieve tracékeuze, technieken, vergunningen-
-   en ZRO-strategie) of UO (uitvoeringswijze, boringen en werkterreinen,
-   meldingen, werkvolgorde). De nota bouwt zich **live op in een
+   onderzoeken, ZRO incl. dossierstatus, toetsing, moffen, kosten, het
+   kans- en risicoregister uit het procesdossier én de bekende
+   databeperkingen) en laat Claude (`claude-opus-4-8`) daar een
+   fase-specifieke **ontwikkelnota in het vaste HVP/Liander-format** van
+   schrijven (naar de aangeleverde UKZ DO-/UO-ontwikkelnota's; het
+   VO-format is daarvan afgeleid): titelblok met verificatietabel,
+   projectteam en versiebeheer, dan de vaste hoofdstukken 1 Inleiding
+   (scope, werkgebied, werkpakkettentabel), 2 Gerelateerde documenten,
+   3 Ontwerp (VO: variantenafweging + MCA en voorkeursvariant; DO:
+   tracéverloop per verbinding met persingen/HDD-nummers en restpunten;
+   UO: HDD-detailoverzicht en uitvoeringswijze per werkpakket; telkens
+   incl. CAR-verzekeringstoets), 4 Omgeving (stakeholderstabellen per
+   werkpakket, conditionerende onderzoeken, seizoensbeperkingen,
+   vergunningen), 5 Randvoorwaarden (risico's RISMAN-geordend, eisen,
+   mijlpalenplanning, V&G, raming, controle en review met de tollgate)
+   en 6 Restpunten (tabel). Ontbrekende gegevens staan als gemarkeerde
+   invulplek [IN TE VULLEN: …]. Hoofdstukindeling per fase instelbaar in
+   `backend/nota.py` (`NOTA_FASEN`). De nota bouwt zich **live op in een
    voorbeeldvenster** (het model streamt begrensde Markdown die als nette
    HTML wordt gerenderd, `GET /api/nota/stream`); daarna is hij te
    downloaden als **opgemaakt Word-document** met titelpagina en
@@ -243,7 +255,56 @@ onbereikbaar (en een lopende berekening breekt af).
    `GET /api/export/nota`). Vereist `ANTHROPIC_API_KEY` (omgeving of
    `infraengine/.env`); fase-instructies, model en Word-stijlen in
    `backend/nota.py`.
-8. **Registerpagina** — knop **▤ Registers** in de kopbalk (of `#registers`
+8. **Procesondersteuning (◫ Proces in de kopbalk)** — het volledige proces
+   van **intake (IV) → VO → DO → UO → overdracht naar realisatie**, met de
+   tollgate-systematiek uit de aangeleverde procesdocumenten (Checklist VO
+   GW-MS v1.5, WOL Checklist Tollgates T3/T4/T5, risico-overzichtstabel en
+   de DO/UO-ontwikkelnota's). 130 processtappen per discipline
+   (document-, scope-, technisch, omgevings-, financieel, plannings-,
+   risico- en contractmanagement), elk met product/beheersdocument en
+   review-markering.
+   - **Uitvoering per stap instelbaar** (⚙ Admin op de procespagina): **AI**
+     (voert uit en meldt gereed), **hybride** (AI maakt het concept, de mens
+     keurt goed of af — met verplichte toelichting bij afkeuren) of **mens**
+     (handmatig). Stappen, producten en hele fasen zijn aan/uit te zetten;
+     de keuzes staan in `data/proces_config.json`.
+   - **Triggers**: na elke tracéberekening (met projectnaam) werkt de app de
+     data-gedreven stappen van de actieve fase automatisch bij (WBS,
+     materiaallijst, raming, planning, stakeholders, vergunningen,
+     onderzoeken, ZRO-stand, K&L derden, documentenregister) — uit te
+     zetten met "AI-stappen automatisch uitvoeren" in de admin. De
+     zijbalk toont **"Wacht op jou"** (goedkeuringen, handmatige stappen,
+     tollgate-reviews) en een meldingenlog.
+   - **AI-conceptdocumenten**: per stap stelt Claude een concept-
+     beheersdocument op uit de projectdata (verificatieplan, VGM-O/VGM-U,
+     bouw- en publiekscommunicatieplan, werkplannen civiel/warm werk,
+     boorplannen per boring, bedienings-, keurings-, verkeers- en
+     bemalingsplan, ecologisch werkprotocol, cultuurtechnisch advies,
+     PRA/projectplan OOO, PvE archeologie, afwijkingen- en
+     wijzigingenregister, oplegnotitie aanneming). Het document bouwt zich
+     live op, wordt na "Opslaan" een opgemaakt **Word-artefact** bij de stap
+     (`data/proces/<project>/`) en de stap springt naar "AI-concept —
+     goedkeuren" (hybride) of "gereed" (AI). De ontwerpnota-stappen (VO/DO/
+     UO) gebruiken de bestaande AI-ontwerpnota's.
+   - **Intake vanuit het IV**: upload het investeringsvoorstel (pdf/docx/
+     txt) bij stap IV-01; de AI leest het document en schrijft het
+     **intakeverslag** (scope, stations, budget, randvoorwaarden, vragen,
+     advies voor de eerste tracéverkenning).
+   - **Tollgates (T1/TM2/T3/T4/T5)**: per fase een reviewtabel met alle
+     ✔-producten (voldoet / voldoet niet + toelichting). Het
+     tollgate-besluit is **altijd menselijk** (naam verplicht); zolang niet
+     alle review-producten gereed zijn kan de gate alleen met een
+     afwijkingsbesluit worden genomen. Een genomen gate activeert de
+     volgende fase.
+   - **Kans- en risicoregister** (tabblad Risico's): structuur naar de
+     projectrisico-overzichtstabel — oorzaak/gevolg, aspect, allocatie
+     OG/ON, kans × gevolgsom (geld/tijd/kwaliteit/veiligheid/omgeving) als
+     score, beheersmaatregelen met soort en actiehouder. De AI genereert en
+     actualiseert projectspecifieke risico's uit de registers (verwijst
+     naar echte VRG-/OND-nummers, zones en boringen); rijen zijn inline te
+     bewerken en te verwijderen. Export naar **Excel** (risico's +
+     procesoverzicht met alle stapstatussen).
+9. **Registerpagina** — knop **▤ Registers** in de kopbalk (of `#registers`
    in de URL) opent alle registers op een eigen pagina: tabel per register
    met sorteren (klik op de kolomkop), filteren per kolom, vrije zoektekst
    en inline bewerken (dubbelklik op een cel met ✎; statusvelden als
@@ -274,9 +335,16 @@ infraengine/
 │   │                  inschrijvingsstaat (fictieve, realistische prijzen)
 │   ├── zro.py         ZRO-dossiers (status, eigenaar, recht, bijlagen),
 │   │                  tekening-generator (PDF) en overeenkomst (.docx)
-│   └── nota.py        AI-ontwerpnota's VO/DO/UO (Claude API) → Word
+│   ├── nota.py        AI-ontwerpnota's VO/DO/UO (Claude API) → Word
+│   └── proces.py      Procesondersteuning IV→VO→DO→UO→realisatie:
+│                      stappencatalogus (tollgates TM2/T3/T4/T5), config
+│                      (admin), triggers, AI-conceptdocumenten, intake-
+│                      analyse, kans- en risicoregister
 ├── frontend/          OpenLayers 9 (CDN) + proj4, zonder buildstap
-└── data/              Opgeslagen projecten (JSON) + data/zro/ dossiers
+│                      (procespagina: proces.js + proces.css)
+└── data/              Opgeslagen projecten (JSON), data/zro/ dossiers,
+                       data/proces/ procesdossiers + AI-artefacten,
+                       data/proces_config.json (admininstellingen)
 ```
 
 Conform FO §8, met twee bewuste vereenvoudigingen voor het prototype:
