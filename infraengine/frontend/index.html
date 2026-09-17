@@ -316,6 +316,7 @@
     <nav id="proces-tabs"></nav>
     <span class="spacer"></span>
     <span id="proces-status" class="mono"></span>
+    <button id="btn-proces-gegevens" title="Projectgegevens voor de ontwikkelnota's: namen verificatietabel, projectteam en mijlpalen">👥 Projectgegevens</button>
     <button id="btn-proces-admin" title="Adminomgeving: stappen en producten aan/uit, uitvoering per stap (AI / mens / hybride)">⚙ Admin</button>
     <button id="btn-proces-verversen" title="Overzicht verversen">⟳</button>
   </div>
@@ -343,6 +344,23 @@
         <button id="proces-doc-sluiten">Sluiten</button>
       </div>
       <div id="proces-doc-wrap"><div id="proces-doc-sheet"></div></div>
+    </div>
+  </div>
+
+  <div id="proces-gegevens-overlay" hidden>
+    <div id="proces-gegevens-venster">
+      <div id="proces-gegevens-kop">
+        <strong>Projectgegevens — ontwikkelnota's</strong>
+        <span id="proces-gegevens-status" class="mono"></span>
+        <span class="spacer"></span>
+        <button id="proces-gegevens-opslaan">Opslaan</button>
+        <button id="proces-gegevens-sluiten">Sluiten</button>
+      </div>
+      <p class="hint">Deze gegevens vullen de <strong>verificatietabel</strong>, het
+        <strong>projectteam</strong> en de <strong>mijlpalenplanning</strong> in de
+        AI-ontwikkelnota's (VO/DO/UO). Lege velden verschijnen in de nota als
+        [IN TE VULLEN].</p>
+      <div id="proces-gegevens-inhoud"></div>
     </div>
   </div>
 

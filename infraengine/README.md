@@ -245,7 +245,23 @@ onbereikbaar (en een lopende berekening breekt af).
    mijlpalenplanning, V&G, raming, controle en review met de tollgate)
    en 6 Restpunten (tabel). Ontbrekende gegevens staan als gemarkeerde
    invulplek [IN TE VULLEN: …]. Hoofdstukindeling per fase instelbaar in
-   `backend/nota.py` (`NOTA_FASEN`). De nota bouwt zich **live op in een
+   `backend/nota.py` (`NOTA_FASEN`).
+   - **Kaarten in de nota** — de AI plaatst `[AFBEELDING: …]`-markers op de
+     voorgeschreven plekken; de app vervangt die door gerenderde kaarten
+     (`backend/kaart.py`, PDOK-luchtfoto-ondergrond, RD New, schaalbalk en
+     noordpijl): de **overzichtstekening** van het tracé met stations en
+     WP-labels (§1.2/§3), het **variantenoverzicht** (alle varianten in
+     kleur, §3.1) en in de VO-nota **Bijlage A** met per variant een eigen
+     kaart plus toelichting. De kaarten staan in het Word-document
+     (ingebed als JPEG) én in de live nota-preview
+     (`GET /api/kaart/overzicht.jpg|varianten.jpg|variant.jpg`).
+   - **Projectgegevens-invulscherm** (procespagina → 👥 Projectgegevens):
+     namen voor de verificatietabel (opdrachtgever, opgesteld door,
+     verificatie, autorisatie, vrijgave), het projectteam
+     (naam/functie/organisatie) en de mijlpalen (VO/DO/UO gereed, contract,
+     GSU, IBN). Opgeslagen per project (`data/proces/<project>.json`) en
+     automatisch gebruikt in het titelblok en §5.3 van elke ontwikkelnota;
+     alleen lege velden blijven [IN TE VULLEN]. De nota bouwt zich **live op in een
    voorbeeldvenster** (het model streamt begrensde Markdown die als nette
    HTML wordt gerenderd, `GET /api/nota/stream`); daarna is hij te
    downloaden als **opgemaakt Word-document** met titelpagina en

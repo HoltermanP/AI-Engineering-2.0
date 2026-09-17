@@ -2373,6 +2373,22 @@ let notaFase = "";
 let docModus = "nota";   // "nota" of "bureau" — bepaalt het download-endpoint
 let bureauNr = "";       // OND-nummer van het lopende bureauonderzoek
 
+/* [AFBEELDING: …]-marker (ontwikkelnota's) → URL van de gerenderde kaart */
+function kaartMarkerSrc(label) {
+  const l = label.toLowerCase();
+  if (l.startsWith("overzicht"))
+    return "api/kaart/overzicht.jpg?variant=" + actieveVariant;
+  if (l === "varianten") return "api/kaart/varianten.jpg";
+  if (l.startsWith("variant")) {
+    const naam = label.replace(/^variant[:\s–-]*/i, "").trim().toLowerCase();
+    const vs = (resultaat && resultaat.varianten) || [];
+    let idx = vs.findIndex(v => v.naam.trim().toLowerCase() === naam);
+    if (idx < 0) idx = vs.findIndex(v => v.naam.toLowerCase().includes(naam));
+    if (idx >= 0) return "api/kaart/variant.jpg?variant=" + idx;
+  }
+  return null;
+}
+
 /* Begrensde Markdown → HTML (zelfde subset als backend/nota.py) */
 function mdNaarHtml(md) {
   const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -2392,6 +2408,15 @@ function mdNaarHtml(md) {
       flush();
       const lvl = s.match(/^#+/)[0].length;
       html += `<h${lvl}>${inline(s.replace(/^#+\s*/, ""))}</h${lvl}>`;
+      i++; continue;
+    }
+    const afb = s.match(/^\[AFBEELDING:\s*([^\]]+)\]$/i);
+    if (afb) {
+      flush();
+      const src = kaartMarkerSrc(afb[1].trim());
+      html += src
+        ? `<img class="nota-kaart" src="${src}" alt="${esc(afb[1])}" loading="lazy">`
+        : `<p>${inline(s)}</p>`;
       i++; continue;
     }
     if (lijstRe.test(s)) {

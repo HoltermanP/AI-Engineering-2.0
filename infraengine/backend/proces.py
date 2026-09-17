@@ -811,6 +811,62 @@ def _artefact_toevoegen(st: dict, naam: str, soort: str, url: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Projectgegevens: namen voor de verificatietabel en het projectteam van de
+# ontwikkelnota's, plus de mijlpalendata — in te vullen via het
+# projectgegevens-scherm (procespagina) en gebruikt door nota.bouw_context.
+# ---------------------------------------------------------------------------
+
+TEAM_ROLLEN = ("Ontwerpleider", "Projectbeheerser", "Omgevingsmanager",
+               "Projectleider", "Planner", "Technisch manager")
+VERIFICATIE_VELDEN = ("opdrachtgever", "opgesteld_door", "verificatie",
+                      "autorisatie", "vrijgave")
+MIJLPAAL_VELDEN = ("vo_gereed", "do_gereed", "uo_gereed",
+                   "contract_getekend", "start_uitvoering", "ibn_datum")
+MIJLPAAL_LABELS = {
+    "vo_gereed": "VO gereed", "do_gereed": "DO gereed",
+    "uo_gereed": "UO gereed", "contract_getekend": "Contract getekend",
+    "start_uitvoering": "Geplande start uitvoering (GSU)",
+    "ibn_datum": "IBN-datum",
+}
+
+
+def _lege_gegevens() -> dict:
+    return {"verificatie": {k: "" for k in VERIFICATIE_VELDEN},
+            "team": [{"naam": "", "functie": rol, "organisatie": ""}
+                     for rol in TEAM_ROLLEN],
+            "mijlpalen": {k: "" for k in MIJLPAAL_VELDEN}}
+
+
+def laad_gegevens(project: str) -> dict:
+    basis = _lege_gegevens()
+    g = laad_state(project).get("gegevens") or {}
+    basis["verificatie"].update({k: str(v)[:120] for k, v in
+                                 (g.get("verificatie") or {}).items()
+                                 if k in VERIFICATIE_VELDEN})
+    if isinstance(g.get("team"), list) and g["team"]:
+        basis["team"] = [{"naam": str(r.get("naam", ""))[:120],
+                          "functie": str(r.get("functie", ""))[:80],
+                          "organisatie": str(r.get("organisatie", ""))[:80]}
+                         for r in g["team"][:16] if isinstance(r, dict)]
+    basis["mijlpalen"].update({k: str(v)[:40] for k, v in
+                               (g.get("mijlpalen") or {}).items()
+                               if k in MIJLPAAL_VELDEN})
+    return basis
+
+
+def bewaar_gegevens(project: str, gegevens: dict) -> dict:
+    state = laad_state(project)
+    state["gegevens"] = gegevens if isinstance(gegevens, dict) else {}
+    bewaar_state(state)
+    schoon = laad_gegevens(project)
+    state["gegevens"] = schoon
+    _melding(state, "Projectgegevens (verificatietabel, projectteam, "
+                    "mijlpalen) bijgewerkt.")
+    bewaar_state(state)
+    return schoon
+
+
+# ---------------------------------------------------------------------------
 # Fase- en tollgate-logica
 # ---------------------------------------------------------------------------
 

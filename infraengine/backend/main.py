@@ -26,6 +26,7 @@ import ahn
 import brk
 import engine
 import grondwater
+import kaart as kaart_mod
 import klic
 import nota as nota_mod
 import pdok
@@ -1882,6 +1883,55 @@ def proces_risico_verwijder(project: str, nr: str):
         return proces_mod.risico_verwijder(project, nr)
     except proces_mod.ProcesError as e:
         raise HTTPException(422, str(e))
+
+
+class ProcesGegevens(BaseModel):
+    project: str
+    gegevens: dict
+
+
+@app.get("/api/proces/gegevens")
+def proces_gegevens(project: str):
+    """Projectgegevens voor de ontwikkelnota's: verificatietabel-namen,
+    projectteam en mijlpalen (invulscherm op de procespagina)."""
+    return {**proces_mod.laad_gegevens(project),
+            "team_rollen": proces_mod.TEAM_ROLLEN,
+            "mijlpaal_labels": proces_mod.MIJLPAAL_LABELS}
+
+
+@app.post("/api/proces/gegevens")
+def proces_gegevens_opslaan(req: ProcesGegevens):
+    try:
+        return proces_mod.bewaar_gegevens(req.project, req.gegevens)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+# ---------------------------------------------------------------------------
+# Kaartafbeeldingen (PNG) voor de ontwikkelnota's en de nota-preview
+# ---------------------------------------------------------------------------
+
+def _jpg(data: bytes) -> StreamingResponse:
+    return StreamingResponse(io.BytesIO(data), media_type="image/jpeg",
+                             headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/kaart/overzicht.jpg")
+def kaart_overzicht(variant: int = 0, projectnaam: str = ""):
+    _need_result(variant)
+    return _jpg(kaart_mod.overzichtskaart(LAST_RESULT, variant, projectnaam))
+
+
+@app.get("/api/kaart/varianten.jpg")
+def kaart_varianten(projectnaam: str = ""):
+    _need_result(0)
+    return _jpg(kaart_mod.variantenkaart(LAST_RESULT, projectnaam))
+
+
+@app.get("/api/kaart/variant.jpg")
+def kaart_variant(variant: int = 0, projectnaam: str = ""):
+    _need_result(variant)
+    return _jpg(kaart_mod.variantkaart(LAST_RESULT, variant, projectnaam))
 
 
 @app.get("/api/proces/risico/xlsx")

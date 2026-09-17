@@ -68,13 +68,17 @@ _FMT_KOP = (
     "Begin met `# {fase} Ontwikkelnota | <projectnaam>` en direct daarna, "
     "zonder kop, drie kleine tabellen:\n"
     "1) Verificatietabel (rijen: Opdrachtgever; Opgesteld door; Verificatie; "
-    "Autorisatie; Vrijgave; Datum; Versie) — vul onbekende namen als "
-    "[IN TE VULLEN: naam];\n"
-    "2) Projectteam (kolommen Naam | Functie | Organisatie) met de rollen "
-    "ontwerpleider, projectbeheerser, omgevingsmanager, projectleider, "
-    "planner en technisch manager als invulregels;\n"
+    "Autorisatie; Vrijgave; Datum; Versie) — neem de namen over uit "
+    "`projectgegevens.verificatie` in de data; alleen waar een veld daar "
+    "leeg is schrijf je [IN TE VULLEN: naam];\n"
+    "2) Projectteam (kolommen Naam | Functie | Organisatie) — de rijen uit "
+    "`projectgegevens.team`; lege namen als [IN TE VULLEN: naam];\n"
     "3) Versiebeheer (kolommen Versie | Datum | Status | Toelichting) met "
     "één regel: 0.1, vandaag, 'Concept ter review', 'AI-gegenereerd concept'.\n"
+    "AFBEELDINGEN: op de in de hoofdstukken aangegeven plekken schrijf je "
+    "op een eigen regel exact de marker die daar genoemd wordt (bijv. "
+    "`[AFBEELDING: overzichtstekening]`) — de applicatie vervangt die "
+    "marker door de gerenderde kaart; verzin geen andere markers.\n"
     "Daarna deze hoofdstukken, met exact deze nummers en titels:\n"
 )
 
@@ -86,8 +90,11 @@ _FMT_STAART = (
     "per punt: 'Nog opstarten' of 'Lopend'.\n\n"
     "Invulregels: gebruik overal de echte aantallen, lengtes, nummers "
     "(WP-, HDD-/BOR-, VRG-, OND-, ZRO-, RIS-) en bedragen uit de "
-    "projectdata. Documentverwijzingen die de applicatie niet kent schrijf "
-    "je als generieke verwijzing tussen rechte haken, bijvoorbeeld "
+    "projectdata. Voor de mijlpalentabel in §5.3 gebruik je de data uit "
+    "`projectgegevens.mijlpalen` (alleen lege mijlpalen als [IN TE VULLEN: "
+    "datum], aangevuld met de weekindicaties uit de planning). "
+    "Documentverwijzingen die de applicatie niet kent schrijf je als "
+    "generieke verwijzing tussen rechte haken, bijvoorbeeld "
     "[verificatieplan] of [IN TE VULLEN: link raming]."
 )
 
@@ -98,8 +105,11 @@ NOTA_FASEN = {
             "`## 1. Inleiding` — doelzin (ontwerpscope als input voor de "
             "VO-fase); `### 1.1 Scope van de opdracht` (wat wordt ontworpen: "
             "MS-tracé tussen de stations, aantal verbindingen); `### 1.2 Scope "
-            "werkgebied` (gebied, gemeente(n), totale tracélengte, verwijzing "
-            "[overzichtstekening]); `### 1.3 Werkpakketten` — tabel "
+            "werkgebied` (gebied, gemeente(n), totale tracélengte) — sluit "
+            "deze paragraaf af met de marker `[AFBEELDING: "
+            "overzichtstekening]` op een eigen regel, gevolgd door een "
+            "figuuronderschrift-regel 'Figuur 1. Overzichtstekening tracé "
+            "<project>'; `### 1.3 Werkpakketten` — tabel "
             "(Werkpakket | Van | Naar | Meters) uit de werkpakketten-data met "
             "totaalregel; `### 1.4 Afwijkingsregister/wijzigingen` (procedure + "
             "verwijzing [afwijkingenregister]); `### 1.5 Leeswijzer`.\n"
@@ -107,10 +117,13 @@ NOTA_FASEN = {
             "`### 2.1 Generieke ontwerprichtlijnen` — tabel met de toegepaste "
             "richtlijndocumenten uit de data (richtlijnen_toegepast) en "
             "invulregels voor de S- en W-normbladen van de netbeheerder.\n"
-            "`## 3. Ontwerp` — het VO-hart: `### 3.1 Variantenafweging` met "
-            "de MCA-tabel over alle varianten (lengte, kruisingen, boringen, "
-            "privaat terrein, kosten) en de onderbouwde keuze voor de "
-            "**voorkeursvariant**; `### 3.2 Beschrijving voorkeurstracé` — "
+            "`## 3. Ontwerp` — het VO-hart: `### 3.1 Variantenafweging` — "
+            "compact: de MCA-tabel over alle varianten (lengte, kruisingen, "
+            "boringen, privaat terrein, kosten), daarna de marker "
+            "`[AFBEELDING: varianten]` op een eigen regel met onderschrift "
+            "'Figuur 2. Variantenoverzicht', en de onderbouwde keuze voor de "
+            "**voorkeursvariant**; de uitgebreide toelichting per variant "
+            "staat in Bijlage A; `### 3.2 Beschrijving voorkeurstracé` — "
             "per verbinding/werkpakket het tracéverloop op hoofdlijnen "
             "(ligging berm/voetpad/rijbaan, belangrijkste kruisingen met "
             "voorgestelde techniek en HDD-/boringnummers); `### 3.3 "
@@ -136,7 +149,15 @@ NOTA_FASEN = {
             "plan ontwerp`; `### 5.5 Raming` (indicatieve aannemingssom uit "
             "de RAW-calculatie); `### 5.6 Controle en review` (tollgate TM2, "
             "reviewproces bouwteam).")
-        + _FMT_STAART,
+        + _FMT_STAART + (
+            "\n\nNa hoofdstuk 6 volgt `## Bijlage A. Variantenoverzicht` — "
+            "per berekende variant een paragraaf `### A.<n> <variantnaam>` "
+            "met eerst de marker `[AFBEELDING: variant <variantnaam>]` op "
+            "een eigen regel (met onderschrift 'Figuur A.<n> Variant "
+            "<variantnaam>') en daarna een toelichting van 3-6 zinnen: de "
+            "kenmerken uit de MCA (lengte, kruisingen, privaat terrein, "
+            "kosten), de sterke en zwakke punten en waarom deze variant wel "
+            "of niet de voorkeur heeft gekregen."),
     },
     "DO": {
         "titel": "DO Ontwikkelnota",
@@ -151,7 +172,10 @@ NOTA_FASEN = {
             "ontwerprichtlijnen` — tabel met de toegepaste "
             "richtlijndocumenten (richtlijnen_toegepast) en invulregels voor "
             "de S- en W-normbladen.\n"
-            "`## 3. Ontwerp` — de kern van het DO: groepeer het tracé in "
+            "`## 3. Ontwerp` — de kern van het DO: open het hoofdstuk met "
+            "de marker `[AFBEELDING: overzichtstekening]` op een eigen "
+            "regel en onderschrift 'Figuur 1 – WP-overzichtstekening'; "
+            "groepeer daarna het tracé in "
             "logische verbindingen (reeksen werkpakketten) en beschrijf per "
             "verbinding `### 3.x Verbinding x – WPxx t/m WPyy – <meters> "
             "meters` het tracéverloop als lopende tekst, zoals een "
@@ -187,7 +211,9 @@ NOTA_FASEN = {
         "titel": "UO Ontwikkelnota",
         "doel": _FMT_KOP.format(fase="UO") + (
             "`## 1. Inleiding` — `### 1.1 Scope van de opdracht`; `### 1.2 "
-            "Scope werkgebied`; `### 1.3 Werkpakketten` — tabel (Werkpakket "
+            "Scope werkgebied` — sluit af met de marker `[AFBEELDING: "
+            "overzichtstekening]` op een eigen regel en onderschrift "
+            "'Figuur 1. Plattegrond tracé'; `### 1.3 Werkpakketten` — tabel (Werkpakket "
             "| Van | Naar | Meters) met totaalregel; `### 1.4 "
             "Afwijkingsregister/wijzigingen` (afwijkingenregister + "
             "VTW-overzicht); `### 1.5 Leeswijzer`.\n"
@@ -360,6 +386,9 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
         # kans- en risicoregister uit het procesdossier (procespagina),
         # RISMAN-geordend — voedt hoofdstuk 5.1 van de ontwikkelnota
         "risicoregister": _risicoregister(projectnaam),
+        # namen verificatietabel/projectteam + mijlpalen uit het
+        # projectgegevens-scherm (procespagina) — voedt het titelblok en §5.3
+        "projectgegevens": _projectgegevens(projectnaam),
         "moffen_aantal": len(v.get("moffen", [])),
         "moffen": _cap(_zonder_geometrie(v.get("moffen", [])), 40, "moffen"),
         "werkpakketten": _zonder_geometrie(v.get("werkpakketten", [])),
@@ -406,6 +435,19 @@ def _risicoregister(projectnaam: str) -> list:
               "allocatie", "werkpakket", "kans", "score", "status",
               "maatregelen")}
             for r in rijen[:25]]
+
+
+def _projectgegevens(projectnaam: str) -> dict:
+    """Ingevulde projectgegevens (procespagina → knop Projectgegevens)."""
+    if not projectnaam:
+        return {}
+    try:
+        import proces as proces_mod
+        g = proces_mod.laad_gegevens(projectnaam)
+        g["mijlpaal_labels"] = proces_mod.MIJLPAAL_LABELS
+        return g
+    except Exception:
+        return {}
 
 
 def _check_fase(fase: str) -> str:
@@ -679,7 +721,36 @@ def _footer_xml(tekst: str) -> str:
         "</w:p></w:ftr>")
 
 
-def _docx_pakket(body: str, footer_tekst: str) -> bytes:
+# tekstbreedte van de pagina (A4, marges 2,5 cm) in EMU — afbeeldingen
+# worden hierop geschaald; 1 px (96 dpi) = 9525 EMU
+_TEKST_BREEDTE_EMU = 5_760_000
+_EMU_PER_PX = 9525
+
+
+def _img_para(rid: str, nr: int, px_w: int, px_h: int) -> str:
+    """Gecentreerde inline-afbeelding, geschaald op de tekstbreedte."""
+    cx = min(px_w * _EMU_PER_PX, _TEKST_BREEDTE_EMU)
+    cy = int(cx * px_h / px_w)
+    return (
+        '<w:p><w:pPr><w:jc w:val="center"/>'
+        '<w:spacing w:before="120" w:after="60"/></w:pPr><w:r><w:drawing>'
+        '<wp:inline distT="0" distB="0" distL="0" distR="0" '
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/>'
+        f'<wp:docPr id="{nr}" name="kaart{nr}"/>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'<pic:nvPicPr><pic:cNvPr id="{nr}" name="kaart{nr}"/><pic:cNvPicPr/></pic:nvPicPr>'
+        f'<pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+        f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
+        '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
+    )
+
+
+def _docx_pakket(body: str, footer_tekst: str,
+                 media: list[tuple[str, bytes]] | None = None) -> bytes:
     document = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -696,6 +767,8 @@ def _docx_pakket(body: str, footer_tekst: str) -> bytes:
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Default Extension="png" ContentType="image/png"/>'
+        '<Default Extension="jpg" ContentType="image/jpeg"/>'
         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-'
         'officedocument.wordprocessingml.document.main+xml"/>'
         '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-'
@@ -709,13 +782,18 @@ def _docx_pakket(body: str, footer_tekst: str) -> bytes:
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
         'relationships/officeDocument" Target="word/document.xml"/></Relationships>'
     )
+    media_rels = "".join(
+        f'<Relationship Id="rIdImg{i}" Type="http://schemas.openxmlformats.org/'
+        f'officeDocument/2006/relationships/image" Target="media/{naam}"/>'
+        for i, (naam, _data) in enumerate(media or []))
     doc_rels = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
         'relationships/styles" Target="styles.xml"/>'
         '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
-        'relationships/footer" Target="footer1.xml"/></Relationships>'
+        'relationships/footer" Target="footer1.xml"/>'
+        + media_rels + "</Relationships>"
     )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -725,6 +803,8 @@ def _docx_pakket(body: str, footer_tekst: str) -> bytes:
         z.writestr("word/styles.xml", _STYLES_XML)
         z.writestr("word/footer1.xml", _footer_xml(footer_tekst))
         z.writestr("word/_rels/document.xml.rels", doc_rels)
+        for naam, data in (media or []):
+            z.writestr(f"word/media/{naam}", data)
     return buf.getvalue()
 
 
@@ -772,7 +852,37 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
                    ppr_extra='<w:spacing w:before="4400"/>'))
     P.append('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
 
-    # --- inhoud ---
+    # --- inhoud (incl. [AFBEELDING: …]-markers → gerenderde kaarten) ---
+    media: list = []
+    beeld_cache: dict = {}
+
+    def _beeld(label: str) -> tuple[str, tuple[int, int]]:
+        """Kaart renderen voor een marker; retourneert (rel-id, (px_w, px_h))."""
+        sleutel = label.strip().lower()
+        if sleutel in beeld_cache:
+            return beeld_cache[sleutel]
+        import kaart as kaart_mod
+        if sleutel.startswith("overzicht"):
+            png = kaart_mod.overzichtskaart(result, variant_idx, proj["naam"])
+        elif sleutel == "varianten":
+            png = kaart_mod.variantenkaart(result, proj["naam"])
+        elif sleutel.startswith("variant"):
+            rest = label.strip()[len("variant"):].strip(" :–-")
+            idx = kaart_mod.variant_index(result, rest)
+            if idx is None:
+                raise NotaError(f"Onbekende variant '{rest}'.")
+            png = kaart_mod.variantkaart(result, idx, proj["naam"])
+        else:
+            raise NotaError(f"Onbekende afbeelding '{label}'.")
+        from PIL import Image
+        with Image.open(io.BytesIO(png)) as im:
+            afm = im.size
+        media.append((f"kaart{len(media)}.jpg", png))
+        uit = (f"rIdImg{len(media) - 1}", afm)
+        beeld_cache[sleutel] = uit
+        return uit
+
+    _afb_re = re.compile(r"^\[AFBEELDING:\s*([^\]]+)\]$", re.I)
     for soort, data in inhoud:
         if soort == "h1" or soort == "h2":
             P.append(_para(data, style="Kop1"))
@@ -784,10 +894,25 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
         elif soort == "table":
             P.append(_tabel(data))
         else:
-            P.append(_para(data))
+            m = _afb_re.match(data.strip())
+            if m:
+                try:
+                    rid, (pw, ph) = _beeld(m.group(1))
+                    P.append(_img_para(rid, len(media), pw, ph))
+                except Exception:
+                    P.append(_para(f"[Kaart niet beschikbaar: {m.group(1)} — "
+                                   "controleer de netverbinding en probeer "
+                                   "opnieuw]", size=18, color=_INK3))
+            elif data.strip().startswith("Figuur "):
+                # figuuronderschrift: klein, grijs, gecentreerd
+                P.append(_para(data, size=17, color=_INK3, italic=True,
+                               ppr_extra='<w:jc w:val="center"/>'
+                                         '<w:spacing w:after="220"/>'))
+            else:
+                P.append(_para(data))
 
     footer = f"{proj['naam']} · {FASE_NAMEN[fase]} ({fase}) · concept {proj['datum']}"
-    docx = _docx_pakket("".join(P), footer)
+    docx = _docx_pakket("".join(P), footer, media)
     slug = (projectnaam or "infraengine").strip().replace(" ", "_")[:40] or "infraengine"
     naam = f"{fase}-nota_{slug}_{date.today().strftime('%Y%m%d')}.docx"
     return naam, docx

@@ -599,6 +599,83 @@ function koppelRisicoActies() {
     }));
 }
 
+/* -------------------------------------------------- projectgegevens (nota's) */
+
+const GEG_VERIFICATIE = [
+  ["opdrachtgever", "Opdrachtgever"], ["opgesteld_door", "Opgesteld door"],
+  ["verificatie", "Verificatie"], ["autorisatie", "Autorisatie"],
+  ["vrijgave", "Vrijgave"],
+];
+
+prEl("btn-proces-gegevens").addEventListener("click", openGegevens);
+prEl("proces-gegevens-sluiten").addEventListener("click", () =>
+  prEl("proces-gegevens-overlay").hidden = true);
+
+async function openGegevens() {
+  if (!prProject()) { alert("Geef eerst een projectnaam op."); return; }
+  let g;
+  try {
+    g = await prFetch(`api/proces/gegevens?project=${encodeURIComponent(prProject())}`);
+  } catch (e) { alert(e.message); return; }
+  const ml = g.mijlpaal_labels || {};
+  let html = `<h4 class="discipline">Verificatietabel</h4>
+    <table class="register proces-tabel gegevens-tabel"><tbody>` +
+    GEG_VERIFICATIE.map(([veld, label]) =>
+      `<tr><td class="smal"><strong>${label}</strong></td>
+       <td><input data-geg="verificatie.${veld}"
+            value="${prEsc(g.verificatie?.[veld] || "")}" placeholder="naam"></td></tr>`)
+      .join("") + `</tbody></table>
+    <h4 class="discipline">Projectteam</h4>
+    <table class="register proces-tabel gegevens-tabel" id="gegevens-team">
+      <thead><tr><th>Naam</th><th>Functie</th><th>Organisatie</th></tr></thead><tbody>` +
+    (g.team || []).map(r =>
+      `<tr><td><input data-team="naam" value="${prEsc(r.naam)}" placeholder="naam"></td>
+       <td><input data-team="functie" value="${prEsc(r.functie)}"></td>
+       <td><input data-team="organisatie" value="${prEsc(r.organisatie)}" placeholder="organisatie"></td></tr>`)
+      .join("") + `</tbody></table>
+    <button class="klein" id="gegevens-team-plus">+ teamlid</button>
+    <h4 class="discipline">Mijlpalen</h4>
+    <table class="register proces-tabel gegevens-tabel"><tbody>` +
+    Object.keys(g.mijlpalen || {}).map(k =>
+      `<tr><td class="smal"><strong>${prEsc(ml[k] || k)}</strong></td>
+       <td><input data-geg="mijlpalen.${k}" value="${prEsc(g.mijlpalen[k] || "")}"
+            placeholder="dd-mm-jjjj"></td></tr>`).join("") +
+    "</tbody></table>";
+  prEl("proces-gegevens-inhoud").innerHTML = html;
+  prEl("proces-gegevens-status").textContent = "";
+  prEl("gegevens-team-plus").addEventListener("click", () => {
+    const tb = document.querySelector("#gegevens-team tbody");
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><input data-team="naam" placeholder="naam"></td>
+      <td><input data-team="functie" placeholder="functie"></td>
+      <td><input data-team="organisatie" placeholder="organisatie"></td>`;
+    tb.appendChild(tr);
+  });
+  prEl("proces-gegevens-overlay").hidden = false;
+}
+
+prEl("proces-gegevens-opslaan").addEventListener("click", async () => {
+  const gegevens = { verificatie: {}, mijlpalen: {}, team: [] };
+  document.querySelectorAll("#proces-gegevens-inhoud input[data-geg]").forEach(inp => {
+    const [groep, veld] = inp.dataset.geg.split(".");
+    gegevens[groep][veld] = inp.value.trim();
+  });
+  document.querySelectorAll("#gegevens-team tbody tr").forEach(tr => {
+    const rij = {};
+    tr.querySelectorAll("input[data-team]").forEach(inp =>
+      rij[inp.dataset.team] = inp.value.trim());
+    if (rij.naam || rij.functie || rij.organisatie) gegevens.team.push(rij);
+  });
+  try {
+    await prFetch("api/proces/gegevens", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: prProject(), gegevens }),
+    });
+    prEl("proces-gegevens-status").textContent = "opgeslagen ✓";
+    setTimeout(() => prEl("proces-gegevens-overlay").hidden = true, 600);
+  } catch (e) { alert(e.message); }
+});
+
 /* ------------------------------------------------------------------ admin */
 
 prEl("btn-proces-admin").addEventListener("click", openAdmin);
