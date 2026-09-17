@@ -1340,7 +1340,9 @@ function toonTab() {
           tdn(x.mca.lengte_m + " m"),
           td(Object.entries(x.mca.kruisingen).map(([k, n]) => `${n}× ${k}`).join("<br>") || "—"),
           tdn(x.mca.meters_privaat_m + " m"),
-          tdn(x.mca.aantal_percelen),
+          tdn(x.mca.aantal_percelen
+            + (x.mca.percelen_privaat != null
+               ? ` (${x.mca.percelen_privaat} priv.)` : "")),
           tdn(x.mca.aantal_vergunningen),
           tdn((x.mca.kosten_eur === best ? "★ " : "") + eur(x.mca.kosten_eur)),
           tdn("≤ " + x.mca.doorlooptijd_wk + " wk"),
@@ -1529,6 +1531,24 @@ let zdData = null;          // laatste detail-antwoord van de backend
 let zdVergGrondslag = "";   // gevuld zolang de vergoeding het richtlijnvoorstel volgt
 let demoZroPending = false; // #demo-zro: eerste perceel openen zodra de tab er is
 
+const EIGENDOM_CHIP = { privaat: "waarschuwing", publiek: "ok", onbekend: "info" };
+function eigendomKlasse(eigendom) {
+  return EIGENDOM_CHIP[eigendom] || "info";
+}
+function eigendomCel(z) {
+  const e = z.eigendom || "onbekend";
+  return `<span class="chip ${eigendomKlasse(e)}" title="${
+    (z.eigendom_toelichting || "").replace(/"/g, "&quot;")}">${e}</span>`;
+}
+function zroEigendomSamenvatting(items) {
+  const n = k => items.filter(z => (z.eigendom || "onbekend") === k).length;
+  const priv = n("privaat"), pub = n("publiek"), onb = n("onbekend");
+  let s = `Inschatting eigendom: ${priv} privaat, ${pub} publiek, ${onb} onbekend — `
+    + `circa ${priv}${onb ? `–${priv + onb}` : ""} ZRO('s) te vestigen op private percelen`;
+  s += pub ? "; publieke percelen lopen doorgaans via de AVOI-vergunning." : ".";
+  return s;
+}
+
 function zroStatusKlasse(status) {
   if (!status) return "";
   if (status === "gevestigd") return "ok";
@@ -1551,10 +1571,11 @@ async function toonZroTab(el, v) {
     return;
   }
   const t = tabel(
-    ["Nr", "Perceel", "Eigenaar", "Lengte", "Werkstrook", "Aard recht", "Status", "Dossier"],
+    ["Nr", "Perceel", "Eigenaar", "Eigendom", "Lengte", "Werkstrook", "Aard recht", "Status", "Dossier"],
     items.map(z => ({
       cells: [td(z.nr), td(z.perceel),
         td(z.eigenaar_dossier || z.eigenaar),
+        td(eigendomCel(z)),
         tdn(z.ingenomen_lengte_m + " m"), tdn(z.werkstrook_m2 + " m²"),
         td(z.aard_recht_dossier || z.aard_recht),
         td(`<span class="chip ${zroStatusKlasse(z.status)}">${z.status}</span>`),
@@ -1565,6 +1586,10 @@ async function toonZroTab(el, v) {
     })),
     i => openZroDetail(items[i].nr));
   el.appendChild(t);
+  const sam = document.createElement("p");
+  sam.className = "hint";
+  sam.textContent = zroEigendomSamenvatting(items);
+  el.appendChild(sam);
   const p = document.createElement("p");
   p.className = "hint";
   p.textContent = "Klik op een perceel om het ZRO-dossier te openen: status, eigenaar, tekening en overeenkomst.";
@@ -1607,6 +1632,9 @@ function vulZroDetail(d) {
     ["Ingenomen tracélengte", item.ingenomen_lengte_m + " m"],
     ["Werkstrook", item.werkstrook_m2 + " m²"],
     ["Voorstel register", item.aard_recht],
+    ["Eigendom (inschatting)", item.eigendom
+      ? `${eigendomCel(item)} <span class="hint">${item.eigendom_toelichting || ""}</span>`
+      : "onbekend"],
     ["Kadastrale bron", "DKK (PDOK) — eigendom via BRK niet gekoppeld"],
   ].map(([k, w]) => `<div><dt>${k}</dt><dd>${w}</dd></div>`).join("");
 

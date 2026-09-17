@@ -11,6 +11,7 @@ import math
 from shapely.geometry import LineString, Point, mapping
 
 import brk
+import eigendom
 from engine import (
     CL_BERM, CL_ERF, CL_FIETSPAD, CL_NATUURGROEN, CL_ONBEKEND, CL_ONVERHARD,
     CL_PAND, CL_PARKEER, CL_RIJBAAN, CL_SPOOR, CL_VERBODEN, CL_VOETPAD, CL_WATER,
@@ -380,7 +381,8 @@ def build_sonderingen(route: LineString, cpts: list | None,
 # 6.3 Zakelijk recht (ZRO): gekruiste percelen
 # ---------------------------------------------------------------------------
 
-def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0) -> list:
+def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0,
+              eigendom_signalen: "eigendom.Signalen | None" = None) -> list:
     from shapely.prepared import prep
 
     items = []
@@ -406,11 +408,16 @@ def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0) -> l
                                              if brk_info.get("adres") else ""))
                     if brk_info and brk_info.get("eigenaar")
                     else "onbekend — BRK-eigendom niet gekoppeld (licentie)")
+        schatting = eigendom.schat(
+            geom if geom.geom_type in ("Polygon", "MultiPolygon") else None,
+            brk_info, eigendom_signalen)
         items.append({
             **_basisitem(f"ZRO-{len(items) + 1:03d}", "zro",
                          mapping(geom) if geom.geom_type in ("Polygon", "MultiPolygon") else None),
             "perceel": perceel,
             "eigenaar": eigenaar,
+            "eigendom": schatting["eigendom"],
+            "eigendom_toelichting": schatting["eigendom_toelichting"],
             "ingenomen_lengte_m": round(lengte, 1),
             "chainage_m": round(route.project(snede.centroid), 1),
             "werkstrook_m2": round(opp),
@@ -883,6 +890,12 @@ def build_mca_row(naam: str, route: LineString, segments: list, crossings: list,
         "kruisingen": per_techniek,
         "meters_privaat_m": round(privaat),
         "aantal_percelen": len(zro),
+        # inschatting eigendom (eigendom.py): private percelen vragen een ZRO,
+        # publieke lopen doorgaans via de AVOI-vergunning
+        "percelen_privaat": sum(1 for z in zro if z.get("eigendom") == "privaat"),
+        "percelen_publiek": sum(1 for z in zro if z.get("eigendom") == "publiek"),
+        "percelen_eigendom_onbekend": sum(1 for z in zro
+                                          if z.get("eigendom") == "onbekend"),
         "aantal_vergunningen": len(vergunningen),
         "kosten_eur": kosten.get("aannemingssom_excl_btw", kosten["totaal"]),
         "doorlooptijd_wk": doorloop,

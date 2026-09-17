@@ -24,6 +24,7 @@ from shapely.ops import unary_union
 
 import ahn
 import brk
+import eigendom as eigendom_mod
 import engine
 import grondwater
 import kaart as kaart_mod
@@ -479,6 +480,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     bomen_gezien: set = set()
     bomen_rivm_fracties: list = []
     percelen_alle: dict = {}
+    eigendom_alle: dict = {}  # eigendomssignalen (BGT), ontdubbeld over chunks
     laag_fouten: dict = {}
     bgt_fouten: dict = {}
     bron_namen = {"bodem": [], "bomen": [], "nge": [], "buisleiding": []}
@@ -505,6 +507,8 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 p.get("kadastraleGemeenteWaarde"), p.get("sectie"),
                 p.get("perceelnummer"))
             percelen_alle.setdefault(sleutel, (g, p))
+        for sleutel, g, cat in eigendom_mod.verzamel_signalen(data["bgt"]):
+            eigendom_alle.setdefault(sleutel, (g, cat))
         for g, r in data["boom_zones"]:
             sleutel = (round(g.x / 2), round(g.y / 2))
             if sleutel not in bomen_gezien:
@@ -621,6 +625,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     _voortgang("registers en toetsing samenstellen")
     gemeente = " / ".join(gemeenten) if gemeenten else None
     percelen = list(percelen_alle.values())
+    eigendom_sig = eigendom_mod.maak_signalen(eigendom_alle.values())
     varianten, fouten = [], []
     son_fouten: list = []  # BRO-sondeerdienst-fouten (gedeeld over varianten)
     for naam in profielen:
@@ -639,7 +644,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         son_register = _sonderingen_register(route, boringen, son_fouten)
         hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
         onderzoeken = build_onderzoeken(zones_m, boringen)
-        zro = build_zro(route, percelen)
+        zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
         checks = build_checks(route, segmenten, kruisingen, boringen, zones_m,
                               bomen_rivm_fractie=(max(bomen_rivm_fracties)
                                                   if bomen_rivm_fracties else None))
@@ -810,6 +815,7 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
     t_data = time.time()
 
     painter = build_painter(bbox, bgt, req.forbidden, cell, data["zone_data"])
+    eigendom_sig = eigendom_mod.signalen_uit_bgt(bgt)
 
     profielen = dict(VARIANT_PROFIELEN) if req.variants else {"Voorkeursvariant": {}}
     varianten = []
@@ -836,7 +842,7 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
             son_register = _sonderingen_register(route, boringen, laag_fouten)
             hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
             onderzoeken = build_onderzoeken(zones_m, boringen)
-            zro = build_zro(route, percelen)
+            zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
             checks = build_checks(route, segments, crossings, boringen, zones_m,
                                   bomen_rivm_fractie=data.get("bomen_rivm_fractie"))
             werkpakketten = build_werkpakketten(route, req.stations)
@@ -1154,10 +1160,12 @@ def export_xlsx(variant: int = 0):
         m = var["mca"]
         kr = "; ".join(f"{k}: {n}" for k, n in m["kruisingen"].items()) or "-"
         mca_rows.append([m["variant"], m["lengte_m"], kr, m["meters_privaat_m"],
-                         m["aantal_percelen"], m["aantal_vergunningen"],
+                         m["aantal_percelen"], m.get("percelen_privaat", ""),
+                         m["aantal_vergunningen"],
                          m["kosten_eur"], m["doorlooptijd_wk"]])
     sheet("MCA varianten",
           ["Variant", "Lengte (m)", "Kruisingen", "Privaat (m)", "Percelen",
+           "Percelen privaat (inschatting)",
            "Vergunningen", "Kosten (EUR)", "Doorlooptijd (wk)"], mca_rows)
     sheet("Werkpakketten",
           ["Nr", "Naam", "Van station", "Tot station", "Van (m)", "Tot (m)",
@@ -1222,6 +1230,8 @@ def export_xlsx(variant: int = 0):
         d = zro_mod.laad_dossier(zro_mod.slug_van(z["perceel"]))
         zro_rows.append([z["nr"], z.get("werkpakket", ""), z["perceel"],
                          d["eigenaar_naam"] or z["eigenaar"],
+                         z.get("eigendom", "onbekend"),
+                         z.get("eigendom_toelichting", ""),
                          z["ingenomen_lengte_m"], z["werkstrook_m2"],
                          d["aard_recht"] or z["aard_recht"],
                          d["vergoeding_eenmalig_eur"],
@@ -1229,7 +1239,9 @@ def export_xlsx(variant: int = 0):
                          d["vergoeding_grondslag"], d["status"],
                          "; ".join(b["bestand"] for b in d["bijlagen"])])
     sheet("ZRO",
-          ["Nr", "Werkpakket", "Perceel", "Eigenaar", "Ingenomen lengte (m)",
+          ["Nr", "Werkpakket", "Perceel", "Eigenaar",
+           "Eigendom (inschatting)", "Toelichting eigendom",
+           "Ingenomen lengte (m)",
            "Werkstrook (m2)", "Aard recht", "Vergoeding eenmalig (EUR)",
            "Vergoeding jaarlijks (EUR)", "Grondslag vergoeding", "Status",
            "Bijlagen"], zro_rows)

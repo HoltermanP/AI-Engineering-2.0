@@ -201,6 +201,10 @@ const REG_DEF = {
       { k: "eigenaar_dossier", label: "Eigenaar", edit: true,
         dossier: "eigenaar_naam",
         toon: r => r.eigenaar_dossier || r.eigenaar || "" },
+      { k: "eigendom", label: "Eigendom",
+        toon: r => r.eigendom || "onbekend",
+        chip: r => eigendomKlasse(r.eigendom),
+        titel: r => r.eigendom_toelichting || "" },
       { k: "ingenomen_lengte_m", label: "Lengte (m)", num: true },
       { k: "werkstrook_m2", label: "Werkstrook (m²)", num: true },
       { k: "aard_recht_dossier", label: "Aard recht",
@@ -559,6 +563,10 @@ function vulTbody() {
         td.appendChild(b);
       } else {
         td.innerHTML = celHtml(col, r);
+        if (col.titel) {
+          const t = col.titel(r);
+          if (t) td.title = t;
+        }
       }
       if (col.edit) {
         td.classList.add("bewerkbaar");
