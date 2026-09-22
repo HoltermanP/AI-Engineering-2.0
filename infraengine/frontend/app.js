@@ -1545,17 +1545,25 @@ function toonTab() {
   } else if (actieveTab === "planning") {
     const rijen = v.planning || [];
     const maxWk = Math.max(1, ...rijen.map(r => r.eind_wk));
-    t = tabel(["WP", "Fase", "Start", "Eind", "Duur", `Planning (t/m wk ${maxWk})`, "Toelichting"],
+    const SF_KLASSE = {
+      "Mobilisatie/inrichting werkterrein": "sf-mobilisatie",
+      "Boring/persing": "sf-boring",
+      "Grondwerk (open sleuf)": "sf-grondwerk",
+      "Kabelwerk/montage": "sf-kabelwerk",
+      "Herstelwerk": "sf-herstel",
+      "Oplevering/keuring": "sf-oplevering",
+    };
+    t = tabel(["WP", "Subfase", "Start", "Eind", "Duur", `Planning (t/m wk ${maxWk})`, "Toelichting"],
       rijen.map(r => ({
-        cells: [td(r.werkpakket), td(r.fase), tdn("wk " + r.start_wk),
+        cells: [td(r.werkpakket), td(r.subfase || r.fase), tdn("wk " + r.start_wk),
           tdn("wk " + r.eind_wk), tdn(r.duur_wk + " wk"),
-          td(`<span class="balkspoor"><span class="balk${r.fase === "Uitvoering" ? " uitvoering" : ""}"` +
+          td(`<span class="balkspoor"><span class="balk ${SF_KLASSE[r.subfase] || "uitvoering"}"` +
              ` style="left:${((r.start_wk - 1) / maxWk * 100).toFixed(1)}%;` +
              `width:${(r.duur_wk / maxWk * 100).toFixed(1)}%"></span></span>`),
           td(r.toelichting)],
       })));
     if (!rijen.length)
-      el.innerHTML = '<p class="leeg">Geen planning — herbereken het tracé.</p>';
+      el.innerHTML = '<p class="leeg">Geen uitvoeringsplanning — herbereken het tracé.</p>';
   } else if (actieveTab === "segmenten") {
     t = tabel(["Nr", "WP", "Ligging", "Van", "Tot", "Lengte"],
       v.segmenten.map(s => ({
@@ -2599,6 +2607,13 @@ function kaartMarkerSrc(label) {
     if (idx < 0) idx = vs.findIndex(v => v.naam.toLowerCase().includes(naam));
     if (idx >= 0) return "api/kaart/variant.jpg?variant=" + idx;
   }
+  if (l === "planning-ontwerp")
+    return "api/kaart/planning-ontwerp.jpg?project="
+      + encodeURIComponent(typeof prProject === "function" ? prProject() : "");
+  if (l === "planning-uitvoering")
+    return "api/kaart/planning-uitvoering.jpg?variant=" + actieveVariant
+      + "&projectnaam="
+      + encodeURIComponent(typeof prProject === "function" ? prProject() : "");
   return null;
 }
 
@@ -2985,6 +3000,147 @@ async function nieuwProject() {
   updateUI();
 }
 document.getElementById("btn-new").addEventListener("click", nieuwProject);
+
+/* --------------------------------------------- trace-import (DXF/PDF) */
+let importToken = null;
+let importKandidaten = [];
+
+const importOverlay = document.getElementById("import-overlay");
+const importLagenEl = document.getElementById("import-lagen-lijst");
+const importStatusEl = document.getElementById("import-status");
+const importBevestigKnop = document.getElementById("import-bevestig");
+
+function importFout(bericht) {
+  importStatusEl.textContent = "Fout: " + bericht;
+  importStatusEl.classList.add("fout");
+}
+
+function importSluiten() {
+  importOverlay.classList.add("dicht");
+  importToken = null;
+  importKandidaten = [];
+  importStatusEl.textContent = "";
+  importStatusEl.classList.remove("fout");
+  document.getElementById("import-trace-file").value = "";
+}
+document.getElementById("import-sluit").addEventListener("click", importSluiten);
+importOverlay.addEventListener("click", e => {
+  if (e.target === importOverlay) importSluiten();
+});
+
+function renderImportLagen() {
+  if (!importKandidaten.length) {
+    importLagenEl.innerHTML = '<p class="leeg">Geen bruikbare lijngeometrie gevonden.</p>';
+    return;
+  }
+  importLagenEl.innerHTML = importKandidaten.map((l, i) => `
+    <label class="import-laag">
+      <input type="checkbox" data-i="${i}">
+      <span>
+        <div class="il-naam">${rlEsc(l.naam)}</div>
+        <div class="il-info">${l.lengte_m.toLocaleString("nl-NL")} m · ${l.aantal_entiteiten}
+          entiteit(en) · ${rlEsc(l.geometrie_types.join(", "))}</div>
+      </span>
+    </label>`).join("");
+  importLagenEl.querySelectorAll("input[type=checkbox]").forEach(cb =>
+    cb.addEventListener("change", () => {
+      importBevestigKnop.disabled = ![...importLagenEl.querySelectorAll("input[type=checkbox]")]
+        .some(c => c.checked);
+    }));
+}
+
+document.getElementById("btn-import-trace").addEventListener("click", () =>
+  document.getElementById("import-trace-file").click());
+
+document.getElementById("import-trace-file").addEventListener("change", () => {
+  const veld = document.getElementById("import-trace-file");
+  const file = veld.files[0];
+  if (!file) return;
+  importOverlay.classList.remove("dicht");
+  document.getElementById("import-bestandsnaam").textContent = "· " + file.name;
+  importLagenEl.innerHTML = '<p class="leeg">Bestand wordt gelezen…</p>';
+  importBevestigKnop.disabled = true;
+  importStatusEl.textContent = "";
+  importStatusEl.classList.remove("fout");
+  const lezer = new FileReader();
+  lezer.onload = async () => {
+    try {
+      const r = await fetch("api/trace/import/inspect", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bestandsnaam: file.name, data_base64: lezer.result }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+      importToken = j.token;
+      importKandidaten = j.lagen;
+      renderImportLagen();
+    } catch (e) {
+      importLagenEl.innerHTML = "";
+      importFout(e.message);
+    }
+  };
+  lezer.readAsDataURL(file);
+});
+
+importBevestigKnop.addEventListener("click", async () => {
+  const gekozen = [...importLagenEl.querySelectorAll("input[type=checkbox]")]
+    .filter(c => c.checked).map(c => importKandidaten[parseInt(c.dataset.i, 10)].naam);
+  if (!gekozen.length || !importToken) return;
+  importBevestigKnop.disabled = true;
+  importStatusEl.classList.remove("fout");
+  importStatusEl.textContent = "Bezig: bestand verwerken…";
+  const poll = setInterval(async () => {
+    try {
+      const p = await (await fetch("api/progress")).json();
+      if (p.actief && p.stap)
+        importStatusEl.textContent = `Bezig (${Math.round(p.bezig_s)}s): ${p.stap}`;
+    } catch (e) { /* voortgang is best effort */ }
+  }, 1500);
+  try {
+    const r = await fetch("api/trace/import/confirm", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token: importToken, lagen: gekozen,
+        projectnaam: document.getElementById("project-naam").value.trim(),
+        haspel_m: parseFloat(document.getElementById("opt-haspel").value) || 500,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+
+    // vanuit nieuw project starten: bestaande invoer/resultaat wissen vóórdat
+    // het geïmporteerde tracé wordt geladen
+    [srcArea, srcStations, srcVia, srcForbidden].forEach(s => s.clear());
+    resultaat = j;
+    actieveVariant = 0;
+    // stations = begin-/eindpunt van de geïmporteerde lijn: nodig zodat
+    // "↷ Tracé verslepen" er net als bij een berekend tracé op werkt
+    resultaat.stations.forEach(c =>
+      srcStations.addFeature(new ol.Feature(new ol.geom.Point(c))));
+    document.getElementById("project-naam").value = "";
+    document.getElementById("project-lijst").value = "";
+    document.getElementById("gemeente-info").textContent =
+      resultaat.gemeente ? "· " + resultaat.gemeente : "";
+    document.getElementById("btn-exp-geojson").disabled = false;
+    document.getElementById("btn-exp-xlsx").disabled = false;
+    document.getElementById("btn-exp-dxf").disabled = false;
+    document.querySelectorAll(".btn-nota").forEach(b => { b.disabled = false; });
+    toonResultaat();
+    map.getView().fit(resultaat.bbox, { padding: [60, 60, 60, 60], duration: 400 });
+    statusEl.textContent =
+      `Tracé geïmporteerd uit “${resultaat.bestandsnaam}” ` +
+      `(${(resultaat.varianten[0].lengte_m / 1000).toFixed(2)} km).` +
+      (resultaat.laag_fouten && resultaat.laag_fouten.length
+        ? `\n${resultaat.laag_fouten.join("; ")}` : "");
+    importSluiten();
+    updateUI();
+  } catch (e) {
+    importFout(e.message);
+    importBevestigKnop.disabled = false;
+  } finally {
+    clearInterval(poll);
+  }
+});
 
 document.getElementById("btn-save").addEventListener("click", async () => {
   const naam = document.getElementById("project-naam").value.trim();

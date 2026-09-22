@@ -691,15 +691,19 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
 
 WP_TRACEBREED = "tracébreed"
 
-# Indicatieve planningsparameters per werkpakket (per organisatie instelbaar)
-PLANNING = {
-    "tempo_m_per_wk": 600,       # open ontgraving incl. aanvullen en herstel
+# Indicatieve planningsparameters voor de uitvoeringsplanning, per werkpakket
+# (per organisatie instelbaar). De voorbereiding (onderzoeken, vergunningen,
+# ZRO) plant de ontwerpplanning (proces.py, ONTWERP_PLANNING) — deze dict
+# bevat uitsluitend de bouwfase.
+UITVOERINGSPLANNING = {
+    "mobilisatie_wk": 1,          # inrichten werkterrein, per werkpakket
     "wk_per_boring": {TECHNIEK_HDD: 1.0, TECHNIEK_PERSING: 1.0,
                       TECHNIEK_NANO: 0.5, TECHNIEK_RAKET: 0.5},
-    "voorbereiding_min_wk": 6,   # engineering en werkvoorbereiding
-    "onderzoeken_wk": 8,
-    "zro_wk": 16,
-    "uitvoering_min_wk": 1,
+    "tempo_m_per_wk": 600,        # open ontgraving (graven, buis/mantel leggen)
+    "kabelwerk_m_per_wk": 1200,   # kabel intrekken/leggen en aansluiten
+    "wk_per_mof": 0.25,           # extra tijd per mof (lassen/meten/testen)
+    "herstel_m_per_wk": 800,      # bestrating en terrein herstellen
+    "oplevering_min_wk": 1,       # keuring en oplevering, per werkpakket
 }
 
 
@@ -766,59 +770,62 @@ def ken_werkpakketten_toe(werkpakketten: list, route: LineString,
                            if c.get("punt") else WP_TRACEBREED)
 
 
-def build_planning(werkpakketten: list, vergunningen: list, onderzoeken: list,
-                   boringen: list, zro: list) -> list:
-    """Indicatieve planning per werkpakket, in weken vanaf projectstart.
+def build_uitvoeringsplanning(werkpakketten: list, boringen: list,
+                              moffen: list) -> list:
+    """Indicatieve uitvoeringsplanning per werkpakket, in weken vanaf de
+    start van de bouw (GSU — geplande start uitvoering).
 
-    Model: de voorbereiding (onderzoeken, vergunningen, ZRO) start voor elk
-    werkpakket in week 1 en loopt parallel; de uitvoering gebeurt met één
-    ploeg in strengvolgorde en start zodra de eigen voorbereiding én de
-    uitvoering van het vorige werkpakket klaar zijn. Parameters in PLANNING.
+    De voorbereiding (onderzoeken, vergunningen, ZRO) is onderdeel van de
+    ontwerpplanning (proces.py, ``bouw_ontwerpplanning``) en staat hier niet
+    meer in. Model: één ploeg werkt de werkpakketten in strengvolgorde af;
+    per werkpakket doorloopt de ploeg vaste subfasen: mobilisatie, boring/
+    persing (indien van toepassing), grondwerk, kabelwerk/montage, herstel
+    en oplevering. Parameters in UITVOERINGSPLANNING.
     """
-    p = PLANNING
+    p = UITVOERINGSPLANNING
     rows: list = []
 
-    def add(wp_nr, fase, start, duur_wk, toelichting):
+    def add(wp_nr, subfase, start, duur_wk, toelichting):
         eind = start + max(1, int(math.ceil(duur_wk))) - 1
         rows.append({
             "nr": f"PLN-{len(rows) + 1:03d}",
-            "werkpakket": wp_nr, "fase": fase,
+            "werkpakket": wp_nr, "fase": "Uitvoering", "subfase": subfase,
             "start_wk": start, "eind_wk": eind, "duur_wk": eind - start + 1,
             "status": "gepland", "toelichting": toelichting,
         })
         return eind
 
-    verg_breed = max((max(v["doorlooptijd_wk"]) for v in vergunningen
-                      if v.get("werkpakket", WP_TRACEBREED) == WP_TRACEBREED),
-                     default=0)
-    uitvoer_klaar = 0
+    klaar = 0
     for wp in werkpakketten:
         nr = wp["nr"]
-        klaar = 0
-        if onderzoeken:
-            klaar = max(klaar, add(nr, "Onderzoeken", 1, p["onderzoeken_wk"],
-                                   f"{len(onderzoeken)} onderzoek(en), tracébreed"))
-        verg_wp = [v for v in vergunningen if v.get("werkpakket") == nr]
-        verg_wk = max([max(v["doorlooptijd_wk"]) for v in verg_wp]
-                      + [verg_breed, p["voorbereiding_min_wk"]])
-        klaar = max(klaar, add(
-            nr, "Vergunningen en werkvoorbereiding", 1, verg_wk,
-            f"{len(verg_wp)} werkpakket-specifiek + tracébrede vergunningen; "
-            f"langste doorlooptijd bepaalt"))
-        percelen = sum(1 for z in zro if z.get("werkpakket") == nr)
-        if percelen:
-            klaar = max(klaar, add(nr, "Zakelijk recht (ZRO)", 1, p["zro_wk"],
-                                   f"{percelen} perceel/percelen"))
+        start = klaar + 1
+        klaar = add(nr, "Mobilisatie/inrichting werkterrein", start,
+                    p["mobilisatie_wk"], "Werkterrein inrichten en bereikbaar maken")
+
         boringen_wp = [b for b in boringen if b.get("werkpakket") == nr]
-        boor_wk = sum(p["wk_per_boring"].get(b["type"], 1.0) for b in boringen_wp)
-        duur = max(p["uitvoering_min_wk"],
-                   wp["lengte_m"] / p["tempo_m_per_wk"] + boor_wk)
-        toel = f"{wp['lengte_m']:.0f} m sleufwerk"
         if boringen_wp:
-            toel += f", {len(boringen_wp)} boring(en)"
-        toel += " — één ploeg, in strengvolgorde"
-        uitvoer_klaar = add(nr, "Uitvoering", max(klaar, uitvoer_klaar) + 1,
-                            duur, toel)
+            boor_wk = sum(p["wk_per_boring"].get(b["type"], 1.0) for b in boringen_wp)
+            klaar = add(nr, "Boring/persing", klaar + 1, boor_wk,
+                       f"{len(boringen_wp)} boring(en)/persing(en)")
+
+        klaar = add(nr, "Grondwerk (open sleuf)", klaar + 1,
+                    wp["lengte_m"] / p["tempo_m_per_wk"],
+                    f"{wp['lengte_m']:.0f} m graven, leggen en aanvullen")
+
+        moffen_wp = [m for m in moffen if m.get("werkpakket") == nr]
+        kabel_wk = (wp["lengte_m"] / p["kabelwerk_m_per_wk"]
+                   + p["wk_per_mof"] * len(moffen_wp))
+        toel = f"{wp['lengte_m']:.0f} m kabel intrekken en aansluiten"
+        if moffen_wp:
+            toel += f", {len(moffen_wp)} mof/moffen lassen en meten"
+        klaar = add(nr, "Kabelwerk/montage", klaar + 1, kabel_wk, toel)
+
+        klaar = add(nr, "Herstelwerk", klaar + 1,
+                    wp["lengte_m"] / p["herstel_m_per_wk"],
+                    f"{wp['lengte_m']:.0f} m bestrating en terrein herstellen")
+
+        klaar = add(nr, "Oplevering/keuring", klaar + 1,
+                    p["oplevering_min_wk"], "Keuring en oplevering werkpakket")
     return rows
 
 

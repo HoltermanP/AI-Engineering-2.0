@@ -28,6 +28,7 @@ en tollgate-besluiten blijven altijd menselijk.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -67,6 +68,17 @@ FASEN = [
 
 FASE_CODES = [f["code"] for f in FASEN]
 
+# Taakstellend budget (ontwerpfase IV t/m UO): één budget voor de gehele
+# ontwerpfase, per fase ingedeeld en per fase onderverdeeld in kostenposten.
+BUDGET_FASEN = ("IV", "VO", "DO", "UO")
+BUDGET_POSTEN = [
+    ("techniek", "Techniek en engineering (ontwerp, tekenwerk)"),
+    ("omgeving", "Omgevingsmanagement (onderzoeken, vergunningen, communicatie)"),
+    ("grondverwerving", "Grondverwerving en zakelijk recht (ZRO)"),
+    ("projectmanagement", "Projectmanagement en advieskosten"),
+    ("onvoorzien", "Onvoorzien / risicoreservering"),
+]
+
 # Disciplines (kolom "verantwoordelijke discipline" / rubrieken checklists)
 D_DOC = "Documentmanagement"
 D_SCOPE = "Scopemanagement"
@@ -77,6 +89,24 @@ D_PLAN = "Planningsmanagement"
 D_RISK = "Risicomanagement"
 D_CONTR = "Contractmanagement"
 D_PLANNEN = "Uitgewerkte plannen voor realisatie"
+
+DISCIPLINE_VOLGORDE = [D_PLAN, D_TECH, D_OMG, D_FIN, D_SCOPE, D_RISK,
+                       D_CONTR, D_DOC, D_PLANNEN]
+
+# Indicatieve planningsparameters voor de ontwerpplanning (per organisatie
+# instelbaar) — analoog aan UITVOERINGSPLANNING in registers.py, maar dan
+# voor de ontwerpfase (IV t/m NAO).
+ONTWERP_PLANNING = {
+    "fase_duur_wk": {"IV": 4, "VO": 10, "DO": 12, "UO": 8, "NAO": 4},
+    # per fase, per discipline: (start_fractie, eind_fractie) binnen de
+    # fase-doorlooptijd; disciplines die hier niet genoemd staan lopen de
+    # hele fase door, (0.0, 1.0)
+    "discipline_venster": {
+        "VO": {D_FIN: (0.3, 1.0), D_CONTR: (0.6, 1.0)},
+        "DO": {D_FIN: (0.2, 1.0), D_CONTR: (0.5, 1.0)},
+        "UO": {D_CONTR: (0.0, 0.6), D_PLANNEN: (0.4, 1.0)},
+    },
+}
 
 
 def _S(id_, fase, discipline, naam, product, *, nr="", review=False,
@@ -121,6 +151,22 @@ STAPPEN: list[dict] = [
     _S("IV-08", "IV", D_PLAN, "Capaciteits- en doorlooptijdcheck",
        "Indicatieve planning per werkpakket", uitvoering="ai",
        cap="data:planning"),
+    _S("IV-TOF", "IV", D_FIN,
+       "Uitvoeren TOF-studie en eerste begroting realisatiefase",
+       "TOF-studie met eerste begroting realisatiefase (aanneemsom)",
+       review=True, uitvoering="hybride", cap="doc:tof",
+       opm="Direct na ontvangst van het IV: de eerste inschatting van wat "
+           "de uitvoering naar verwachting gaat kosten voor de "
+           "opdrachtgever, gebaseerd op de RAW-raming (IV-06). Wordt elke "
+           "fase bijgewerkt."),
+    _S("IV-TSB", "IV", D_FIN,
+       "Opstellen taakstellend budget ontwerpfase (IV t/m UO)",
+       "Taakstellend budget ontwerpfase, per fase ingedeeld", review=True,
+       uitvoering="mens",
+       opm="Eerste vaststelling bij het intakebesluit (T1); één budget "
+           "voor de gehele ontwerpfase, per fase (IV/VO/DO/UO) en per "
+           "kostenpost. Na elke tollgate opnieuw te reviewen en bij te "
+           "stellen (Budget-scherm)."),
 
     # ---------------- VO (tollgate TM2) — Checklist VO GW-MS v1.5 ---------
     _S("VO-3.35", "VO", D_DOC, "Onderhouden documentmanagement",
@@ -204,8 +250,10 @@ STAPPEN: list[dict] = [
     _S("VO-3.44", "VO", D_FIN, "Uitvoeringsraming VO-fase",
        "Concept-uitvoeringsraming (RAW)", nr="3.44", review=True,
        uitvoering="ai", cap="data:raming"),
-    _S("VO-TSB", "VO", D_FIN, "Taakstellend budget t.b.v. DO-fase",
-       "Taakstellend budget DO-fase", uitvoering="mens"),
+    _S("VO-TSB", "VO", D_FIN, "Herzien taakstellend budget ontwerpfase (VO-fase)",
+       "Bijgesteld taakstellend budget ontwerpfase", review=True,
+       uitvoering="mens",
+       opm="Revisie bij tollgate TM2 (Budget-scherm)."),
     _S("VO-3.27", "VO", D_FIN, "Controleren en verwerken (deel)betalingen",
        "Ingediende en betaalde facturen", nr="3.27", uitvoering="mens"),
     _S("VO-3.42", "VO", D_PLAN, "Afgeven forecast benodigde capaciteit",
@@ -319,8 +367,10 @@ STAPPEN: list[dict] = [
     _S("DO-3.44", "DO", D_FIN, "Begroten DO",
        "Vastgestelde DO-begroting (RAW)", nr="3.44", review=True,
        uitvoering="ai", cap="data:raming"),
-    _S("DO-TSB", "DO", D_FIN, "Bepalen taakstellend budget (DO-fase)",
-       "Taakstellend budget DO-fase", uitvoering="mens"),
+    _S("DO-TSB", "DO", D_FIN, "Herzien taakstellend budget ontwerpfase (DO-fase)",
+       "Bijgesteld taakstellend budget ontwerpfase", review=True,
+       uitvoering="mens",
+       opm="Revisie bij tollgate T3 (Budget-scherm)."),
     _S("DO-3.39", "DO", D_FIN, "Bewaken taakstellend budget (DO-fase)",
        "Kostenoverzicht t.o.v. taakstellend budget", nr="3.39",
        uitvoering="mens"),
@@ -432,6 +482,10 @@ STAPPEN: list[dict] = [
     _S("UO-4.33", "UO", D_FIN, "Bewaken taakstellend budget (bouwteamfase)",
        "UO-raming (RAW)", nr="4.33", review=True, uitvoering="ai",
        cap="data:raming"),
+    _S("UO-TSB", "UO", D_FIN, "Herzien taakstellend budget ontwerpfase (UO-fase)",
+       "Bijgesteld taakstellend budget ontwerpfase", review=True,
+       uitvoering="mens",
+       opm="Laatste bijstelling voor tollgate T4 (Budget-scherm)."),
     _S("UO-4.25", "UO", D_PLAN, "Inkopen producten/diensten (UO-fase)",
        "Getekend inkoop-/inhuurcontract", nr="4.25", uitvoering="mens"),
     _S("UO-4.24", "UO", D_PLAN, "Aanvraag capaciteit (harde planning)",
@@ -481,6 +535,21 @@ STAP_INDEX = {s["id"]: s for s in STAPPEN}
 # ---------------------------------------------------------------------------
 
 AI_DOC: dict[str, dict] = {
+    "tof": {
+        "titel": "TOF-studie — eerste begroting realisatiefase",
+        "doel": "Stel de TOF-studie op, direct na ontvangst van het "
+                "investeringsvoorstel (IV): een korte onderbouwing van "
+                "scope en gekozen tracévariant, gevolgd door de eerste "
+                "verwachte uitvoeringskosten voor de opdrachtgever — "
+                "aannemingssom excl./incl. btw en uitvoeringsduur uit de "
+                "RAW-raming (data taakstellend_budget/begroting_realisatiefase "
+                "indien al vastgesteld, anders raw_calculatie) — en de "
+                "belangrijkste onzekerheden die deze eerste inschatting "
+                "beïnvloeden (grondverwerving, vergunningen, "
+                "bodemgesteldheid, nog te detailleren kruisingen). Sluit "
+                "af met een advies voor het taakstellend budget van de "
+                "ontwerpfase (IV t/m UO), per fase ingedeeld.",
+    },
     "afwijkingen": {
         "titel": "Afwijkingenregister",
         "doel": "Stel een afwijkingenregister op. Leid kandidaat-afwijkingen "
@@ -770,7 +839,9 @@ def artefact_dir(project: str) -> Path:
 def laad_state(project: str) -> dict:
     pad = _state_pad(project)
     state = {"project": project, "stappen": {}, "tollgates": {},
-             "risico": [], "meldingen": []}
+             "risico": [], "meldingen": [],
+             "budget": {"taakstellend": {"historie": []},
+                       "realisatie": {"historie": []}}}
     if pad.exists():
         try:
             state.update(json.loads(pad.read_text()))
@@ -867,6 +938,131 @@ def bewaar_gegevens(project: str, gegevens: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Budget: taakstellend budget (ontwerpfase IV t/m UO) en de begroting van de
+# realisatiefase (verwachte uitvoeringskosten voor de opdrachtgever). Beide
+# worden bijgehouden als revisiegeschiedenis — de laatste revisie is de
+# huidige waarde; elke tollgate is een natuurlijk moment om een nieuwe
+# revisie vast te stellen (Budget-scherm, procespagina).
+# ---------------------------------------------------------------------------
+
+def _lege_budget_fasen() -> dict:
+    return {f: {"totaal": 0.0, "posten": {k: 0.0 for k, _ in BUDGET_POSTEN}}
+            for f in BUDGET_FASEN}
+
+
+def _budget(state: dict) -> dict:
+    return state.setdefault(
+        "budget", {"taakstellend": {"historie": []},
+                   "realisatie": {"historie": []}})
+
+
+def taakstellend_huidig(project: str) -> dict | None:
+    hist = _budget(laad_state(project))["taakstellend"]["historie"]
+    return hist[-1] if hist else None
+
+
+def taakstellend_historie(project: str) -> list:
+    return _budget(laad_state(project))["taakstellend"]["historie"]
+
+
+def zet_taakstellend_budget(project: str, fasen: dict, *, aanleiding: str = "",
+                            toelichting: str = "", door: str = "") -> dict:
+    """Nieuwe revisie van het taakstellend budget voor de ontwerpfase (IV
+    t/m UO): één budget, per fase ingedeeld en per fase onderverdeeld in
+    kostenposten (BUDGET_POSTEN). Fasen die niet worden meegegeven behouden
+    hun laatst vastgestelde waarde — een revisie mag dus een deelbijstelling
+    zijn (bijv. alleen de UO-fase na tollgate T3)."""
+    if not door.strip():
+        raise ProcesError("Vul in wie het budget vaststelt.")
+    state = laad_state(project)
+    budget = _budget(state)
+    vorige = (budget["taakstellend"]["historie"][-1]["fasen"]
+              if budget["taakstellend"]["historie"] else _lege_budget_fasen())
+    nieuwe_fasen = {}
+    for f in BUDGET_FASEN:
+        opgegeven = fasen.get(f) if isinstance(fasen, dict) else None
+        if isinstance(opgegeven, dict):
+            posten = {k: round(float((opgegeven.get("posten") or {}).get(k, 0)
+                                     or 0), 2) for k, _ in BUDGET_POSTEN}
+            totaal = opgegeven.get("totaal")
+            totaal = (round(float(totaal), 2) if totaal is not None
+                      else round(sum(posten.values()), 2))
+            nieuwe_fasen[f] = {"totaal": totaal, "posten": posten}
+        else:
+            nieuwe_fasen[f] = vorige.get(f) or _lege_budget_fasen()[f]
+    revisie = {
+        "tijd": time.strftime("%Y-%m-%d %H:%M"), "door": door.strip(),
+        "aanleiding": aanleiding.strip() or "tussentijds",
+        "toelichting": toelichting.strip(),
+        "fasen": nieuwe_fasen,
+        "totaal_ontwerpfase": round(
+            sum(v["totaal"] for v in nieuwe_fasen.values()), 2),
+    }
+    budget["taakstellend"]["historie"].append(revisie)
+    budget["taakstellend"]["historie"] = budget["taakstellend"]["historie"][-40:]
+    _melding(state, f"Taakstellend budget bijgesteld ({revisie['aanleiding']}) "
+                    f"door {door}: € {revisie['totaal_ontwerpfase']:,.0f} "
+                    "t/m UO".replace(",", "."))
+    bewaar_state(state)
+    return revisie
+
+
+def realisatie_huidig(project: str) -> dict | None:
+    hist = _budget(laad_state(project))["realisatie"]["historie"]
+    return hist[-1] if hist else None
+
+
+def realisatie_historie(project: str) -> list:
+    return _budget(laad_state(project))["realisatie"]["historie"]
+
+
+def zet_realisatie_begroting(project: str, fase: str, *,
+                             bedrag_excl_btw: float,
+                             bedrag_incl_btw: float | None = None,
+                             bron: str = "handmatig", status: str = "vastgesteld",
+                             toelichting: str = "", door: str = "") -> dict:
+    """Nieuwe revisie van de begroting van de realisatiefase: de verwachte
+    uitvoeringskosten voor de opdrachtgever. Voor het eerst opgesteld in de
+    IV-fase (TOF-studie) en daarna elke fase bijgewerkt — automatisch vanuit
+    de RAW-calculatie (bron='raw_calculatie', status='concept') of handmatig
+    vastgesteld door de projectleider (status='vastgesteld'). Opeenvolgende
+    automatische concepten binnen dezelfde fase vervangen elkaar, zodat de
+    historie de daadwerkelijke revisiemomenten laat zien."""
+    if fase not in FASE_CODES:
+        raise ProcesError(f"Onbekende fase '{fase}'.")
+    if not door.strip():
+        raise ProcesError("Vul in wie de begroting vaststelt.")
+    if bedrag_excl_btw is None:
+        raise ProcesError("Geef een bedrag (excl. btw) op.")
+    state = laad_state(project)
+    budget = _budget(state)
+    revisie = {
+        "tijd": time.strftime("%Y-%m-%d %H:%M"), "door": door.strip(),
+        "fase": fase, "bron": bron, "status": status,
+        "toelichting": toelichting.strip(),
+        "bedrag_excl_btw": round(float(bedrag_excl_btw), 2),
+        "bedrag_incl_btw": (round(float(bedrag_incl_btw), 2)
+                            if bedrag_incl_btw is not None else None),
+    }
+    hist = budget["realisatie"]["historie"]
+    is_bijwerking = (bron == "raw_calculatie" and status == "concept" and hist
+                     and hist[-1].get("bron") == "raw_calculatie"
+                     and hist[-1].get("status") == "concept"
+                     and hist[-1].get("fase") == fase)
+    if is_bijwerking:
+        hist[-1] = revisie
+    else:
+        hist.append(revisie)
+    budget["realisatie"]["historie"] = hist[-60:]
+    if not is_bijwerking:
+        _melding(state, f"Begroting realisatiefase bijgewerkt (fase {fase}, "
+                        f"{bron}): € {revisie['bedrag_excl_btw']:,.0f} "
+                        "excl. btw".replace(",", "."))
+    bewaar_state(state)
+    return revisie
+
+
+# ---------------------------------------------------------------------------
 # Fase- en tollgate-logica
 # ---------------------------------------------------------------------------
 
@@ -954,11 +1150,106 @@ def overzicht(project: str, result: dict | None) -> dict:
             "tollgate_besluit": tg,
             "tollgate_gereed": tg_gereed,
         })
+    budget = _budget(state)
     return {"project": project, "fasen": fasen_uit, "taken": taken,
             "meldingen": state["meldingen"][:30],
             "risico": state.get("risico", []),
+            "planning": bouw_ontwerpplanning(project),
             "config": {"ai_automatisch": cfg.get("ai_automatisch", True)},
-            "heeft_result": bool(result and result.get("varianten"))}
+            "heeft_result": bool(result and result.get("varianten")),
+            "budget": {
+                "taakstellend_huidig": (budget["taakstellend"]["historie"][-1]
+                                        if budget["taakstellend"]["historie"] else None),
+                "realisatie_huidig": (budget["realisatie"]["historie"][-1]
+                                      if budget["realisatie"]["historie"] else None),
+            }}
+
+
+# fase -> mijlpaalveld waarmee de fase-balk in de ontwerpplanning gelabeld
+# wordt zodra de gebruiker die mijlpaal heeft ingevuld (projectgegevens)
+_FASE_MIJLPAAL = {"VO": "vo_gereed", "DO": "do_gereed", "UO": "uo_gereed",
+                  "NAO": "contract_getekend"}
+
+
+def bouw_ontwerpplanning(project: str) -> list[dict]:
+    """Indicatieve ontwerpplanning (IV → VO → DO → UO → NAO), projectbreed
+    en onafhankelijk van een berekende tracévariant.
+
+    Model: de fasen volgen elkaar op (start volgende fase = eind vorige fase
+    + 1), elk met een indicatieve duur uit ONTWERP_PLANNING; de fase-rij
+    draagt de tollgate-mijlpaal. Per fase komt daaronder een rij per
+    discipline met actieve processtappen (proces.STAPPEN), met een venster
+    binnen de faseduur (discipline_venster) en de eigen voortgang (gereed/
+    totaal). Een ingevulde mijlpaal (VO/DO/UO gereed, contract getekend,
+    projectgegevens) wordt als label op de fase-rij getoond, maar herrekent
+    de indicatieve weekplanning niet. Sluit af met de GSU- en
+    IBN-mijlpaalrij, als die zijn ingevuld.
+    """
+    cfg = laad_config()
+    state = laad_state(project)
+    mijlpalen = laad_gegevens(project).get("mijlpalen", {})
+    rows: list = []
+
+    def add(fase, fase_naam, discipline, start, duur_wk, status, toelichting,
+           *, tollgate="", mijlpaal_veld=""):
+        duur_wk = max(1, int(math.ceil(duur_wk)))
+        eind = start + duur_wk - 1
+        mijlpaal_waarde = mijlpalen.get(mijlpaal_veld, "") if mijlpaal_veld else ""
+        if mijlpaal_waarde:
+            toelichting = f"{toelichting} — mijlpaal: {mijlpaal_waarde}"
+        rows.append({
+            "nr": f"OPL-{len(rows) + 1:03d}", "fase": fase,
+            "fase_naam": fase_naam, "discipline": discipline,
+            "start_wk": start, "eind_wk": eind, "duur_wk": eind - start + 1,
+            "status": status, "toelichting": toelichting,
+            "tollgate": tollgate, "mijlpaal_veld": mijlpaal_veld,
+            "mijlpaal_waarde": mijlpaal_waarde,
+        })
+        return eind
+
+    klaar = 0
+    for f in FASEN:
+        code = f["code"]
+        fstatus = fase_status(cfg, state, code)
+        if fstatus == "uit":
+            continue
+        duur = ONTWERP_PLANNING["fase_duur_wk"].get(code, 4)
+        start = klaar + 1
+        klaar = add(code, f["naam"], "", start, duur, fstatus,
+                   f["tollgate_naam"], tollgate=f["tollgate"],
+                   mijlpaal_veld=_FASE_MIJLPAAL.get(code, ""))
+
+        stappen_fase = _fase_stappen(cfg, code)
+        disciplines = sorted({s["discipline"] for s in stappen_fase},
+                             key=lambda d: DISCIPLINE_VOLGORDE.index(d)
+                             if d in DISCIPLINE_VOLGORDE else 99)
+        venster_fase = ONTWERP_PLANNING["discipline_venster"].get(code, {})
+        for d in disciplines:
+            stappen_d = [s for s in stappen_fase if s["discipline"] == d]
+            gereed = sum(1 for s in stappen_d
+                        if state["stappen"].get(s["id"], {}).get("status")
+                        in ("gereed", "nvt"))
+            d_status = ("afgerond" if gereed == len(stappen_d)
+                                      and fstatus in ("afgerond", "actief")
+                       else fstatus)
+            v0, v1 = venster_fase.get(d, (0.0, 1.0))
+            d_start = start + int(math.floor(v0 * duur))
+            d_duur = max(1, (v1 - v0) * duur)
+            add(code, f["naam"], d, d_start, d_duur, d_status,
+               f"{gereed}/{len(stappen_d)} processtappen gereed")
+
+    for veld, label in (("start_uitvoering", MIJLPAAL_LABELS["start_uitvoering"]),
+                        ("ibn_datum", MIJLPAAL_LABELS["ibn_datum"])):
+        waarde = mijlpalen.get(veld, "")
+        if waarde:
+            rows.append({
+                "nr": f"OPL-{len(rows) + 1:03d}", "fase": "", "fase_naam": "",
+                "discipline": "", "start_wk": klaar + 1, "eind_wk": klaar + 1,
+                "duur_wk": 0, "status": "gepland", "toelichting": label,
+                "tollgate": "", "mijlpaal_veld": veld,
+                "mijlpaal_waarde": waarde,
+            })
+    return rows
 
 
 def stap_actie(project: str, stap_id: str, actie: str, *, toelichting: str = "",
@@ -1271,6 +1562,30 @@ DATA_CAPS = {
 }
 
 
+def _raming_naar_realisatiebegroting(result: dict, variant: int, project: str,
+                                     stap: dict) -> None:
+    """Werkt bij elke RAW-raming (cap 'data:raming', o.a. IV-06/VO-3.44/
+    DO-3.44/UO-4.33) automatisch de begroting van de realisatiefase bij: de
+    doorlopend bijgewerkte inschatting van wat de uitvoering naar
+    verwachting gaat kosten voor de opdrachtgever — voor het eerst
+    opgesteld in de IV-fase (TOF-studie) en elke fase ververst."""
+    try:
+        v = _v(result, variant)
+    except ProcesError:
+        return
+    calc = v.get("calculatie") or {}
+    som = calc.get("aannemingssom_excl_btw")
+    if som is None:
+        return
+    zet_realisatie_begroting(
+        project, stap["fase"], bedrag_excl_btw=som,
+        bedrag_incl_btw=calc.get("aannemingssom_incl_btw"),
+        bron="raw_calculatie", status="concept",
+        toelichting=f"Automatisch bijgewerkt vanuit de RAW-calculatie "
+                    f"({stap['id']}).",
+        door="AI")
+
+
 def voer_data_cap_uit(project: str, stap_id: str, result: dict | None,
                       variant: int = 0, *, door: str = "AI") -> dict:
     """Voert een data-capability uit en werkt de stapstatus bij."""
@@ -1282,6 +1597,8 @@ def voer_data_cap_uit(project: str, stap_id: str, result: dict | None,
         raise ProcesError("Geen berekend tracé beschikbaar; reken eerst een "
                           "tracé door.")
     uitkomst = DATA_CAPS[naam](result, variant, project)
+    if naam == "raming":
+        _raming_naar_realisatiebegroting(result, variant, project, stap)
     cfg = laad_config()
     modus = _stap_config(cfg, stap)["uitvoering"]
     state = laad_state(project)
@@ -1671,6 +1988,32 @@ def risico_xlsx(project: str) -> bytes:
                     st.get("status", "te_doen"), st.get("toelichting", ""),
                     st.get("verantwoordelijke", ""),
                     "; ".join(a["naam"] for a in st.get("artefacten", []))])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def planning_xlsx(project: str) -> bytes:
+    """Ontwerpplanning (IV t/m NAO) als Excel."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Ontwerpplanning"
+    kop = ["Nr", "Fase", "Discipline", "Start (wk)", "Eind (wk)", "Duur (wk)",
+           "Status", "Tollgate", "Mijlpaal", "Toelichting"]
+    ws.append(kop)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for r in bouw_ontwerpplanning(project):
+        ws.append([r["nr"], r["fase_naam"] or r["fase"], r["discipline"],
+                   r["start_wk"], r["eind_wk"], r["duur_wk"], r["status"],
+                   r.get("tollgate", ""), r.get("mijlpaal_waarde", ""),
+                   r["toelichting"]])
+    for col in ws.columns:
+        width = max((len(str(c.value or "")) for c in col), default=8)
+        ws.column_dimensions[col[0].column_letter].width = min(width + 2, 60)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

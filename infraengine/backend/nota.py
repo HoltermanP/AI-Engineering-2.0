@@ -77,8 +77,9 @@ _FMT_KOP = (
     "één regel: 0.1, vandaag, 'Concept ter review', 'AI-gegenereerd concept'.\n"
     "AFBEELDINGEN: op de in de hoofdstukken aangegeven plekken schrijf je "
     "op een eigen regel exact de marker die daar genoemd wordt (bijv. "
-    "`[AFBEELDING: overzichtstekening]`) — de applicatie vervangt die "
-    "marker door de gerenderde kaart; verzin geen andere markers.\n"
+    "`[AFBEELDING: overzichtstekening]` of `[AFBEELDING: "
+    "planning-ontwerp]`) — de applicatie vervangt die marker door de "
+    "gerenderde kaart of Gantt-afbeelding; verzin geen andere markers.\n"
     "Daarna deze hoofdstukken, met exact deze nummers en titels:\n"
 )
 
@@ -90,9 +91,12 @@ _FMT_STAART = (
     "per punt: 'Nog opstarten' of 'Lopend'.\n\n"
     "Invulregels: gebruik overal de echte aantallen, lengtes, nummers "
     "(WP-, HDD-/BOR-, VRG-, OND-, ZRO-, RIS-) en bedragen uit de "
-    "projectdata. Voor de mijlpalentabel in §5.3 gebruik je de data uit "
-    "`projectgegevens.mijlpalen` (alleen lege mijlpalen als [IN TE VULLEN: "
-    "datum], aangevuld met de weekindicaties uit de planning). "
+    "projectdata. Voor de mijlpalentabel in §5.3 gebruik je uitsluitend de "
+    "rijen uit `ontwerpplanning` (kolommen Fase | Tollgate | Gepland "
+    "(week) | Status | Ingevulde datum): neem `fase_naam`, `tollgate`, "
+    "`start_wk`–`eind_wk` en `status` letterlijk over, en toon "
+    "`mijlpaal_waarde` als 'Ingevulde datum' waar niet leeg, anders "
+    "[IN TE VULLEN: datum]. Verzin geen eigen weekgetallen. "
     "Documentverwijzingen die de applicatie niet kent schrijf je als "
     "generieke verwijzing tussen rechte haken, bijvoorbeeld "
     "[verificatieplan] of [IN TE VULLEN: link raming]."
@@ -143,9 +147,10 @@ NOTA_FASEN = {
             "beheersmaatregelen`: top-risico's uit het risicoregister als "
             "tabel (ID | Risico | Score | Belangrijkste beheersmaatregel), "
             "RISMAN-ordening hoog→laag; `### 5.2 Eisen` (verificatie-aanpak, "
-            "toetsing); `### 5.3 Planning` — mijlpalentabel (VO gereed, DO "
-            "gereed, UO gereed, geplande start uitvoering, IBN-datum) — "
-            "afleiden uit de planning-weken of [IN TE VULLEN]; `### 5.4 V&G "
+            "toetsing); `### 5.3 Planning` — eerst de mijlpalentabel uit "
+            "`ontwerpplanning` (fasen IV t/m UO, tollgate en gepland), dan "
+            "op een eigen regel de marker `[AFBEELDING: planning-ontwerp]` "
+            "met onderschrift 'Figuur 3. Ontwerpplanning'; `### 5.4 V&G "
             "plan ontwerp`; `### 5.5 Raming` (indicatieve aannemingssom uit "
             "de RAW-calculatie); `### 5.6 Controle en review` (tollgate TM2, "
             "reviewproces bouwteam).")
@@ -198,10 +203,16 @@ NOTA_FASEN = {
             "`## 5. Randvoorwaarden` — `### 5.1 Risico's en "
             "beheersmaatregelen` (top-risico's uit het risicoregister als "
             "tabel, RISMAN hoog→laag); `### 5.2 Eisen` (eisenverificatie, "
-            "toetsingsresultaten); `### 5.3 Planning` — mijlpalentabel (DO "
-            "gereed, UO gereed, contract getekend, geplande start uitvoering "
-            "(GSU), IBN-datum) uit de planning-weken of [IN TE VULLEN], plus "
-            "de planning per werkpakket; `### 5.4 V&G plan ontwerp` (VGM-O, "
+            "toetsingsresultaten); `### 5.3 Planning` — eerst de "
+            "mijlpalentabel uit `ontwerpplanning` (fasen IV t/m NAO, "
+            "tollgate en gepland), dan de marker `[AFBEELDING: "
+            "planning-ontwerp]` (onderschrift 'Figuur 3. Ontwerpplanning') "
+            "op een eigen regel; daaronder de uitvoeringsplanning per "
+            "werkpakket uit `planning_per_werkpakket_wk` als compacte tabel "
+            "(Werkpakket | Subfase | Start–eind (wk)), gevolgd door de "
+            "marker `[AFBEELDING: planning-uitvoering]` (onderschrift "
+            "'Figuur 4. Uitvoeringsplanning') op een eigen regel; `### 5.4 "
+            "V&G plan ontwerp` (VGM-O, "
             "GO!-doelstelling); `### 5.5 Raming` (aannemingssom uit de "
             "RAW-calculatie); `### 5.6 Controle en review` (tollgate T3 als "
             "basis voor de review, indienen in [VISI]).")
@@ -246,8 +257,15 @@ NOTA_FASEN = {
             "vertrekpunt; `### 5.1 Risico's en beheersmaatregelen` "
             "(top-risico's uit het risicoregister, RISMAN hoog→laag); "
             "`### 5.2 Eisen` (eisenverificatie UO); `### 5.3 Planning` — "
-            "mijlpalentabel (UO gereed, contract getekend, GSU, IBN-datum) "
-            "uit de planning-weken of [IN TE VULLEN]; `### 5.4 V&G plan "
+            "eerst de mijlpalentabel uit `ontwerpplanning` (fasen UO/NAO, "
+            "tollgate en gepland, plus GSU/IBN als ze zijn ingevuld), dan "
+            "de marker `[AFBEELDING: planning-ontwerp]` (onderschrift "
+            "'Figuur 3. Ontwerpplanning') op een eigen regel; daaronder de "
+            "uitvoeringsplanning per werkpakket uit "
+            "`planning_per_werkpakket_wk` als compacte tabel (Werkpakket | "
+            "Subfase | Start–eind (wk)), gevolgd door de marker "
+            "`[AFBEELDING: planning-uitvoering]` (onderschrift 'Figuur 4. "
+            "Uitvoeringsplanning') op een eigen regel; `### 5.4 V&G plan "
             "uitvoering` (VGM-U, GO!-doelstelling); `### 5.5 Raming` "
             "(aannemingssom uit de RAW-calculatie, opgebouwd per "
             "werkpakket); `### 5.6 Controle en review` (tollgate T4 als "
@@ -389,6 +407,13 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
         # namen verificatietabel/projectteam + mijlpalen uit het
         # projectgegevens-scherm (procespagina) — voedt het titelblok en §5.3
         "projectgegevens": _projectgegevens(projectnaam),
+        # structured ontwerpplanning (IV t/m NAO, tollgates + mijlpalen) uit
+        # het procesdossier — voedt de mijlpalentabel in §5.3
+        "ontwerpplanning": _ontwerpplanning(projectnaam),
+        # taakstellend budget (ontwerpfase IV t/m UO) en de begroting van de
+        # realisatiefase uit het Budget-scherm (procespagina)
+        "taakstellend_budget": _taakstellend_budget(projectnaam),
+        "begroting_realisatiefase": _begroting_realisatie(projectnaam),
         "moffen_aantal": len(v.get("moffen", [])),
         "moffen": _cap(_zonder_geometrie(v.get("moffen", [])), 40, "moffen"),
         "werkpakketten": _zonder_geometrie(v.get("werkpakketten", [])),
@@ -448,6 +473,40 @@ def _projectgegevens(projectnaam: str) -> dict:
         return g
     except Exception:
         return {}
+
+
+def _ontwerpplanning(projectnaam: str) -> list:
+    """Ontwerpplanning (IV t/m NAO, tollgates en mijlpalen) uit het
+    procesdossier — voedt de mijlpalentabel in §5.3 van de ontwikkelnota's."""
+    if not projectnaam:
+        return []
+    try:
+        import proces as proces_mod
+        return proces_mod.bouw_ontwerpplanning(projectnaam)
+    except Exception:
+        return []
+
+
+def _taakstellend_budget(projectnaam: str) -> dict | None:
+    """Huidige revisie van het taakstellend budget (Budget-scherm)."""
+    if not projectnaam:
+        return None
+    try:
+        import proces as proces_mod
+        return proces_mod.taakstellend_huidig(projectnaam)
+    except Exception:
+        return None
+
+
+def _begroting_realisatie(projectnaam: str) -> list:
+    """Laatste revisies van de begroting realisatiefase (Budget-scherm)."""
+    if not projectnaam:
+        return []
+    try:
+        import proces as proces_mod
+        return proces_mod.realisatie_historie(projectnaam)[-5:]
+    except Exception:
+        return []
 
 
 def _check_fase(fase: str) -> str:
@@ -872,6 +931,16 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
             if idx is None:
                 raise NotaError(f"Onbekende variant '{rest}'.")
             png = kaart_mod.variantkaart(result, idx, proj["naam"])
+        elif sleutel == "planning-ontwerp":
+            import planning_kaart
+            png = planning_kaart.ontwerpplanning_kaart(
+                context.get("ontwerpplanning", []), proj["naam"])
+        elif sleutel == "planning-uitvoering":
+            import planning_kaart
+            var = result["varianten"][variant_idx]
+            png = planning_kaart.uitvoeringsplanning_kaart(
+                var.get("planning", []), var.get("werkpakketten", []),
+                proj["naam"])
         else:
             raise NotaError(f"Onbekende afbeelding '{label}'.")
         from PIL import Image

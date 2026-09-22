@@ -60,13 +60,14 @@ const REG_DEF = {
     ],
   },
   planning: {
-    titel: "Planning",
+    titel: "Uitvoeringsplanning",
     data: v => v.planning || [],
-    leeg: "Geen planning — herbereken het tracé.",
+    leeg: "Geen uitvoeringsplanning — herbereken het tracé.",
     kolommen: [
       { k: "nr", label: "Nr" },
       { k: "werkpakket", label: "WP" },
       { k: "fase", label: "Fase" },
+      { k: "subfase", label: "Subfase" },
       { k: "start_wk", label: "Start (wk)", num: true },
       { k: "eind_wk", label: "Eind (wk)", num: true },
       { k: "duur_wk", label: "Duur (wk)", num: true },

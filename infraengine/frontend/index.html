@@ -20,6 +20,8 @@
   <button id="btn-registers" title="Alle registers op één pagina: bewerken, filteren, sorteren">▤ Registers</button>
   <button id="btn-proces" title="Procesondersteuning: intake (IV) → VO → DO → UO met tollgates, AI-stappen en goedkeuringen">◫ Proces</button>
   <button id="btn-new" title="Nieuw leeg project starten">+ Nieuw</button>
+  <button id="btn-import-trace" title="Bestaand tracé (PDF/DXF) uploaden en als nieuw project laden — daarna net zo te verrijken/aanpassen als een zelf ingetekend tracé">⇧ Trace uploaden</button>
+  <input id="import-trace-file" type="file" hidden accept=".dxf,.pdf">
   <input id="project-naam" type="text" placeholder="projectnaam" spellcheck="false">
   <button id="btn-save" title="Project opslaan (invoer én berekend tracé)">Opslaan</button>
   <select id="project-lijst" title="Project openen"><option value="">— openen —</option></select>
@@ -233,7 +235,7 @@
     <nav id="tabs">
       <button data-tab="mca" class="actief">Varianten / MCA</button>
       <button data-tab="werkpakketten">Werkpakketten</button>
-      <button data-tab="planning">Planning</button>
+      <button data-tab="planning">Uitvoeringsplanning</button>
       <button data-tab="segmenten">Segmenten</button>
       <button data-tab="kruisingen">Kruisingen</button>
       <button data-tab="vergunningen">Vergunningen</button>
@@ -290,6 +292,24 @@
   </div>
 </div>
 
+<div id="import-overlay" class="dicht" aria-label="Trace importeren">
+  <div id="import-venster">
+    <header id="import-kop">
+      <h3>Trace importeren <span id="import-bestandsnaam"></span></h3>
+      <span id="import-status" class="mono"></span>
+      <span class="spacer"></span>
+      <button id="import-sluit" title="Sluiten">✕</button>
+    </header>
+    <div id="import-inhoud">
+      <p class="hint">Kies hieronder de laag/lagen die het tracé voorstellen. Andere lagen
+        (ondergrond, kadaster, bestaande kabels, tekstkader) blijven buiten beschouwing.
+        Meerdere lagen samen worden aaneengeregen tot één doorlopend tracé.</p>
+      <div id="import-lagen-lijst"><p class="leeg">Bestand wordt gelezen…</p></div>
+      <button id="import-bevestig" disabled>Dit is het tracé — importeren</button>
+    </div>
+  </div>
+</div>
+
 <div id="register-pagina">
   <div id="register-kop">
     <button id="btn-reg-terug" title="Terug naar het ontwerp">‹ Ontwerp</button>
@@ -320,6 +340,7 @@
     <span class="spacer"></span>
     <span id="proces-status" class="mono"></span>
     <button id="btn-proces-gegevens" title="Projectgegevens voor de ontwikkelnota's: namen verificatietabel, projectteam en mijlpalen">👥 Projectgegevens</button>
+    <button id="btn-proces-budget" title="Taakstellend budget ontwerpfase (IV t/m UO) en de begroting van de realisatiefase">💶 Budget</button>
     <button id="btn-proces-admin" title="Adminomgeving: stappen en producten aan/uit, uitvoering per stap (AI / mens / hybride)">⚙ Admin</button>
     <button id="btn-proces-verversen" title="Overzicht verversen">⟳</button>
   </div>
@@ -364,6 +385,18 @@
         AI-ontwikkelnota's (VO/DO/UO). Lege velden verschijnen in de nota als
         [IN TE VULLEN].</p>
       <div id="proces-gegevens-inhoud"></div>
+    </div>
+  </div>
+
+  <div id="proces-budget-overlay" hidden>
+    <div id="proces-budget-venster">
+      <div id="proces-budget-kop">
+        <strong>Budget — taakstellend budget en begroting realisatiefase</strong>
+        <span id="proces-budget-status" class="mono"></span>
+        <span class="spacer"></span>
+        <button id="proces-budget-sluiten">Sluiten</button>
+      </div>
+      <div id="proces-budget-inhoud"></div>
     </div>
   </div>
 

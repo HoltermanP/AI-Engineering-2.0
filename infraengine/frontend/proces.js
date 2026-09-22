@@ -121,7 +121,9 @@ function toonProces() {
       ${f.status === "afgerond" ? "✓" : ""}</button>`;
   }).join("") +
     `<button data-tab="risico" class="${procesTab === "risico" ? "actief" : ""}"
-      title="Kans- en risicoregister">Risico's <span class="n">${(procesData.risico || []).length}</span></button>`;
+      title="Kans- en risicoregister">Risico's <span class="n">${(procesData.risico || []).length}</span></button>` +
+    `<button data-tab="planning" class="${procesTab === "planning" ? "actief" : ""}"
+      title="Ontwerpplanning (IV t/m UO/NAO)">Planning</button>`;
   prEl("proces-tabs").innerHTML = tabs;
   prEl("proces-tabs").querySelectorAll("button").forEach(b =>
     b.addEventListener("click", () => { procesTab = b.dataset.tab; toonProces(); }));
@@ -150,7 +152,9 @@ function toonProces() {
     : '<p class="leeg">Nog geen meldingen.</p>';
 
   prEl("proces-inhoud").innerHTML =
-    procesTab === "risico" ? htmlRisico() : htmlFase(procesTab);
+    procesTab === "risico" ? htmlRisico()
+    : procesTab === "planning" ? htmlPlanning()
+    : htmlFase(procesTab);
   koppelFaseActies();
 }
 
@@ -554,6 +558,64 @@ function htmlRisico() {
   return html + "</tbody></table>";
 }
 
+const PR_PLAN_STATUS = {
+  afgerond: ["afgerond", "chip-groen", "st-afgerond"],
+  actief: ["actief", "chip-blauw", "st-actief"],
+  wachtend: ["wachtend", "chip-grijs", "st-wachtend"],
+  uit: ["uitgeschakeld", "chip-grijs door", "st-uit"],
+  gepland: ["gepland", "chip-blauw", "st-gepland"],
+};
+
+function htmlPlanning() {
+  const rijen = procesData.planning || [];
+  const naam = encodeURIComponent(prProject());
+  let html = `
+  <div class="fase-kaart">
+    <div class="fase-kop">
+      <h3>Ontwerpplanning <span class="chip chip-grijs">IV t/m NAO</span></h3>
+      <div>
+        <a class="klein knop-a" href="api/proces/planning/xlsx?project=${naam}"
+           download>⇩ Excel</a>
+      </div>
+    </div>
+    <p class="hint">Indicatieve planning per fase (tollgate-mijlpaal) en, waar bekend, per
+      discipline — in weken vanaf projectstart. Ingevulde mijlpalen (👥 Projectgegevens)
+      worden als datum getoond; ze herrekenen de indicatieve weekplanning niet. De
+      uitvoeringsplanning per werkpakket staat in het tracéresultaat (paneel "Uitvoeringsplanning").</p>
+  </div>`;
+  if (!rijen.length)
+    return html + '<p class="leeg">Geen ontwerpplanning beschikbaar.</p>';
+
+  const maxWk = Math.max(1, ...rijen.map(r => r.eind_wk));
+  html += `<img class="planning-afbeelding" alt="Ontwerpplanning"
+    src="api/kaart/planning-ontwerp.jpg?project=${naam}" loading="lazy">`;
+  html += `<table class="register proces-tabel"><thead><tr>
+    <th>Fase / discipline</th><th class="smal">Tollgate</th>
+    <th class="smal num">Start</th><th class="smal num">Eind</th>
+    <th>Status</th><th style="width:210px">Planning (t/m wk ${maxWk})</th>
+    <th>Toelichting</th></tr></thead><tbody>`;
+  for (const r of rijen) {
+    const [lbl, cls, balkCls] = PR_PLAN_STATUS[r.status] || [r.status, "chip-grijs", "st-wachtend"];
+    const hoofd = !!r.fase && !r.discipline;
+    const mijlpaal = !r.fase;
+    const label = mijlpaal ? `◆ ${prEsc(r.toelichting)}`
+      : hoofd ? `<strong>${prEsc(r.fase_naam)}</strong>` : `› ${prEsc(r.discipline)}`;
+    html += `<tr class="${hoofd ? "" : "sub"}">
+      <td>${label}</td>
+      <td class="smal mono">${prEsc(r.tollgate || "")}</td>
+      <td class="smal num">wk ${r.start_wk}</td>
+      <td class="smal num">wk ${r.eind_wk}</td>
+      <td><span class="chip ${cls}">${lbl}</span>${r.mijlpaal_waarde
+          ? `<div class="stap-toel">${prEsc(r.mijlpaal_waarde)}</div>` : ""}</td>
+      <td><span class="balkspoor${hoofd ? "" : " smal"}"><span class="balk ${balkCls}"
+          style="left:${((r.start_wk - 1) / maxWk * 100).toFixed(1)}%;
+                 width:${(Math.max(r.duur_wk, 0.4) / maxWk * 100).toFixed(1)}%"></span></span></td>
+      <td>${mijlpaal ? "" : prEsc(r.toelichting)}</td>
+    </tr>`;
+  }
+  return html + "</tbody></table>";
+}
+
 function koppelRisicoActies() {
   const gen = prEl("btn-risico-genereer");
   if (gen) gen.addEventListener("click", async () => {
@@ -675,6 +737,183 @@ prEl("proces-gegevens-opslaan").addEventListener("click", async () => {
     setTimeout(() => prEl("proces-gegevens-overlay").hidden = true, 600);
   } catch (e) { alert(e.message); }
 });
+
+/* --------------------------------------------------------------- budget */
+
+prEl("btn-proces-budget").addEventListener("click", openBudget);
+prEl("proces-budget-sluiten").addEventListener("click", () =>
+  prEl("proces-budget-overlay").hidden = true);
+
+const BUDGET_AANLEIDING = [
+  ["T1 (intakebesluit)", "T1 — intakebesluit (IV)"],
+  ["TM2 (VO vastgesteld)", "TM2 — VO vastgesteld"],
+  ["T3 (DO vastgesteld)", "T3 — DO vastgesteld"],
+  ["T4 (UO vastgesteld)", "T4 — UO vastgesteld"],
+  ["tussentijds", "tussentijds"],
+];
+
+async function openBudget() {
+  if (!prProject()) { alert("Geef eerst een projectnaam op."); return; }
+  let b;
+  try {
+    b = await prFetch(`api/proces/budget?project=${encodeURIComponent(prProject())}`);
+  } catch (e) { alert(e.message); return; }
+  prEl("proces-budget-inhoud").innerHTML = htmlBudget(b);
+  prEl("proces-budget-status").textContent = "";
+  koppelBudgetActies(b);
+  prEl("proces-budget-overlay").hidden = false;
+}
+
+function htmlBudget(b) {
+  const fasen = b.fasen, posten = b.posten;
+  const huidigeFasen = (b.taakstellend_huidig || {}).fasen || {};
+
+  let tabel = `<table class="register proces-tabel budget-tabel"><thead><tr>
+    <th>Kostenpost</th>${fasen.map(f => `<th>${f}</th>`).join("")}
+    <th>Totaal</th></tr></thead><tbody>`;
+  for (const [key, label] of posten) {
+    tabel += `<tr><td>${prEsc(label)}</td>` +
+      fasen.map(f => `<td><input type="number" step="1" min="0"
+        data-tsb-fase="${f}" data-tsb-post="${key}"
+        value="${(huidigeFasen[f]?.posten?.[key]) ?? 0}"></td>`).join("") +
+      `<td class="mono smal tsb-rij-totaal" data-post="${key}"></td></tr>`;
+  }
+  tabel += `<tr class="tsb-totaalrij"><td><strong>Totaal fase</strong></td>` +
+    fasen.map(f => `<td class="mono" id="tsb-totaal-${f}">—</td>`).join("") +
+    `<td class="mono" id="tsb-totaal-algemeen">—</td></tr></tbody></table>`;
+
+  const historieTsb = (b.taakstellend_historie || []).slice().reverse().map(r =>
+    `<tr><td class="mono smal">${r.tijd}</td><td>${prEsc(r.aanleiding)}</td>
+     <td>${prEsc(r.door)}</td><td class="mono">${eur(r.totaal_ontwerpfase)}</td>
+     <td>${prEsc(r.toelichting || "")}</td></tr>`).join("");
+
+  const rea = b.realisatie_huidig;
+  const historieRea = (b.realisatie_historie || []).slice().reverse().map(r =>
+    `<tr><td class="mono smal">${r.tijd}</td><td>${prEsc(r.fase)}</td>
+     <td class="mono">${eur(r.bedrag_excl_btw)}</td>
+     <td class="mono">${r.bedrag_incl_btw != null ? eur(r.bedrag_incl_btw) : "—"}</td>
+     <td>${r.bron === "raw_calculatie" ? "RAW-calculatie" : "handmatig"} — ${prEsc(r.status)}</td>
+     <td>${prEsc(r.door)}</td></tr>`).join("");
+
+  return `
+    <h4 class="discipline">Taakstellend budget — ontwerpfase (IV t/m UO)</h4>
+    <p class="hint">Eén budget voor de gehele ontwerpfase, per projectfase ingedeeld en per
+      fase onderverdeeld in kostenposten. Stel na elke tollgate een nieuwe revisie vast;
+      fasen die je op 0 laat staan behouden hun laatst vastgestelde waarde — vul dus alleen de
+      fase(n) in die je nu bijstelt.</p>
+    ${tabel}
+    <div class="budget-form">
+      <label>Aanleiding<select id="tsb-aanleiding">
+        ${BUDGET_AANLEIDING.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}
+      </select></label>
+      <label>Vastgesteld door<input id="tsb-door" placeholder="naam"></label>
+      <label>Toelichting<input id="tsb-toelichting" placeholder="toelichting bij deze revisie"></label>
+      <button id="tsb-opslaan">Nieuwe revisie vaststellen</button>
+    </div>
+    <table class="register proces-tabel budget-historie"><thead><tr>
+      <th>Tijd</th><th>Aanleiding</th><th>Door</th><th>Totaal t/m UO</th><th>Toelichting</th>
+    </tr></thead><tbody>${historieTsb ||
+      '<tr><td colspan="5" class="leeg">Nog geen revisie vastgesteld.</td></tr>'}</tbody></table>
+
+    <h4 class="discipline">Begroting realisatiefase — verwachte uitvoeringskosten opdrachtgever</h4>
+    <p class="hint">Voor het eerst opgesteld in de IV-fase (TOF-studie, stap IV-TOF) en
+      automatisch bijgewerkt zodra het tracé opnieuw wordt doorgerekend (concept, uit de
+      RAW-calculatie). Vaststellen legt een vaste snapshot voor de gekozen fase vast.</p>
+    <p class="mono">${rea ? `Huidig: ${eur(rea.bedrag_excl_btw)} excl. btw` +
+      (rea.bedrag_incl_btw != null ? ` / ${eur(rea.bedrag_incl_btw)} incl. btw` : "") +
+      ` — fase ${prEsc(rea.fase)}, ${rea.bron === "raw_calculatie"
+        ? "concept uit RAW-calculatie" : "handmatig vastgesteld"}`
+      : "Nog geen begroting realisatiefase."}</p>
+    <div class="budget-form">
+      <label>Fase<select id="rea-fase">
+        ${[...fasen, "NAO"].map(f => `<option value="${f}" ${f === (rea?.fase || "IV") ? "selected" : ""}>${f}</option>`).join("")}
+      </select></label>
+      <label>Bedrag excl. btw<input id="rea-excl" type="number" step="1" min="0"
+        value="${rea?.bedrag_excl_btw ?? ""}"></label>
+      <label>Bedrag incl. btw<input id="rea-incl" type="number" step="1" min="0"
+        value="${rea?.bedrag_incl_btw ?? ""}"></label>
+      <label>Door<input id="rea-door" placeholder="naam"></label>
+      <label>Toelichting<input id="rea-toelichting" placeholder="toelichting"></label>
+      <button id="rea-opslaan">Vaststellen</button>
+    </div>
+    <table class="register proces-tabel budget-historie"><thead><tr>
+      <th>Tijd</th><th>Fase</th><th>Excl. btw</th><th>Incl. btw</th><th>Bron/status</th><th>Door</th>
+    </tr></thead><tbody>${historieRea ||
+      '<tr><td colspan="6" class="leeg">Nog geen begroting.</td></tr>'}</tbody></table>`;
+}
+
+function prBudgetHerbereken() {
+  const wrap = prEl("proces-budget-inhoud");
+  const fasen = [...new Set([...wrap.querySelectorAll("[data-tsb-fase]")]
+    .map(i => i.dataset.tsbFase))];
+  let algemeen = 0;
+  for (const f of fasen) {
+    let tot = 0;
+    wrap.querySelectorAll(`[data-tsb-fase="${f}"]`).forEach(inp => tot += Number(inp.value || 0));
+    const el = prEl(`tsb-totaal-${f}`);
+    if (el) el.textContent = eur(tot);
+    algemeen += tot;
+  }
+  const posten = [...new Set([...wrap.querySelectorAll("[data-tsb-post]")]
+    .map(i => i.dataset.tsbPost))];
+  for (const p of posten) {
+    let tot = 0;
+    wrap.querySelectorAll(`[data-tsb-post="${p}"]`).forEach(inp => tot += Number(inp.value || 0));
+    const el = wrap.querySelector(`.tsb-rij-totaal[data-post="${p}"]`);
+    if (el) el.textContent = eur(tot);
+  }
+  const alg = prEl("tsb-totaal-algemeen");
+  if (alg) alg.innerHTML = `<strong>${eur(algemeen)}</strong>`;
+}
+
+function koppelBudgetActies(b) {
+  document.querySelectorAll("#proces-budget-inhoud [data-tsb-fase]").forEach(inp =>
+    inp.addEventListener("input", prBudgetHerbereken));
+  prBudgetHerbereken();
+
+  prEl("tsb-opslaan").addEventListener("click", async () => {
+    const door = prEl("tsb-door").value.trim();
+    if (!door) { alert("Vul in wie het budget vaststelt."); return; }
+    const fasen = {};
+    for (const f of b.fasen) {
+      const posten = {};
+      document.querySelectorAll(`[data-tsb-fase="${f}"]`).forEach(inp =>
+        posten[inp.dataset.tsbPost] = Number(inp.value || 0));
+      fasen[f] = { posten };
+    }
+    try {
+      await prFetch("api/proces/budget/taakstellend", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: prProject(), fasen,
+          aanleiding: prEl("tsb-aanleiding").value,
+          toelichting: prEl("tsb-toelichting").value.trim(), door,
+        }),
+      });
+      openBudget();
+    } catch (e) { alert(e.message); }
+  });
+
+  prEl("rea-opslaan").addEventListener("click", async () => {
+    const door = prEl("rea-door").value.trim();
+    const excl = Number(prEl("rea-excl").value || 0);
+    if (!door) { alert("Vul in wie de begroting vaststelt."); return; }
+    if (!excl) { alert("Vul een bedrag excl. btw in."); return; }
+    const inclRaw = prEl("rea-incl").value;
+    try {
+      await prFetch("api/proces/budget/realisatie", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: prProject(), fase: prEl("rea-fase").value,
+          bedrag_excl_btw: excl,
+          bedrag_incl_btw: inclRaw ? Number(inclRaw) : null,
+          toelichting: prEl("rea-toelichting").value.trim(), door,
+        }),
+      });
+      openBudget();
+    } catch (e) { alert(e.message); }
+  });
+}
 
 /* ------------------------------------------------------------------ admin */
 
