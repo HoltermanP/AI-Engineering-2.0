@@ -29,6 +29,9 @@
   <aside id="sidebar">
     <section>
       <h2>1 · Verkennen</h2>
+      <button id="btn-compute" class="primair" disabled
+        title="Berekent het tracé langs de geplaatste MS-stations (opties en wegingsprofiel hieronder)">▶ Tracé bepalen</button>
+      <div id="status" class="mono"></div>
       <div class="toolgrid">
         <button class="tool" data-mode="pan" title="Navigeren">⇱ Navigeren</button>
         <button class="tool" data-mode="area" title="Projectgebied tekenen (polygoon; dubbelklik om af te sluiten)">▱ Projectgebied</button>
@@ -86,7 +89,7 @@
     </section>
 
     <section>
-      <h2>3 · Tracé berekenen</h2>
+      <h2>3 · Rekenopties</h2>
       <label><input type="checkbox" id="opt-varianten" checked> Drie varianten + MCA (FO §3.4)</label>
       <label class="inline">Haspellengte <input id="opt-haspel" type="number" value="500" min="100" step="50" class="mono"> m</label>
       <p class="hint">Tot 70 km en meerdere stations. Boven ± 2,5 km hemelsbreed rekent de
@@ -94,9 +97,8 @@
         stations. Loopt een deeltraject vast (natuurgebied, bebouwing, verboden zone),
         dan verbreedt de app de corridor automatisch tot ± 1,3 km om een begaanbare
         route te vinden; stuur het tracé zo nodig met via-punten. Reken op enkele
-        minuten voor lange tracés.</p>
-      <button id="btn-compute" class="primair" disabled>Bereken tracé</button>
-      <div id="status" class="mono"></div>
+        minuten voor lange tracés. De knop <strong>▶ Tracé bepalen</strong> staat
+        bovenin het blok Verkennen.</p>
     </section>
 
     <section>
