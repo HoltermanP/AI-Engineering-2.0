@@ -23,9 +23,22 @@ from dataclasses import dataclass
 import ezdxf
 import ezdxf.path
 import ezdxf.recover
-import fitz
 from shapely.geometry import LineString, MultiLineString, Point
 from shapely.ops import linemerge
+
+# fitz (PyMuPDF) alleen bij daadwerkelijk PDF-gebruik importeren: het is een
+# los te installeren dependency (requirements.txt) en mag de rest van de app
+# (DXF-import, en de hele backend die dit module importeert) niet blokkeren
+# als het nog niet geïnstalleerd is.
+def _fitz():
+    try:
+        import fitz
+    except ImportError as e:
+        raise TraceImportError(
+            "PDF-import vereist het pakket 'pymupdf', dat nog niet is "
+            "geïnstalleerd op de server. DXF-import werkt intussen gewoon."
+        ) from e
+    return fitz
 
 # entiteiten die een tracé kunnen voorstellen; tekst, arceringen, blok- en
 # maatvoeringsobjecten (TEXT, HATCH, DIMENSION, MTEXT, ...) worden genegeerd
@@ -246,6 +259,7 @@ def _pdf_item_punten(item: tuple) -> list[tuple[float, float]] | None:
 
 
 def _lees_pdf_doc(data: bytes):
+    fitz = _fitz()
     try:
         doc = fitz.open(stream=data, filetype="pdf")
     except Exception as e:
