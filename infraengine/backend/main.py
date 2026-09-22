@@ -127,6 +127,18 @@ if BASIC_AUTH_WACHTWOORD:
 LAST_RESULT: dict | None = None  # voor exports (single-user prototype)
 
 
+# Frontend-bestanden altijd laten hervalideren (ETag blijft werken): zonder
+# Cache-Control bewaart de browser een oude app.js naast een nieuwe
+# index.html en lijken nieuwe knoppen het niet te doen.
+@app.middleware("http")
+async def _geen_verouderde_statics(request, call_next):
+    response = await call_next(request)
+    pad = request.url.path
+    if pad == "/" or pad.endswith((".js", ".css", ".html")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/healthz")
 def healthz():
     """Onbeveiligde health check (Render e.d.); geeft geen data prijs."""

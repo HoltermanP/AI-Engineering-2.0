@@ -674,7 +674,9 @@ map.on("click", evt => {
     }, { hitTolerance: 8 });
   } else if (mode === "street") {
     svOpen(evt.coordinate);
-  } else if (mode === "pan") {
+  } else if (mode === "pan" || mode === "sleep") {
+    // in sleepmodus vangt de sleep-interactie de greep op het tracé;
+    // klikken ernaast gedragen zich als navigeren (popups blijven werken)
     let hit = null;
     map.forEachFeatureAtPixel(evt.pixel, f => {
       if (f.get("bor") || f.get("kr")) { hit = f; return true; }
