@@ -828,8 +828,12 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
     xmin, ymin, xmax, ymax = gebied.bounds
     bbox = (xmin - BBOX_BUFFER_M, ymin - BBOX_BUFFER_M, xmax + BBOX_BUFFER_M, ymax + BBOX_BUFFER_M)
     # 0,5 m waar het kan; grotere gebieden 0,75 m — bij 1 m verliest het raster
-    # smalle stoepen en bermen (± 1,5 m) en schampt het tracé over de rijbaan
-    cell = 0.5 if km2 <= 1.5 else 0.75
+    # smalle stoepen en bermen (± 1,5 m) en schampt het tracé over de rijbaan.
+    # Bij de grootste toegestane gebieden (buurt MAX_GEBIED_KM2) alsnog naar
+    # 1 m: het rastergeheugen (kosten-/klasse-/zonelaag + de interne rasters
+    # van MCP_Geometric) schaalt kwadratisch mee met km², en liep bij een
+    # gebied rond de 3 km² op tot een out-of-memory crash van het proces.
+    cell = 0.5 if km2 <= 1.5 else 0.75 if km2 <= 2.5 else 1.0
 
     # --- datalagen (open bronnen), parallel ---
     _voortgang("datalagen ophalen bij PDOK")

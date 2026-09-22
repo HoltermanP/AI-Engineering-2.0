@@ -49,11 +49,43 @@ _session.headers["User-Agent"] = "InfraEngine-prototype/0.1"
 
 # LRU-cache met plafond: de corridor-modus haalt per deeltraject een eigen
 # bbox op — zonder plafond zou een tracé van 70 km alle data vasthouden.
+# Naast een plafond op het aantal entries ook een plafond op het geschatte
+# geheugenbeslag: bij grote "gebied"-berekeningen (tot MAX_GEBIED_KM2) zijn
+# losse entries (WMS-maskers, WFS-featurelijsten) groot genoeg dat 300 stuks
+# ruim over de 1 GB konden oplopen en, samen met de rest van een berekening,
+# het proces uit zijn geheugen lieten lopen (Render OOM-restart).
+import sys
 from collections import OrderedDict
 
 _cache: OrderedDict = OrderedDict()
+_cache_bytes: dict = {}          # key -> geschatte grootte van de waarde (bytes)
+_cache_bytes_totaal = 0
 _cache_lock = threading.Lock()
 _CACHE_MAX = 300  # entries (~10 per deeltraject → ± 30 recente deeltrajecten)
+_CACHE_MAX_BYTES = 150 * 1024 * 1024  # 150 MB, ongeacht aantal entries
+
+
+def _byte_estimaat(obj, _seen=None) -> int:
+    """Grove schatting van het geheugenbeslag van een cache-waarde. Geen
+    exacte deep-sizeof, maar goed genoeg om de cache op werkelijk
+    geheugengebruik te begrenzen i.p.v. alleen op aantal entries."""
+    if _seen is None:
+        _seen = set()
+    oid = id(obj)
+    if oid in _seen:
+        return 0
+    _seen.add(oid)
+    nbytes = getattr(obj, "nbytes", None)  # numpy-arrays (WMS-maskers)
+    if isinstance(nbytes, int):
+        return nbytes
+    grootte = sys.getsizeof(obj)
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            grootte += _byte_estimaat(k, _seen) + _byte_estimaat(v, _seen)
+    elif isinstance(obj, (list, tuple, set)):
+        for v in obj:
+            grootte += _byte_estimaat(v, _seen)
+    return grootte
 
 
 def _cache_get(key):
@@ -66,11 +98,20 @@ def _cache_get(key):
 
 
 def _cache_put(key, waarde):
+    global _cache_bytes_totaal
     with _cache_lock:
+        if key in _cache:
+            _cache_bytes_totaal -= _cache_bytes.pop(key, 0)
+        grootte = _byte_estimaat(waarde)
         _cache[key] = waarde
+        _cache_bytes[key] = grootte
+        _cache_bytes_totaal += grootte
         _cache.move_to_end(key)
-        while len(_cache) > _CACHE_MAX:
-            _cache.popitem(last=False)
+        while len(_cache) > _CACHE_MAX or _cache_bytes_totaal > _CACHE_MAX_BYTES:
+            if len(_cache) <= 1:
+                break  # altijd minstens de zojuist toegevoegde waarde bewaren
+            oude_key, _ = _cache.popitem(last=False)
+            _cache_bytes_totaal -= _cache_bytes.pop(oude_key, 0)
     return waarde
 
 
