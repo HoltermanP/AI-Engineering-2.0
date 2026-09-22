@@ -1117,8 +1117,11 @@ def _cap_materiaal(result, variant, project):
     moffen = v.get("moffen", [])
     mantel = sum(b.get("boorlengte_m", b.get("lengte_m", 0)) or 0
                  for b in boringen)
+    import normen
+    pct = float(normen.waarde("overlengte_pct"))
     regels = [
-        f"MS-kabel (3 fasen, incl. 3% overlengte): {lengte * 1.03:.0f} m",
+        f"MS-kabel (3 fasen, incl. {pct:.0f}% overlengte): "
+        f"{lengte * (1 + pct / 100):.0f} m",
         f"mantelbuizen (boringen): {mantel:.0f} m",
         f"moffen: {len(moffen)} stuks",
         f"markeringslint/dekplaten: {lengte:.0f} m",

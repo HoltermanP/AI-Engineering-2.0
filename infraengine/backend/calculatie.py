@@ -32,7 +32,14 @@ ZANDBED_DIKTE_M = 0.40          # kabelbed + omhulling in schoon zand
 HERSTEL_ELEMENTEN_M = 0.80      # herstelbreedte elementenverharding
 HERSTEL_ASFALT_M = 1.00         # herstelbreedte asfalt (incl. zaagranden)
 HERSTEL_BERM_M = 1.50           # herstelbreedte berm / groen (werkstrook)
-KABEL_TOESLAG = 1.03            # snij- en legverlies kabel
+# overlengte-toeslag (snij-/legverlies) komt uit het normenkader
+# (normen.waarde("overlengte_pct"), instelbaar via data/normen.json)
+
+
+def _kabel_toeslag() -> float:
+    import normen
+    return 1.0 + float(normen.waarde("overlengte_pct")) / 100.0
+
 
 # Productienormen voor de bouwtijdraming (uitvoeringskosten, verkeersmaatregelen)
 PRODUCTIE_SLEUF_M_DAG = 60.0
@@ -252,10 +259,11 @@ def build_raw_calculatie(route_lengte_m: float, segments: list, crossings: list,
          m_zinker, p["zinker_m"])
 
     # ------------------------------------------------------------ 26 Kabelwerk
-    m_kabel = (m_sleuf + m_boringen + m_zinker) * KABEL_TOESLAG
+    toeslag = _kabel_toeslag()
+    m_kabel = (m_sleuf + m_boringen + m_zinker) * toeslag
     post("260110", "Leveren MS-kabel 3×1×630 mm² Al (per circuitmeter, "
          "3 fasen op haspels)", "m", m_kabel, p["kabel_leveren_m"],
-         f"tracé × {KABEL_TOESLAG:.0%} snij- en legverlies")
+         f"tracé × {toeslag:.1%} incl. overlengte-toeslag (normenkader)")
     post("260120", "Trekken en leggen MS-kabelcircuit in open sleuf", "m",
          m_sleuf + m_zinker, p["kabel_leggen_sleuf_m"])
     post("260130", "Intrekken MS-kabelcircuit in mantelbuis", "m",

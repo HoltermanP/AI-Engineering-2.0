@@ -162,8 +162,38 @@ onbereikbaar (en een lopende berekening breekt af).
    als laatste uitweg waar de beheerder dat toestaat). Past niets, dan een
    kritieke melding in de toetsing (maatwerk vereist).
 4. **Toetsen** — basis-toets: uitsluitingen, ligging in rijbaan, privaat
-   terrein (proxy), dekking-informatie, buigradius-knikken, boorplan-plicht,
-   graafveiligheid (CROW 500/WIBON-melding).
+   terrein (proxy), dekking-informatie, boorplan-plicht, graafveiligheid
+   (CROW 500/WIBON-melding). Aangevuld met het **normenkader nauwkeurigheid
+   en maatvoering** (`backend/normen.py` + `backend/maatvoering.py`):
+   - **Eén regelbestand met bronvermelding per regel** (NEN 7171-1,
+     NEN 3650/Bevb, IEC 60502-2, CROW, Liander-praktijk); grenswaarden
+     aanpasbaar zonder codewijziging via `data/normen.json`. Geen
+     grenswaarden in UI-componenten.
+   - **Nauwkeurigheid**: alle tracépunten in RD New (EPSG:28992), vaste
+     afronding 0,01 m; dubbele punten, zelf-intersecties en knikken met
+     segmenten < 0,50 m worden bij de generatie genormaliseerd en bij
+     afwijking geflagd. Punten binnen 0,10 m van een referentierand
+     (BGT-wegkant/verhardingsrand, DKK-erfgrens) worden erop gesnapt;
+     punten binnen de zoekzone (0,50 m) die niet snappen worden geflagd.
+     Tracélengte over de werkelijke polyline (1 decimaal) met
+     configureerbare overlengte-toeslag (default 2%) die ook de
+     RAW-calculatie voedt.
+   - **Maatvoering**: dekking-eisen per liggingstype (0,70 m berm/trottoir,
+     1,00 m rijbaan/watergang — eisrapportage, geen z-waarden in het
+     datamodel), minimale afstanden tot KLIC-netten per categorie (0,25 m
+     LS/MS-/datakabels, 0,50 m gas/water, 2,00 m HD-gas — kritiek), 0,50 m
+     tot boomstammen plus waarschuwing binnen de kroonprojectie,
+     gevelafstand (BGT-panden), minimale buigradius (15 × Ø, inpasbare
+     boogstraal per knikpunt) en kruisingshoek K&L ≥ 45°.
+   - **In de analyse**: elke overschrijding met exacte RD-locatie,
+     metrering, gemeten waarde en eis — als ⚠-marker op de kaart (klik
+     voor de details) en in het toetsingsregister; bovenaan de toetsing-tab
+     een **maatvoeringsoverzicht** per tracé (totale/kabellengte, lengte
+     per ligging, kleinste buigradius, kleinste afstand per categorie,
+     kleinste kruisingshoek). Bestaande ernst-niveaus (kritiek/
+     waarschuwing/info) blijven ongewijzigd; opgeslagen projecten behouden
+     hun toetsstatus. Unit tests: `./.venv/bin/python -m unittest discover
+     -s backend/tests`.
 5. **Registers** — automatisch gevuld uit het tracé (FO §6): vergunningen en
    meldingen (AVOI, waterschap, ProRail, verkeer, KLIC), boringen (met in-/
    uittredepunten in RD, dekking-eis, mantelbuisvoorstel), ZRO (gekruiste
@@ -355,6 +385,11 @@ infraengine/
 │   │                  inschrijvingsstaat (fictieve, realistische prijzen)
 │   ├── zro.py         ZRO-dossiers (status, eigenaar, recht, bijlagen),
 │   │                  tekening-generator (PDF) en overeenkomst (.docx)
+│   ├── normen.py      Normenkader: één regelbestand (waarde + bron per
+│   │                  regel), overrides via data/normen.json
+│   ├── maatvoering.py Maatvoeringstoetsing en route-normalisatie
+│   │                  (afronding, snapping, buigradius, K&L-afstanden,
+│   │                  kruisingshoek, metrering) + tests/ (unittest)
 │   ├── nota.py        AI-ontwerpnota's VO/DO/UO (Claude API) → Word
 │   └── proces.py      Procesondersteuning IV→VO→DO→UO→realisatie:
 │                      stappencatalogus (tollgates TM2/T3/T4/T5), config

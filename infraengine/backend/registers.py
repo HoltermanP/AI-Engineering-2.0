@@ -534,12 +534,19 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
                 f"Segment {s['nr']} ({s['lengte_m']} m) ligt op erf; ZRO waarschijnlijk "
                 f"nodig. Controleer eigendom via BRK.")
 
-    dekking = {CL_BERM: "0,80 m", CL_VOETPAD: "0,80 m", CL_FIETSPAD: "0,80 m",
-               CL_PARKEER: "0,80 m", CL_RIJBAAN: "≥ 1,00 m of mantelbuis"}
+    # dekking-eisen uit het normenkader (normen.py / data/normen.json);
+    # geen z-waarden in het datamodel, dus eis-rapportage i.p.v. meting
+    import normen
+    d_trot = f"{normen.waarde('dekking_trottoir_m'):.2f} m"
+    dekking = {CL_BERM: f"{normen.waarde('dekking_berm_m'):.2f} m",
+               CL_VOETPAD: d_trot, CL_FIETSPAD: d_trot, CL_PARKEER: d_trot,
+               CL_RIJBAAN: f"≥ {normen.waarde('dekking_rijbaan_m'):.2f} m "
+                           "of mantelbuis"}
     liggingen = {s["klasse"] for s in segments if s["klasse"] in dekking}
     for k in sorted(liggingen):
-        add("info", "Dekking op maaiveld", "Kabelleggingsnorm netbeheerder; NEN 7171-1",
-            f"Ligging {CLASS_NAMES[k]}: aan te houden dekking {dekking[k]} (instelbare norm).")
+        add("info", "Dekking op maaiveld", normen.bron("dekking_berm_m"),
+            f"Ligging {CLASS_NAMES[k]}: aan te houden dekking {dekking[k]} "
+            "(instelbaar in het normenkader).")
 
     for b in boringen:
         if not b.get("recht", True):
@@ -584,21 +591,8 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
                     f"binnen de richtlijnen; maatwerk vereist (in-/uittredepunt "
                     f"verplaatsen, langere boring of ander tracé).", c["punt"])
 
-    # scherpe knikken (minimale buigradius, vereenvoudigde toets)
-    coords = list(route.coords)
-    for i in range(1, len(coords) - 1):
-        ax, ay = coords[i - 1]; bx, by = coords[i]; cx, cy = coords[i + 1]
-        v1 = (bx - ax, by - ay); v2 = (cx - bx, cy - by)
-        l1 = math.hypot(*v1); l2 = math.hypot(*v2)
-        if l1 < 0.1 or l2 < 0.1:
-            continue
-        cosa = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (l1 * l2)))
-        hoek = math.degrees(math.acos(cosa))
-        if hoek > 80:
-            chainage = route.project(Point(bx, by))
-            add("waarschuwing", "Buigradius", "IEC-norm / kabelspecificatie (15 × D)",
-                f"Scherpe richtingsverandering ({hoek:.0f}°) op chainage {chainage:.0f} m; "
-                f"controleer minimale buigradius.", (round(bx, 2), round(by, 2)))
+    # de buigradiustoets (inpasbare boogstraal per knikpunt, factor × Ø uit
+    # het normenkader) zit in maatvoering.toets — geen dubbeling hier
 
     # zonelagen (FO §5)
     if zones_m[ZN_NATURA] > 0:

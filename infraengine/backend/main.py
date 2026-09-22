@@ -29,6 +29,7 @@ import engine
 import grondwater
 import kaart as kaart_mod
 import klic
+import maatvoering
 import nota as nota_mod
 import pdok
 import proces as proces_mod
@@ -595,6 +596,10 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                     bgt_deel = datas[breedte]["bgt"]
                     deel = LineString(coords)
                     deel = straighten_iteratief(deel, bgt_deel, grid)
+                    # normenkader: afronden/ontdubbelen/knikken/snappen per
+                    # deeltraject (referentieranden uit de deel-BGT)
+                    deel = maatvoering.normaliseer_route(
+                        deel, maatvoering.referentieranden(bgt_deel))
                     kruisingen = detect_crossings(deel, bgt_deel)
                     engine.verrijk_kruisingen(kruisingen,
                                               datas[breedte]["legger_water"],
@@ -634,6 +639,9 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             fouten.append({"variant": naam, "fout": st["fout"]})
             continue
         route = LineString(st["coords"])
+        # naadpunten tussen deeltrajecten ontdubbelen/gladstrijken volgens
+        # het normenkader (deeltrajecten zelf zijn al genormaliseerd)
+        route = maatvoering.normaliseer_route(route)
         kruisingen = _hecht_kruisingen(st["kruisingen"], route)
         segmenten = _hecht_segmenten(st["segmenten"])
         zones_m = {bit: round(m, 1) for bit, m in st["zones"].items()}
@@ -648,6 +656,12 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         checks = build_checks(route, segmenten, kruisingen, boringen, zones_m,
                               bomen_rivm_fractie=(max(bomen_rivm_fracties)
                                                   if bomen_rivm_fracties else None))
+        # maatvoeringstoets over het volledige aaneengehechte tracé; de
+        # snap-toets is per deeltraject al bij de generatie toegepast
+        mv_checks, mv_overzicht = maatvoering.toets(
+            route, segmenten, [(g.x, g.y, r) for g, r in bomen_alle],
+            maatvoering.klic_nabij(route))
+        checks.extend(mv_checks)
         werkpakketten = build_werkpakketten(route, req.stations)
         ken_werkpakketten_toe(werkpakketten, route, segmenten, kruisingen,
                               boringen, moffen, zro, vergunningen,
@@ -677,6 +691,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             "onderzoeken": onderzoeken,
             "zro": zro,
             "toetsing": checks,
+            "maatvoering": mv_overzicht,
             "werkpakketten": werkpakketten,
             "planning": planning,
             "kosten": kosten,
@@ -829,6 +844,11 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
                 _free_station(grid, wp)
             route = LineString(shortest_path(grid, waypoints))
             route = straighten_iteratief(route, bgt, grid)
+            # normenkader (normen.py): afronden op 0,01 m RD, ontdubbelen,
+            # korte knik-segmenten samenvoegen en snappen op BGT-/erfranden,
+            # zodat het gegenereerde tracé de eisen vooraf respecteert
+            referentie = maatvoering.referentieranden(bgt, percelen)
+            route = maatvoering.normaliseer_route(route, referentie)
             crossings = detect_crossings(route, bgt)
             engine.verrijk_kruisingen(crossings, data["legger_water"],
                                       data["nwb"], pdok.waterschap_naam)
@@ -845,6 +865,14 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
             zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
             checks = build_checks(route, segments, crossings, boringen, zones_m,
                                   bomen_rivm_fractie=data.get("bomen_rivm_fractie"))
+            # maatvoeringstoets (normen.py): buigradius, K&L-afstanden en
+            # -kruisingshoeken, bomen, gevelafstand, snapping — bevindingen
+            # sluiten aan op de bestaande toetsing (ernst/punt) met exacte
+            # metrering en gemeten waarde
+            mv_checks, mv_overzicht = maatvoering.toets(
+                route, segments, [(g.x, g.y, r) for g, r in boom_zones],
+                maatvoering.klic_nabij(route), bgt, referentie)
+            checks.extend(mv_checks)
             werkpakketten = build_werkpakketten(route, req.stations)
             ken_werkpakketten_toe(werkpakketten, route, segments, crossings,
                                   boringen, moffen, zro, vergunningen,
@@ -874,6 +902,7 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
                 "onderzoeken": onderzoeken,
                 "zro": zro,
                 "toetsing": checks,
+                "maatvoering": mv_overzicht,
                 "werkpakketten": werkpakketten,
                 "planning": planning,
                 "kosten": kosten,

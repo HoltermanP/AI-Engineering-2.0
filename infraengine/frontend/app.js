@@ -42,6 +42,7 @@ const srcMoffen = new ol.source.Vector();
 const srcBomen = new ol.source.Vector();
 const srcWerkpakketten = new ol.source.Vector();
 const srcHighlight = new ol.source.Vector();
+const srcMaatvoering = new ol.source.Vector();  // normenkader-bevindingen
 const srcGrondwater = new ol.source.Vector();
 const srcGwIso = new ol.source.Vector();
 
@@ -225,6 +226,23 @@ const lagen = {
         font: "600 11px 'IBM Plex Mono',monospace",
         fill: new ol.style.Fill({ color: "#1E5AA8" }),
         stroke: new ol.style.Stroke({ color: "#fff", width: 3 }),
+      }),
+    }),
+  }),
+  // maatvoeringsbevindingen (normenkader): driehoek-marker op de exacte
+  // overschrijdingslocatie, amber = waarschuwing, rood = kritiek
+  maatvoering: new ol.layer.Vector({
+    source: srcMaatvoering, zIndex: 29,
+    style: f => new ol.style.Style({
+      image: new ol.style.RegularShape({
+        points: 3, radius: 9, rotation: 0,
+        fill: new ol.style.Fill({
+          color: f.get("mv").ernst === "kritiek" ? "#B42318" : "#C77E14" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 2 }),
+      }),
+      text: new ol.style.Text({
+        text: "!", offsetY: 1, font: "700 10px 'Inter',sans-serif",
+        fill: new ol.style.Fill({ color: "#fff" }),
       }),
     }),
   }),
@@ -662,6 +680,12 @@ map.on("click", evt => {
       if (f.get("bor") || f.get("kr")) { hit = f; return true; }
       return false;
     }, { hitTolerance: 8, layerFilter: l => l === lagen.crossings });
+    let mvHit = null;
+    map.forEachFeatureAtPixel(evt.pixel, f => {
+      if (f.get("mv")) { mvHit = f; return true; }
+      return false;
+    }, { hitTolerance: 8, layerFilter: l => l === lagen.maatvoering });
+    if (mvHit) { toonMaatvoeringPopup(mvHit.get("mv"), evt.coordinate); return; }
     if (hit) { toonKaartPopup(hit.get("bor"), hit.get("kr"), evt.coordinate); return; }
     let put = null;
     map.forEachFeatureAtPixel(evt.pixel, f => !!(put = f.get("gw")),
@@ -765,6 +789,58 @@ function toonKaartPopup(b, k, coord) {
   }
   popupEl.innerHTML =
     `<button class="sluit" title="Sluiten">×</button><h3>${kop}</h3>${inhoud}`;
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord);
+}
+
+/* -------- maatvoeringsoverzicht (normenkader) bovenaan de toetsing-tab */
+function maatvoeringOverzichtEl(mv) {
+  const d = document.createElement("div");
+  d.className = "mv-overzicht";
+  const rij = (label, waarde) => waarde
+    ? `<div><span>${label}</span><strong>${waarde}</strong></div>` : "";
+  const afst = Object.entries(mv.kleinste_afstand || {}).map(([cat, a]) =>
+    rij(`Kleinste afstand ${cat}`,
+        `${a.waarde} m (eis ≥ ${a.eis} m) · metr. ${a.metrering_m} m`))
+    .join("");
+  const liggingen = Object.entries(mv.lengte_per_ligging_m || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([l, m]) => `${l} ${Math.round(m)} m`).join(" · ");
+  d.innerHTML =
+    `<h4>Maatvoering (normenkader, ${mv.crs})</h4>` +
+    rij("Totale tracélengte", `${mv.totale_lengte_m} m`) +
+    rij(`Kabellengte incl. ${mv.overlengte_pct}% overlengte`,
+        `${mv.kabellengte_incl_overlengte_m} m`) +
+    rij("Lengte per ligging", liggingen) +
+    (mv.kleinste_buigradius
+      ? rij("Kleinste buigradius",
+            `${mv.kleinste_buigradius.waarde} m (eis ≥ ` +
+            `${mv.kleinste_buigradius.eis} m) · metr. ` +
+            `${mv.kleinste_buigradius.metrering_m} m`) : "") +
+    afst +
+    (mv.kleinste_kruisingshoek
+      ? rij("Kleinste kruisingshoek K&L",
+            `${mv.kleinste_kruisingshoek.waarde}° (eis ≥ ` +
+            `${mv.kleinste_kruisingshoek.eis}°)`) : "") +
+    rij("Dekking-eisen", (mv.dekking_eisen || [])
+      .map(x => `${x.ligging} ${x.eis_m} m`).join(" · ")) +
+    `<p class="opm">${(mv.aannames || []).join("; ")}.</p>`;
+  return d;
+}
+
+/* --------------- popup: maatvoeringsbevinding (normenkader, normen.py) */
+function toonMaatvoeringPopup(c, coord) {
+  const rd = p => `<span class="mono">${p.map(x => (+x).toFixed(2)).join(", ")}</span>`;
+  const inhoud =
+    popupRij("Ernst", `<span class="chip ${c.ernst}">${c.ernst}</span>`) +
+    popupRij("Gemeten", c.gemeten != null ? String(c.gemeten) : "") +
+    popupRij("Eis", c.eis != null ? String(c.eis) : "") +
+    popupRij("Metrering", c.metrering_m != null ? `${c.metrering_m} m` : "") +
+    popupRij("Locatie (RD)", c.punt ? rd(c.punt) : "") +
+    popupRij("Bron", c.grondslag) +
+    `<p class="opm">${c.melding}</p>`;
+  popupEl.innerHTML =
+    `<button class="sluit" title="Sluiten">×</button><h3>${c.toets}</h3>${inhoud}`;
   popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
   kaartPopup.setPosition(coord);
 }
@@ -1187,6 +1263,7 @@ function toonResultaat() {
   sluitPopup();
   srcRoutes.clear(); srcSegments.clear(); srcCrossings.clear(); srcMoffen.clear();
   srcBomen.clear(); srcWerkpakketten.clear(); srcHighlight.clear();
+  srcMaatvoering.clear();
   svRouteGewijzigd();  // Street View-paneel meebewegen met variant/nieuw tracé
   if (!resultaat) return;
   (resultaat.bomen || []).forEach(c => {
@@ -1206,6 +1283,14 @@ function toonResultaat() {
     f.set("klasse", s.klasse);
     f.set("seg", s);  // voor de klik-info in de kaartpopup
     srcSegments.addFeature(f);
+  });
+  // maatvoeringsbevindingen (normenkader) als markers op de exacte locatie
+  (v.toetsing || []).forEach(c => {
+    if (c.maatvoering && c.punt && c.ernst !== "info") {
+      const f = new ol.Feature(new ol.geom.Point(c.punt));
+      f.set("mv", c);
+      srcMaatvoering.addFeature(f);
+    }
   });
   const kortTechniek = t => t.includes("HDD") ? "HDD" : t.includes("Persing") ? "PERS"
     : t.includes("Nano") ? "NANO" : t.includes("Raket") ? "RAKET" : "OPEN";
@@ -1554,6 +1639,7 @@ function toonTab() {
     el.innerHTML = '<p class="leeg">ZRO-register laden…</p>';
     toonZroTab(el, v);
   } else if (actieveTab === "toetsing") {
+    if (v.maatvoering) el.appendChild(maatvoeringOverzichtEl(v.maatvoering));
     t = tabel(["Ernst", "WP", "Toets", "Grondslag", "Melding"],
       v.toetsing.map(c => ({
         cells: [td(`<span class="chip ${c.ernst}">${c.ernst}</span>`), td(c.werkpakket),
