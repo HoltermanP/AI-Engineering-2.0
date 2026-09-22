@@ -1227,16 +1227,11 @@ async function bereken() {
               `~${Math.round(resultaat.bomen_rivm_fractie * 100)}% boombedekking, ` +
               `veldcheck nodig`
             : ""));
-    // automatisch afgeleid zoekgebied (of de corridor) tonen als er geen
-    // gebied is getekend; gemarkeerd als "auto" zodat het niet als getekend
-    // projectgebied wordt teruggestuurd bij een herberekening
-    if (!srcArea.getFeatures().some(f => !f.get("auto")) && resultaat.gebied) {
-      srcArea.getFeatures().filter(f => f.get("auto"))
-        .forEach(f => srcArea.removeFeature(f));
-      const f = new ol.Feature(geojson.readGeometry(resultaat.gebied));
-      f.set("auto", true);
-      srcArea.addFeature(f);
-    }
+    // het automatisch afgeleide zoekgebied/de corridor wordt bewust niet
+    // getekend: het vlak leidde af van het tracé en de rand was per ongeluk
+    // versleepbaar; alleen een zelf getekend projectgebied blijft zichtbaar
+    srcArea.getFeatures().filter(f => f.get("auto"))
+      .forEach(f => srcArea.removeFeature(f));
     document.getElementById("gemeente-info").textContent =
       resultaat.gemeente ? "· " + resultaat.gemeente : "";
     document.getElementById("btn-exp-geojson").disabled = false;
@@ -2980,7 +2975,7 @@ function nieuwProject() {
   document.getElementById("project-lijst").value = "";
   document.getElementById("gemeente-info").textContent = "";
   document.getElementById("btn-weights-reset").click();
-  document.getElementById("opt-varianten").checked = true;
+  document.getElementById("opt-varianten").checked = false;
   document.getElementById("opt-haspel").value = 500;
   zetExportKnoppen(false);
   statusEl.textContent = "Nieuw project — plaats stations en bereken een tracé.";
@@ -3029,7 +3024,9 @@ document.getElementById("project-lijst").addEventListener("change", async e => {
   if (s.weights) document.querySelectorAll("#weights-table input").forEach(i => {
     if (s.weights[i.dataset.w] !== undefined) i.value = s.weights[i.dataset.w];
   });
-  document.getElementById("opt-varianten").checked = !!s.variants;
+  // varianten staan standaard uit — alleen de voorkeursvariant; drie extra
+  // varianten zijn een bewuste keuze per berekening (niet uit het project)
+  document.getElementById("opt-varianten").checked = false;
   document.getElementById("opt-haspel").value = s.haspel_m || 500;
 
   // meegeslagen rekenresultaat herstellen (kaart, paneel, exports, nota's)
