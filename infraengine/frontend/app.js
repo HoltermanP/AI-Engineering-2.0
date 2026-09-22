@@ -2958,12 +2958,15 @@ function zetExportKnoppen(aan) {
   document.querySelectorAll(".btn-nota").forEach(b => { b.disabled = !aan; });
 }
 
-function nieuwProject() {
+async function nieuwProject() {
   const ietsAanwezig = srcStations.getFeatures().length
     || srcArea.getFeatures().some(f => !f.get("auto")) || resultaat;
   if (ietsAanwezig &&
       !confirm("Nieuw project starten? Niet-opgeslagen werk gaat verloren."))
     return;
+  // ook de server-state wissen (single-user prototype): anders haalt een
+  // paginaherlaad via /api/result het vorige tracé weer terug
+  try { await fetch("api/project/new", { method: "POST" }); } catch { /* offline: lokaal toch leeg */ }
   [srcArea, srcStations, srcVia, srcForbidden].forEach(s => s.clear());
   resultaat = null;
   actieveVariant = 0;

@@ -1493,9 +1493,17 @@ def project_load(name: str):
     # meegeslagen rekenresultaat weer actief maken, zodat registers,
     # exports en nota's direct werken zonder herberekening
     res = (p.get("state") or {}).get("result")
-    if isinstance(res, dict) and res.get("varianten"):
-        LAST_RESULT = res
+    LAST_RESULT = res if isinstance(res, dict) and res.get("varianten") else None
     return p
+
+
+@app.post("/api/project/new")
+def project_new():
+    """Server-state van het huidige (single-user) project wissen, zodat een
+    ververste pagina niet het vorige tracé terughaalt (zie /api/result)."""
+    global LAST_RESULT
+    LAST_RESULT = None
+    return {"ok": True}
 
 
 @app.get("/api/defaults")
