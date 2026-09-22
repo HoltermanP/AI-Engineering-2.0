@@ -85,7 +85,11 @@ onbereikbaar (en een lopende berekening breekt af).
    tot ± 1,2 m diepte, 1:50.000; klik in navigeermodus op de kaart voor de
    bodemeenheid op dat punt; bebouwd gebied is niet gekarteerd).
    Projectgebied tekenen (max ± 3 km²), MS-stations plaatsen (volgorde =
-   streng), via-punten en verboden zones. Met de tool **🚶 Street View**
+   streng), via-punten en verboden zones. Met **↷ Tracé verslepen** pak je
+   een berekend tracé op en sleep je het naar de gewenste ligging: op de
+   losgelaten plek komt een via-punt en het tracé wordt automatisch
+   herberekend (ook het verslepen van een bestaand via-punt rekent direct
+   opnieuw; via-punten zijn met ✕ Verwijderen weer weg te halen). Met de tool **🚶 Street View**
    (beschikbaar zodra een tracé is berekend) loop je door het tracé:
    klik op (of naast) het tracé en stap met de knoppen, de schuif of
    "Lopen" langs de route; de kaart toont positie en kijkrichting

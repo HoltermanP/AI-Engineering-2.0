@@ -518,12 +518,23 @@ document.getElementById("lg-alt").addEventListener("change", e => {
 /* ------------------------------------------------------------- tekentools */
 let mode = "pan";
 let drawInteractie = null;
-// stations, via-punten en getekende vlakken zijn versleepbaar
-[srcStations, srcVia, srcArea, srcForbidden].forEach(src =>
-  map.addInteraction(new ol.interaction.Modify({ source: src })));
+// stations, via-punten en getekende vlakken zijn versleepbaar; een versleept
+// via-punt stuurt het tracé bij en rekent daarom automatisch opnieuw
+[srcStations, srcVia, srcArea, srcForbidden].forEach(src => {
+  const m = new ol.interaction.Modify({ source: src });
+  if (src === srcVia)
+    m.on("modifyend", () => {
+      if (resultaat && !document.getElementById("btn-compute").disabled) {
+        statusEl.textContent = "Via-punt versleept — tracé wordt herberekend…";
+        bereken();
+      }
+    });
+  map.addInteraction(m);
+});
 
 function setMode(nieuw) {
   mode = nieuw;
+  if (map.getTargetElement()) map.getTargetElement().style.cursor = "";
   document.querySelectorAll("button.tool").forEach(b =>
     b.classList.toggle("actief", b.dataset.mode === nieuw));
   if (drawInteractie) { map.removeInteraction(drawInteractie); drawInteractie = null; }
@@ -537,10 +548,100 @@ function setMode(nieuw) {
     map.addInteraction(drawInteractie);
   }
   if (nieuw === "street") svOpen(null);
+  if (nieuw === "sleep") {
+    if (!resultaat) {
+      statusEl.textContent = "Tracé verslepen kan pas als er een tracé is " +
+        "berekend (▶ Tracé berekenen).";
+      setTimeout(() => setMode("pan"), 0);
+      return;
+    }
+    statusEl.textContent = "Pak het rode tracé op en sleep het naar de " +
+      "gewenste ligging; bij loslaten komt daar een via-punt en wordt het " +
+      "tracé automatisch herberekend.";
+  }
 }
 document.querySelectorAll("button.tool").forEach(b =>
   b.addEventListener("click", () => setMode(b.dataset.mode)));
 setMode("pan");
+
+/* ---- tracé verslepen: greep op de actieve route → via-punt + herberekenen */
+const srcSleep = new ol.source.Vector();
+map.addLayer(new ol.layer.Vector({
+  source: srcSleep, zIndex: 40,
+  style: f => f.getGeometry().getType() === "LineString"
+    ? new ol.style.Style({ stroke: new ol.style.Stroke(
+        { color: "#B8771E", width: 2.5, lineDash: [7, 6] }) })
+    : new ol.style.Style({ image: new ol.style.RegularShape({
+        points: 4, radius: 8, angle: 0,
+        fill: new ol.style.Fill({ color: "#B8771E" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 2 }) }) }),
+}));
+
+let sleepGreep = null;  // gegrepen punt op de route (RD)
+
+function actieveRouteFeature() {
+  return srcRoutes.getFeatures().find(f => f.get("actief")) || null;
+}
+
+const sleepInteractie = new ol.interaction.Pointer({
+  handleDownEvent(evt) {
+    if (mode !== "sleep" || !resultaat) return false;
+    const routeF = actieveRouteFeature();
+    if (!routeF) return false;
+    const dichtst = routeF.getGeometry().getClosestPoint(evt.coordinate);
+    const px = map.getPixelFromCoordinate(dichtst);
+    if (Math.hypot(px[0] - evt.pixel[0], px[1] - evt.pixel[1]) > 12)
+      return false;  // niet op het tracé gepakt → kaart gewoon verschuiven
+    sleepGreep = dichtst;
+    srcSleep.clear();
+    srcSleep.addFeature(new ol.Feature(
+      new ol.geom.LineString([sleepGreep, evt.coordinate])));
+    srcSleep.addFeature(new ol.Feature(new ol.geom.Point(evt.coordinate)));
+    return true;
+  },
+  handleDragEvent(evt) {
+    if (!sleepGreep) return;
+    srcSleep.getFeatures().forEach(f => {
+      const g = f.getGeometry();
+      if (g.getType() === "LineString")
+        g.setCoordinates([sleepGreep, evt.coordinate]);
+      else g.setCoordinates(evt.coordinate);
+    });
+  },
+  handleUpEvent(evt) {
+    srcSleep.clear();
+    if (!sleepGreep) return false;
+    const doel = evt.coordinate;
+    const verplaatst_m = Math.hypot(doel[0] - sleepGreep[0],
+                                    doel[1] - sleepGreep[1]);
+    sleepGreep = null;
+    if (verplaatst_m < 2) return false;  // klik zonder sleep: niets doen
+    srcVia.addFeature(new ol.Feature(new ol.geom.Point(doel)));
+    updateUI();
+    setMode("pan");
+    if (!document.getElementById("btn-compute").disabled) {
+      statusEl.textContent = "Via-punt geplaatst op de nieuwe ligging — " +
+        "tracé wordt herberekend…";
+      bereken();
+    }
+    return false;
+  },
+});
+map.addInteraction(sleepInteractie);
+
+// grijp-cursor boven het tracé in sleepmodus
+map.on("pointermove", evt => {
+  if (mode !== "sleep" || evt.dragging || !resultaat) return;
+  const routeF = actieveRouteFeature();
+  let grijpbaar = false;
+  if (routeF) {
+    const dichtst = routeF.getGeometry().getClosestPoint(evt.coordinate);
+    const px = map.getPixelFromCoordinate(dichtst);
+    grijpbaar = Math.hypot(px[0] - evt.pixel[0], px[1] - evt.pixel[1]) <= 12;
+  }
+  map.getTargetElement().style.cursor =
+    sleepGreep ? "grabbing" : (grijpbaar ? "grab" : "");
+});
 
 map.on("click", evt => {
   if (mode === "station" || mode === "via") {
@@ -581,6 +682,7 @@ map.on("pointermove", evt => {
     map.getTargetElement().style.cursor = "grab";
     return;
   }
+  if (mode === "sleep") return;  // cursor komt uit de tracé-sleep-handler
   if (mode !== "pan") { map.getTargetElement().style.cursor = ""; return; }
   const hit = map.hasFeatureAtPixel(evt.pixel,
     { hitTolerance: 8,
