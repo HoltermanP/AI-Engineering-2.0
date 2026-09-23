@@ -98,10 +98,7 @@ async function ververs(behoudTab = true) {
   try {
     procesData = await prFetch(`api/proces/overzicht?project=${encodeURIComponent(naam)}`);
     prEl("proces-status").textContent = "";
-    if (!behoudTab || !procesTab) {
-      const actief = procesData.fasen.find(f => f.status === "actief");
-      procesTab = actief ? actief.code : procesData.fasen[0].code;
-    }
+    if (!behoudTab || !procesTab) procesTab = "dashboard";
     toonProces();
   } catch (e) {
     prEl("proces-status").textContent = `Fout: ${e.message}`;
@@ -112,8 +109,12 @@ async function ververs(behoudTab = true) {
 
 function toonProces() {
   if (!procesData) return;
-  // fase-tabs + risicotab
-  const tabs = procesData.fasen.map(f => {
+  // dashboardtab + fase-tabs + risicotab
+  const tabs =
+    `<button data-tab="dashboard" class="${procesTab === "dashboard" ? "actief" : ""}"
+      title="Projectbreed overzicht: voortgang, tollgates, risico's en budget">
+      📊 Dashboard</button>` +
+    procesData.fasen.map(f => {
     const [lbl, cls] = PR_FASE_STATUS[f.status] || ["", ""];
     return `<button data-tab="${f.code}" class="${procesTab === f.code ? "actief" : ""}"
       title="${prEsc(f.naam)} — ${lbl}">
@@ -152,10 +153,131 @@ function toonProces() {
     : '<p class="leeg">Nog geen meldingen.</p>';
 
   prEl("proces-inhoud").innerHTML =
-    procesTab === "risico" ? htmlRisico()
+    procesTab === "dashboard" ? htmlDashboard()
+    : procesTab === "risico" ? htmlRisico()
     : procesTab === "planning" ? htmlPlanning()
     : htmlFase(procesTab);
   koppelFaseActies();
+  // dashboardkaarten/-badges met data-tab springen naar de bijbehorende tab
+  // (zelfde attribuut als de tabbalk hierboven, dus één generieke koppeling)
+  prEl("proces-inhoud").querySelectorAll("[data-tab]").forEach(el =>
+    el.addEventListener("click", () => { procesTab = el.dataset.tab; toonProces(); }));
+  const budgetKaart = prEl("dash-budget-kaart");
+  if (budgetKaart) budgetKaart.addEventListener("click", openBudget);
+}
+
+/* --------------------------------------------------------------- dashboard */
+
+// tonen als telling naast gereed/n.v.t. (die al in de voortgangsbalk zitten)
+const DASH_STATUS_ORDE = ["te_doen", "bezig", "concept_gereed", "afgekeurd"];
+
+function dashStatusChips(f) {
+  const telling = {};
+  for (const s of f.stappen) {
+    if (!s.actief) continue;
+    telling[s.status] = (telling[s.status] || 0) + 1;
+  }
+  const chips = DASH_STATUS_ORDE.filter(k => telling[k]).map(k => {
+    const [lbl, cls] = PR_STATUS[k];
+    return `<span class="chip ${cls}">${telling[k]} × ${lbl}</span>`;
+  }).join(" ");
+  return chips || '<span class="chip chip-groen">alles gereed</span>';
+}
+
+function dashFaseKaart(f) {
+  const [fs, fcls] = PR_FASE_STATUS[f.status] || ["", ""];
+  const pct = f.voortgang.totaal
+    ? Math.round(100 * f.voortgang.gereed / f.voortgang.totaal) : 0;
+  const genomen = f.tollgate_status === "genomen";
+  const tgCls = genomen ? "chip-groen" : f.tollgate_gereed ? "chip-amber" : "chip-grijs";
+  const tgLbl = genomen ? "genomen" : f.tollgate_gereed ? "klaar voor review" : "nog niet gereed";
+  return `
+  <div class="dash-fase dash-klik" data-tab="${f.code}" title="Naar fase ${prEsc(f.naam)}">
+    <div class="dash-fase-kop">
+      <strong>${f.code}</strong>
+      <span class="chip ${fcls}">${fs}</span>
+    </div>
+    <div class="dash-fase-naam">${prEsc(f.naam)}</div>
+    <div class="fase-voortgang">
+      <div class="balk"><div class="vul" style="width:${pct}%"></div></div>
+      <span class="mono">${f.voortgang.gereed}/${f.voortgang.totaal}</span>
+    </div>
+    <div class="dash-chips">${dashStatusChips(f)}</div>
+    <div class="dash-tg" title="${prEsc(f.tollgate_naam)}">
+      <span class="tg-badge">${prEsc(f.tollgate)}</span>
+      <span class="chip ${tgCls}">${tgLbl}</span>
+    </div>
+  </div>`;
+}
+
+function htmlDashboard() {
+  const fasen = procesData.fasen || [];
+  const totGereed = fasen.reduce((a, f) => a + f.voortgang.gereed, 0);
+  const totTotaal = fasen.reduce((a, f) => a + f.voortgang.totaal, 0);
+  const pct = totTotaal ? Math.round(100 * totGereed / totTotaal) : 0;
+
+  const risicos = procesData.risico || [];
+  const rTel = { rood: 0, amber: 0, groen: 0 };
+  for (const r of risicos)
+    (r.score >= 60 ? rTel.rood += 1 : r.score >= 30 ? rTel.amber += 1 : rTel.groen += 1);
+  const tgTel = fasen.filter(f => f.tollgate_status === "genomen").length;
+
+  const budget = (procesData.budget || {}).taakstellend_huidig;
+  const budgetHtml = budget
+    ? `<span class="dash-groot">€ ${Math.round(budget.totaal_ontwerpfase).toLocaleString("nl-NL")}</span>
+       <p class="hint">Taakstellend, ontwerpfase IV t/m UO — vastgesteld ${prEsc(budget.tijd)}
+       door ${prEsc(budget.door)}.</p>`
+    : '<p class="leeg">Nog niet vastgesteld — zie 💶 Budget in de kopbalk.</p>';
+
+  return `
+  <div class="fase-kaart">
+    <div class="fase-kop"><h3>Projectdashboard</h3></div>
+    <div class="dash-hero">
+      <span class="dash-groot">${pct}%</span>
+      <div class="fase-voortgang dash-hero-balk">
+        <div class="balk"><div class="vul" style="width:${pct}%"></div></div>
+      </div>
+    </div>
+    <p class="hint">${totGereed} van ${totTotaal} actieve processtappen gereed of n.v.t. —
+      hele ontwerpfase, IV t/m NAO. Klik op een fase voor de stappenlijst.</p>
+  </div>
+
+  <div class="dash-grid">${fasen.map(dashFaseKaart).join("")}</div>
+
+  <div class="dash-row">
+    <div class="dash-stat-kaart dash-klik" data-tab="risico">
+      <h4>Risico's</h4>
+      <div class="dash-chips">
+        ${rTel.rood ? `<span class="chip chip-rood">${rTel.rood} kritiek</span>` : ""}
+        ${rTel.amber ? `<span class="chip chip-amber">${rTel.amber} aandacht</span>` : ""}
+        ${rTel.groen ? `<span class="chip chip-groen">${rTel.groen} beheerst</span>` : ""}
+        ${risicos.length ? "" : '<span class="leeg">nog geen risico\'s</span>'}
+      </div>
+    </div>
+    <div class="dash-stat-kaart">
+      <h4>Tollgates</h4>
+      <div class="dash-chips">
+        ${fasen.map(f => {
+          const genomen = f.tollgate_status === "genomen";
+          const cls = genomen ? "chip-groen" : f.tollgate_gereed ? "chip-amber" : "chip-grijs";
+          return `<span class="chip ${cls} dash-klik" data-tab="${f.code}"
+                    title="${prEsc(f.tollgate_naam)}">${prEsc(f.tollgate)}</span>`;
+        }).join(" ")}
+      </div>
+      <p class="hint">${tgTel} van ${fasen.length} genomen.</p>
+    </div>
+    <div class="dash-stat-kaart dash-klik" id="dash-budget-kaart" title="Budget openen">
+      <h4>Taakstellend budget</h4>
+      ${budgetHtml}
+    </div>
+  </div>
+
+  <div class="fase-kaart dash-klik" data-tab="planning">
+    <div class="fase-kop"><h3>Ontwerpplanning</h3></div>
+    <img class="planning-afbeelding dash-planning-mini" alt="Ontwerpplanning"
+      src="api/kaart/planning-ontwerp.jpg?project=${encodeURIComponent(prProject())}" loading="lazy">
+    <p class="hint">→ volledige planning met balkjes per discipline op het tabblad Planning.</p>
+  </div>`;
 }
 
 function htmlFase(code) {
