@@ -76,6 +76,64 @@ class TestNormalisatie(unittest.TestCase):
         self.assertEqual(list(n.coords)[0], (X, Y))
         self.assertEqual(list(n.coords)[-1], (X + 20, Y))
 
+    def test_krappe_bocht_wordt_verruimd(self):
+        # geïsoleerde bocht met ruime benen (3 m) maar 150°
+        # richtingsverandering: inpasbare boogstraal 0,40 m < eis 0,75 m
+        r = lijn((0, 0), (3, 0), (0.402, 1.5))
+        checks_voor, _ = maatvoering.toets(r, [], [], [])
+        self.assertTrue(bevindingen(checks_voor, "buigradius"),
+                        "test-fixture zou zonder normalisatie moeten flaggen")
+
+        n = maatvoering.normaliseer_route(r)
+        checks_na, mv = maatvoering.toets(n, [], [], [])
+        self.assertFalse(bevindingen(checks_na, "buigradius"),
+                         "normaliseer_route had de bocht moeten verruimen")
+        # stations blijven op hun plek, alleen het tussenpunt verschuift
+        # (eindpunt afgerond op de norm-afronding van 0,01 m)
+        self.assertEqual(list(n.coords)[0], (X, Y))
+        self.assertEqual(list(n.coords)[-1], (X + 0.40, Y + 1.5))
+
+    def test_krappe_bocht_niet_verruimd_binnen_harde_uitsluiting(self):
+        # zelfde bocht, maar de hele koorde a-c ligt in een uitsluiting: geen
+        # enkele kandidaatpositie is vrij, dus het punt blijft staan en de
+        # toetsing vangt de overschrijding af zoals voorheen
+        class Uitsluiting:
+            """Minimale grid-stand-in: elk lijnstuk raakt een harde
+            uitsluiting, ongeacht positie (net genoeg van het echte
+            ``engine.Grid``-koppelvlak om ``_segment_vrij`` te toetsen)."""
+
+            def hard_conflict(self, _lijn):
+                return True
+
+        r = lijn((0, 0), (3, 0), (0.402, 1.5))
+        n = maatvoering.normaliseer_route(r, grid=Uitsluiting())
+        checks, _mv = maatvoering.toets(n, [], [], [])
+        self.assertTrue(bevindingen(checks, "buigradius"),
+                        "verruiming had geblokkeerd moeten worden door de "
+                        "harde uitsluiting")
+
+    def test_krappe_dubbele_knik_verbetert_maar_niet_gegarandeerd(self):
+        # haarspeld met twee aanpalende scherpe knikken op een kort tussen-
+        # segment (0,4–0,5 m): lokaal verruimen van één knikpunt verandert
+        # de buurafstand van de andere, dus volledige oplossing is niet
+        # gegarandeerd — normaliseren mag dit geval nooit erger maken dan
+        # de oorspronkelijke overschrijding, wel is een verbetering te
+        # verwachten omdat elke stap een strikt betere kandidaat kiest
+        r = lijn((0, 0), (10, 0), (10.2, 0.35), (9.8, 0.7), (0, 0.7))
+        checks_voor, _ = maatvoering.toets(r, [], [], [])
+        slechtste_voor = min(c["gemeten"]
+                             for c in bevindingen(checks_voor, "buigradius"))
+
+        n = maatvoering.normaliseer_route(r)
+        checks_na, _mv = maatvoering.toets(n, [], [], [])
+        bochten_na = bevindingen(checks_na, "buigradius")
+        if bochten_na:
+            slechtste_na = min(c["gemeten"] for c in bochten_na)
+            self.assertGreaterEqual(slechtste_na, slechtste_voor)
+        # stations blijven hoe dan ook op hun plek
+        self.assertEqual(list(n.coords)[0], (X, Y))
+        self.assertEqual(list(n.coords)[-1], (X, Y + 0.7))
+
 
 class TestToets(unittest.TestCase):
     def test_lengte_en_overlengte(self):

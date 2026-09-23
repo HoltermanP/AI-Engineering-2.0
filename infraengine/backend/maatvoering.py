@@ -7,9 +7,12 @@ Twee taken:
 
 1. ``normaliseer_route`` — nabewerking van gegenereerde routes zodat ze de
    eisen vooraf respecteren: coördinaten afgerond op de norm-afronding
-   (RD New), dubbele punten verwijderd, korte knik-segmenten samengevoegd en
+   (RD New), dubbele punten verwijderd, korte knik-segmenten samengevoegd,
    punten binnen de snaptolerantie exact op de referentieranden
-   (BGT-wegkant/verhardingsrand) gesnapt.
+   (BGT-wegkant/verhardingsrand) gesnapt, en te scherpe bochten verruimd tot
+   de buigradius-eis (``verruim_bochten``) — optioneel getoetst tegen de
+   harde uitsluitingen van het kostenraster (``grid``) zodat een verruiming
+   nooit een pand of verboden zone raakt.
 
 2. ``toets`` — maatvoeringstoets die bevindingen oplevert in hetzelfde
    formaat als de bestaande basis-toets (``registers.build_checks``:
@@ -96,6 +99,79 @@ def kruisingshoek_gr(route: LineString, ander: LineString, punt: Point) -> float
 # Referentieranden (snapping): BGT-wegkant/verhardingsrand + erfgrenzen
 # ---------------------------------------------------------------------------
 
+def _segment_vrij(grid, p0: tuple, p1: tuple) -> bool:
+    """True als het lijnstuk geen harde uitsluiting van het kostenraster raakt.
+
+    Zonder ``grid`` (geen raster beschikbaar op dit punt in de pijplijn,
+    bijvoorbeeld bij het aaneenhechten van deeltrajecten) wordt niets
+    getoetst en is elk lijnstuk toegestaan — de eindtoets (``toets``) vangt
+    een eventuele resterende overschrijding dan af."""
+    if grid is None:
+        return True
+    lijn = LineString([p0, p1])
+    if grid.hard_conflict(lijn):
+        return False
+    lengte = lijn.length
+    if lengte == 0:
+        return True
+    n = max(2, int(math.ceil(lengte / (grid.cell / 2))))
+    for k in range(n + 1):
+        t = k / n
+        x, y = p0[0] + t * (p1[0] - p0[0]), p0[1] + t * (p1[1] - p0[1])
+        r, c = grid.world_to_cell(x, y)
+        if not math.isfinite(float(grid.cost[r, c])):
+            return False
+    return True
+
+
+def verruim_bochten(coords: list, r_eis: float, knik_gr: float,
+                    grid=None) -> list:
+    """Bochten die de buigradius-eis niet halen vóór de toetsing verruimen.
+
+    Schuift een te scherp knikpunt in kleine stappen naar het midden van de
+    koorde tussen de buurpunten — de kleinste verschuiving die de inpasbare
+    boogstraal (``_inpasbare_radius``) wel laat halen — zodat het tracé de
+    eis al bij de generatie respecteert in plaats van de overschrijding pas
+    bij de toetsing te melden. Elke kandidaatpositie wordt (met ``grid``)
+    getoetst tegen de harde uitsluitingen; lukt geen enkele stap zonder een
+    uitsluiting te raken, dan blijft het punt ongewijzigd en meldt ``toets``
+    de overschrijding zoals voorheen.
+
+    Beperkt zich bewust tot geïsoleerde overschrijdingen: een knikpunt
+    waarvan de buur zélf ook een te scherpe bocht is, wordt overgeslagen,
+    want de buurpunten a/c van dat knikpunt liggen dan niet vast (ze
+    schuiven mee als de buur wordt verruimd) en de twee aanpassingen kunnen
+    elkaar tegenwerken. Twee aanpalende scherpe knikken op een kort
+    tussensegment (een echte haarspeld) blijven zo ongemoeid en komen
+    ongewijzigd in de toetsing terecht — verruimen is een preventie bovenop
+    de bestaande vangnet-toets, geen vervanging ervan."""
+    coords = list(coords)
+    stappen = 20
+
+    def is_bocht(i: int) -> bool:
+        a, b, c = coords[i - 1], coords[i], coords[i + 1]
+        return (_hoek_verandering(a, b, c) >= knik_gr
+                and _inpasbare_radius(a, b, c) < r_eis)
+
+    for i in range(1, len(coords) - 1):
+        if not is_bocht(i):
+            continue
+        if (i - 1 >= 1 and is_bocht(i - 1)) or (
+                i + 1 <= len(coords) - 2 and is_bocht(i + 1)):
+            continue  # aanpalende overschrijding: buurpunten liggen niet vast
+        a, b, c = coords[i - 1], coords[i], coords[i + 1]
+        mx, my = (a[0] + c[0]) / 2, (a[1] + c[1]) / 2
+        for stap in range(stappen - 1, -1, -1):
+            t = stap / stappen
+            kand = (mx + t * (b[0] - mx), my + t * (b[1] - my))
+            if _inpasbare_radius(a, kand, c) < r_eis:
+                continue
+            if _segment_vrij(grid, a, kand) and _segment_vrij(grid, kand, c):
+                coords[i] = (_rond(kand[0]), _rond(kand[1]))
+                break
+    return coords
+
+
 def referentieranden(bgt: dict | None, percelen: list | None = None):
     """Lijst randlijnen waar tracépunten op horen te snappen."""
     randen = []
@@ -114,13 +190,16 @@ def referentieranden(bgt: dict | None, percelen: list | None = None):
 # 1. Normalisatie van (gegenereerde) routes
 # ---------------------------------------------------------------------------
 
-def normaliseer_route(route: LineString, referentie: list | None = None
-                      ) -> LineString:
-    """Afronden, ontdubbelen, korte knik-segmenten samenvoegen en snappen.
+def normaliseer_route(route: LineString, referentie: list | None = None,
+                      grid=None) -> LineString:
+    """Afronden, ontdubbelen, korte knik-segmenten samenvoegen, snappen en
+    te scherpe bochten verruimen.
 
     Wordt in de routegeneratie aangeroepen zodat gegenereerde tracés de
     nauwkeurigheidseisen vooraf respecteren. Begin- en eindpunt (stations)
-    blijven op hun plaats."""
+    blijven op hun plaats. ``grid`` (optioneel, het kostenraster van deze
+    berekening) laat de buigradius-verruiming toetsen tegen harde
+    uitsluitingen — zonder ``grid`` gebeurt de verruiming ongetoetst."""
     coords = [(_rond(x), _rond(y)) for x, y in route.coords]
 
     # snappen: punt binnen de snaptolerantie van een referentierand → exact
@@ -159,6 +238,10 @@ def normaliseer_route(route: LineString, referentie: list | None = None
                 i += 1
         if not gewijzigd:
             break
+
+    if len(coords) >= 3:
+        coords = verruim_bochten(coords, normen.buigradius_eis_m(), knik_gr,
+                                 grid)
 
     if len(coords) < 2:
         return route

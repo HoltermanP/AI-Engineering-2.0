@@ -627,10 +627,11 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                     bgt_deel = datas[breedte]["bgt"]
                     deel = LineString(coords)
                     deel = straighten_iteratief(deel, bgt_deel, grid)
-                    # normenkader: afronden/ontdubbelen/knikken/snappen per
-                    # deeltraject (referentieranden uit de deel-BGT)
+                    # normenkader: afronden/ontdubbelen/knikken/snappen en
+                    # buigradius verruimen per deeltraject (referentieranden
+                    # uit de deel-BGT, grid voor de uitsluitingstoets)
                     deel = maatvoering.normaliseer_route(
-                        deel, maatvoering.referentieranden(bgt_deel))
+                        deel, maatvoering.referentieranden(bgt_deel), grid)
                     kruisingen = detect_crossings(deel, bgt_deel)
                     engine.verrijk_kruisingen(kruisingen,
                                               datas[breedte]["legger_water"],
@@ -670,8 +671,11 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             fouten.append({"variant": naam, "fout": st["fout"]})
             continue
         route = LineString(st["coords"])
-        # naadpunten tussen deeltrajecten ontdubbelen/gladstrijken volgens
-        # het normenkader (deeltrajecten zelf zijn al genormaliseerd)
+        # naadpunten tussen deeltrajecten ontdubbelen/gladstrijken en de
+        # buigradius bij het naadpunt zelf verruimen (elk deeltraject was al
+        # genormaliseerd, maar de knik ín het naadpunt overspant twee
+        # deeltrajecten en is dus nog niet getoetst); geen grid op dit
+        # tracé-brede niveau, dus ongetoetst tegen uitsluitingen
         route = maatvoering.normaliseer_route(route)
         kruisingen = _hecht_kruisingen(st["kruisingen"], route)
         segmenten = _hecht_segmenten(st["segmenten"])
@@ -953,9 +957,9 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
             route = LineString(shortest_path(grid, waypoints))
             route = straighten_iteratief(route, bgt, grid)
             # afronden op 0,01 m RD, ontdubbelen, korte knik-segmenten
-            # samenvoegen en snappen op BGT-/erfranden, zodat het
-            # gegenereerde tracé de eisen vooraf respecteert
-            route = maatvoering.normaliseer_route(route, referentie)
+            # samenvoegen, snappen op BGT-/erfranden en buigradius verruimen,
+            # zodat het gegenereerde tracé de eisen vooraf respecteert
+            route = maatvoering.normaliseer_route(route, referentie, grid)
             varianten.append(_verrijk_route(
                 route, grid, bgt, percelen, gemeente, data, boom_zones,
                 eigendom_sig, referentie, naam, weights, req.stations,
