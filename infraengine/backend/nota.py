@@ -933,8 +933,10 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
             png = kaart_mod.variantkaart(result, idx, proj["naam"])
         elif sleutel == "planning-ontwerp":
             import planning_kaart
+            import proces as proces_mod
             png = planning_kaart.ontwerpplanning_kaart(
-                context.get("ontwerpplanning", []), proj["naam"])
+                context.get("ontwerpplanning", []), proj["naam"],
+                proces_mod.vandaag_week(proj["naam"]))
         elif sleutel == "planning-uitvoering":
             import planning_kaart
             var = result["varianten"][variant_idx]

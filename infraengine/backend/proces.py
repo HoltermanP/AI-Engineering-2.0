@@ -32,7 +32,7 @@ import math
 import os
 import re
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -99,14 +99,80 @@ DISCIPLINE_VOLGORDE = [D_PLAN, D_TECH, D_OMG, D_FIN, D_SCOPE, D_RISK,
 ONTWERP_PLANNING = {
     "fase_duur_wk": {"IV": 4, "VO": 10, "DO": 12, "UO": 8, "NAO": 4},
     # per fase, per discipline: (start_fractie, eind_fractie) binnen de
-    # fase-doorlooptijd; disciplines die hier niet genoemd staan lopen de
-    # hele fase door, (0.0, 1.0)
+    # fase-doorlooptijd — weerspiegelt de reële volgorde van een ontwerp-
+    # traject (scope/eisen eerst, dan techniek, dan raming/contractering op
+    # basis van een uitgekristalliseerd ontwerp); disciplines die hier niet
+    # genoemd staan lopen de hele fase door, (0.0, 1.0). Instelbaar; geen
+    # harde afhankelijkheidsmotor — een bewuste, per organisatie aan te
+    # passen inschatting, net als UITVOERINGSPLANNING in registers.py.
     "discipline_venster": {
-        "VO": {D_FIN: (0.3, 1.0), D_CONTR: (0.6, 1.0)},
-        "DO": {D_FIN: (0.2, 1.0), D_CONTR: (0.5, 1.0)},
-        "UO": {D_CONTR: (0.0, 0.6), D_PLANNEN: (0.4, 1.0)},
+        "IV": {
+            D_DOC: (0.0, 0.25), D_SCOPE: (0.1, 0.5), D_TECH: (0.3, 0.8),
+            D_FIN: (0.5, 1.0), D_RISK: (0.7, 1.0), D_PLAN: (0.8, 1.0),
+        },
+        "VO": {
+            D_SCOPE: (0.0, 0.3), D_PLAN: (0.0, 0.8), D_TECH: (0.05, 0.75),
+            D_OMG: (0.0, 0.9), D_RISK: (0.15, 0.95),
+            D_FIN: (0.3, 1.0), D_CONTR: (0.6, 1.0), D_DOC: (0.0, 1.0),
+        },
+        "DO": {
+            D_SCOPE: (0.0, 0.25), D_PLAN: (0.0, 0.8), D_TECH: (0.05, 0.8),
+            D_OMG: (0.0, 0.9), D_RISK: (0.1, 0.95),
+            D_FIN: (0.2, 1.0), D_CONTR: (0.5, 1.0), D_DOC: (0.0, 1.0),
+        },
+        "UO": {
+            D_SCOPE: (0.0, 0.2), D_PLAN: (0.0, 0.75), D_TECH: (0.0, 0.7),
+            D_OMG: (0.0, 0.85), D_RISK: (0.1, 0.9), D_FIN: (0.15, 0.9),
+            D_CONTR: (0.0, 0.6), D_DOC: (0.0, 1.0), D_PLANNEN: (0.4, 1.0),
+        },
+        "NAO": {
+            D_CONTR: (0.0, 1.0), D_TECH: (0.0, 0.6), D_FIN: (0.2, 0.8),
+            D_RISK: (0.0, 0.5), D_PLAN: (0.5, 1.0), D_DOC: (0.0, 1.0),
+        },
     },
 }
+
+# datumformaten die geprobeerd worden om een vrij ingevulde mijlpaalwaarde
+# (Projectgegevens-scherm, vrije tekst) als datum te herkennen; lukt dat,
+# dan krijgt de mijlpaal een echte positie op de weekas (``deadline_wk``) in
+# plaats van alleen een label aan het einde van de planning.
+_MIJLPAAL_DATUM_FORMATEN = ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%m-%y")
+
+
+def _parse_mijlpaal_datum(tekst: str) -> date | None:
+    tekst = (tekst or "").strip()
+    for fmt in _MIJLPAAL_DATUM_FORMATEN:
+        try:
+            return datetime.strptime(tekst, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def project_start_datum(state: dict) -> date | None:
+    """Vroegste bekende procesactie (stap-log, melding of tollgate-besluit)
+    als ankerdatum voor 'week 1' van de ontwerpplanning — None zolang er nog
+    geen enkele actie is vastgelegd (dan heeft een standlijn geen betekenis:
+    er is nog niets om tegen af te zetten)."""
+    tijden = [e["tijd"] for st in state.get("stappen", {}).values()
+             for e in st.get("log", []) if e.get("tijd")]
+    tijden += [m["tijd"] for m in state.get("meldingen", []) if m.get("tijd")]
+    tijden += [tg["tijd"] for tg in state.get("tollgates", {}).values()
+              if tg.get("tijd")]
+    if not tijden:
+        return None
+    return datetime.strptime(min(tijden), "%Y-%m-%d %H:%M").date()
+
+
+def _week_voor_datum(datum: date, start: date) -> float:
+    return 1 + (datum - start).days / 7.0
+
+
+def vandaag_week(project: str) -> float | None:
+    """Fractioneel weeknummer van vandaag op de as van de ontwerpplanning
+    (voor de standlijn), of None zonder ankerdatum."""
+    start = project_start_datum(laad_state(project))
+    return _week_voor_datum(date.today(), start) if start else None
 
 
 def _S(id_, fase, discipline, naam, product, *, nr="", review=False,
@@ -1151,10 +1217,13 @@ def overzicht(project: str, result: dict | None) -> dict:
             "tollgate_gereed": tg_gereed,
         })
     budget = _budget(state)
+    planning_start = project_start_datum(state)
     return {"project": project, "fasen": fasen_uit, "taken": taken,
             "meldingen": state["meldingen"][:30],
             "risico": state.get("risico", []),
             "planning": bouw_ontwerpplanning(project),
+            "planning_vandaag_wk": (_week_voor_datum(date.today(), planning_start)
+                                    if planning_start else None),
             "config": {"ai_automatisch": cfg.get("ai_automatisch", True)},
             "heeft_result": bool(result and result.get("varianten")),
             "budget": {
@@ -1181,14 +1250,27 @@ def bouw_ontwerpplanning(project: str) -> list[dict]:
     discipline met actieve processtappen (proces.STAPPEN), met een venster
     binnen de faseduur (discipline_venster) en de eigen voortgang (gereed/
     totaal). Een ingevulde mijlpaal (VO/DO/UO gereed, contract getekend,
-    projectgegevens) wordt als label op de fase-rij getoond, maar herrekent
-    de indicatieve weekplanning niet. Sluit af met de GSU- en
-    IBN-mijlpaalrij, als die zijn ingevuld.
+    projectgegevens) wordt als label op de fase-rij getoond en herrekent de
+    indicatieve weekplanning zelf niet — maar herkent de renderer de
+    ingevulde tekst als datum (``deadline_wk``, t.o.v. ``project_start_datum``
+    als ankerdatum), dan krijgt hij ook een eigen positie op de weekas i.p.v.
+    alleen een label. Sluit af met de GSU- en IBN-mijlpaalrij, als die zijn
+    ingevuld.
     """
     cfg = laad_config()
     state = laad_state(project)
     mijlpalen = laad_gegevens(project).get("mijlpalen", {})
+    start_datum = project_start_datum(state)
     rows: list = []
+
+    def deadline_wk(waarde: str) -> float | None:
+        """Positie van een vrij ingevulde mijlpaalwaarde op de weekas, als
+        hij een herkenbare datum is en er een ankerdatum ('week 1') bekend
+        is — anders None (dan blijft het bij het tekstlabel)."""
+        if not (waarde and start_datum):
+            return None
+        datum = _parse_mijlpaal_datum(waarde)
+        return _week_voor_datum(datum, start_datum) if datum else None
 
     def add(fase, fase_naam, discipline, start, duur_wk, status, toelichting,
            *, tollgate="", mijlpaal_veld=""):
@@ -1204,6 +1286,7 @@ def bouw_ontwerpplanning(project: str) -> list[dict]:
             "status": status, "toelichting": toelichting,
             "tollgate": tollgate, "mijlpaal_veld": mijlpaal_veld,
             "mijlpaal_waarde": mijlpaal_waarde,
+            "deadline_wk": deadline_wk(mijlpaal_waarde),
         })
         return eind
 
@@ -1242,12 +1325,18 @@ def bouw_ontwerpplanning(project: str) -> list[dict]:
                         ("ibn_datum", MIJLPAAL_LABELS["ibn_datum"])):
         waarde = mijlpalen.get(veld, "")
         if waarde:
+            dwk = deadline_wk(waarde)
+            # herkenbare datum: op de eigen chronologische plek zetten (ook
+            # als dat vóór het einde van de indicatieve planning valt — dat
+            # is precies het signaal dat de planning niet meer klopt);
+            # anders (vrije tekst) de oude plek aan het einde aanhouden
+            wk = max(1, round(dwk)) if dwk else klaar + 1
             rows.append({
                 "nr": f"OPL-{len(rows) + 1:03d}", "fase": "", "fase_naam": "",
-                "discipline": "", "start_wk": klaar + 1, "eind_wk": klaar + 1,
+                "discipline": "", "start_wk": wk, "eind_wk": wk,
                 "duur_wk": 0, "status": "gepland", "toelichting": label,
                 "tollgate": "", "mijlpaal_veld": veld,
-                "mijlpaal_waarde": waarde,
+                "mijlpaal_waarde": waarde, "deadline_wk": dwk,
             })
     return rows
 

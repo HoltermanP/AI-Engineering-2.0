@@ -2249,7 +2249,8 @@ def kaart_variant(variant: int = 0, projectnaam: str = ""):
 @app.get("/api/proces/planning")
 def proces_planning(project: str):
     """Ontwerpplanning (IV t/m NAO), projectbreed — Planning-tab procespagina."""
-    return {"planning": proces_mod.bouw_ontwerpplanning(project)}
+    return {"planning": proces_mod.bouw_ontwerpplanning(project),
+            "vandaag_wk": proces_mod.vandaag_week(project)}
 
 
 @app.get("/api/proces/planning/xlsx")
@@ -2267,7 +2268,8 @@ def proces_planning_xlsx(project: str):
 def kaart_planning_ontwerp(project: str = "", projectnaam: str = ""):
     naam = project or projectnaam
     rijen = proces_mod.bouw_ontwerpplanning(naam) if naam else []
-    return _jpg(planning_kaart.ontwerpplanning_kaart(rijen, naam))
+    vandaag_wk = proces_mod.vandaag_week(naam) if naam else None
+    return _jpg(planning_kaart.ontwerpplanning_kaart(rijen, naam, vandaag_wk))
 
 
 @app.get("/api/kaart/planning-uitvoering.jpg")

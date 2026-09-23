@@ -691,6 +691,7 @@ const PR_PLAN_STATUS = {
 function htmlPlanning() {
   const rijen = procesData.planning || [];
   const naam = encodeURIComponent(prProject());
+  const vandaagWk = procesData.planning_vandaag_wk;
   let html = `
   <div class="fase-kaart">
     <div class="fase-kop">
@@ -700,21 +701,33 @@ function htmlPlanning() {
            download>⇩ Excel</a>
       </div>
     </div>
-    <p class="hint">Indicatieve planning per fase (tollgate-mijlpaal) en, waar bekend, per
-      discipline — in weken vanaf projectstart. Ingevulde mijlpalen (👥 Projectgegevens)
-      worden als datum getoond; ze herrekenen de indicatieve weekplanning niet. De
-      uitvoeringsplanning per werkpakket staat in het tracéresultaat (paneel "Uitvoeringsplanning").</p>
+    <p class="hint">Indicatieve planning per fase (tollgate-mijlpaal) en per discipline, in
+      een realistische onderlinge volgorde (scope/eisen → techniek → raming/contractering) —
+      in weken vanaf de vroegste vastgelegde procesactie. De stippellijn <span class="mono">▍
+      VANDAAG</span> toont waar het project nu staat; een mijlpaal (👥 Projectgegevens) die als
+      datum herkend wordt wordt de <span class="mono">◆</span> deadline op de tijdlijn, in plaats
+      van alleen een label. De uitvoeringsplanning per werkpakket staat in het tracéresultaat
+      (paneel "Uitvoeringsplanning").</p>
   </div>`;
   if (!rijen.length)
     return html + '<p class="leeg">Geen ontwerpplanning beschikbaar.</p>';
 
-  const maxWk = Math.max(1, ...rijen.map(r => r.eind_wk));
+  const maxWk = Math.max(1, ...rijen.map(r => r.eind_wk),
+    ...rijen.filter(r => r.deadline_wk).map(r => Math.ceil(r.deadline_wk)),
+    vandaagWk ? Math.ceil(vandaagWk) : 0);
+  const pct = wk => Math.min(100, Math.max(0, (wk - 1) / maxWk * 100));
+  const vandaagPct = vandaagWk != null ? pct(vandaagWk) : null;
+  const vandaagMarker = vandaagPct != null
+    ? `<span class="vandaag-lijn" style="left:${vandaagPct.toFixed(1)}%" title="Vandaag"></span>` : "";
+  const tickWeken = [1, Math.round(maxWk / 2), maxWk];
+
   html += `<img class="planning-afbeelding" alt="Ontwerpplanning"
     src="api/kaart/planning-ontwerp.jpg?project=${naam}" loading="lazy">`;
   html += `<table class="register proces-tabel"><thead><tr>
     <th>Fase / discipline</th><th class="smal">Tollgate</th>
     <th class="smal num">Start</th><th class="smal num">Eind</th>
-    <th>Status</th><th style="width:210px">Planning (t/m wk ${maxWk})</th>
+    <th>Status</th><th style="width:210px">Planning
+      <span class="plan-as">${tickWeken.map(w => `<span>wk ${w}</span>`).join("")}</span></th>
     <th>Toelichting</th></tr></thead><tbody>`;
   for (const r of rijen) {
     const [lbl, cls, balkCls] = PR_PLAN_STATUS[r.status] || [r.status, "chip-grijs", "st-wachtend"];
@@ -722,6 +735,9 @@ function htmlPlanning() {
     const mijlpaal = !r.fase;
     const label = mijlpaal ? `◆ ${prEsc(r.toelichting)}`
       : hoofd ? `<strong>${prEsc(r.fase_naam)}</strong>` : `› ${prEsc(r.discipline)}`;
+    const deadlineMarker = r.deadline_wk != null
+      ? `<span class="deadline-lijn" style="left:${pct(r.deadline_wk).toFixed(1)}%"
+           title="Deadline: ${prEsc(r.mijlpaal_waarde)}"></span>` : "";
     html += `<tr class="${hoofd ? "" : "sub"}">
       <td>${label}</td>
       <td class="smal mono">${prEsc(r.tollgate || "")}</td>
@@ -730,8 +746,8 @@ function htmlPlanning() {
       <td><span class="chip ${cls}">${lbl}</span>${r.mijlpaal_waarde
           ? `<div class="stap-toel">${prEsc(r.mijlpaal_waarde)}</div>` : ""}</td>
       <td><span class="balkspoor${hoofd ? "" : " smal"}"><span class="balk ${balkCls}"
-          style="left:${((r.start_wk - 1) / maxWk * 100).toFixed(1)}%;
-                 width:${(Math.max(r.duur_wk, 0.4) / maxWk * 100).toFixed(1)}%"></span></span></td>
+          style="left:${pct(r.start_wk).toFixed(1)}%;
+                 width:${(Math.max(r.duur_wk, 0.4) / maxWk * 100).toFixed(1)}%"></span>${deadlineMarker}${vandaagMarker}</span></td>
       <td>${mijlpaal ? "" : prEsc(r.toelichting)}</td>
     </tr>`;
   }

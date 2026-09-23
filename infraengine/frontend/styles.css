@@ -431,6 +431,13 @@ table.nota-meta td:first-child{color:var(--ink-3);width:130px}
 .balkspoor .balk.st-uit{background:var(--ink-3);opacity:.3}
 .balkspoor .balk.st-gepland{background:var(--blauw);opacity:.9}
 .balkspoor.smal{width:150px;height:6px}
+/* standlijn ("vandaag") en herkende deadline-datum op de balkspoor —
+   zelfde kleuren als de Gantt-afbeelding (planning_kaart.py) */
+.balkspoor .vandaag-lijn{position:absolute;top:0;bottom:0;width:2px;background:#1E293B}
+.balkspoor .deadline-lijn{position:absolute;top:0;bottom:0;width:2px;background:#B45309}
+.plan-as{display:flex;justify-content:space-between;width:200px;margin-top:3px;
+  font-family:var(--mono);font-size:9px;font-weight:400;text-transform:none;
+  letter-spacing:0;color:var(--ink-3)}
 
 /* ---- kaart-popup: gegevens van een boring of kruising ---- */
 #kaart-popup{position:relative;width:300px;background:rgba(255,255,255,.96);

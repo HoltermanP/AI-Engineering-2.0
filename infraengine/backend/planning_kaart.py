@@ -17,12 +17,17 @@ nota-preview in de frontend.
 """
 from __future__ import annotations
 
+import math
+
 from kaart import BEELD_W, _BALK_H, _INK, _RAND, _afronden
 from zro import _font
 
 _ACHTERGROND = (247, 248, 246, 255)
 _RASTER = (221, 225, 222, 255)
 _WIT = (255, 255, 255, 235)
+_VANDAAG_KLEUR = (30, 41, 59, 255)     # standlijn ("vandaag") — bewust apart
+                                       # van de statuskleuren hieronder
+_DEADLINE_KLEUR = (180, 83, 9, 255)    # herkende mijlpaaldatum op de weekas
 
 # fase-/rijstatus -> kleur (ontwerpplanning)
 _STATUS_KLEUR = {
@@ -90,17 +95,39 @@ def _ruit(draw, x: float, y: float, r: float, kleur) -> None:
                  fill=kleur, outline=(255, 255, 255, 255), width=2)
 
 
-def ontwerpplanning_kaart(rijen: list[dict], projectnaam: str = "") -> bytes:
+def _stippellijn(draw, x: float, y0: float, y1: float, kleur,
+                 width: int = 2, streep: float = 7, gat: float = 5) -> None:
+    y = y0
+    while y < y1:
+        y2 = min(y + streep, y1)
+        draw.line([x, y, x, y2], fill=kleur, width=width)
+        y = y2 + gat
+
+
+def ontwerpplanning_kaart(rijen: list[dict], projectnaam: str = "",
+                          vandaag_wk: float | None = None) -> bytes:
     """Fasebalken IV→VO→DO→UO→NAO met tollgate-mijlpaal, en per fase een
-    dunnere rij per discipline; GSU/IBN als losse mijlpalen onderaan."""
+    dunnere rij per discipline; herkende mijlpaaldatums (``deadline_wk``,
+    zie ``proces.bouw_ontwerpplanning``) als deadline-marker op hun eigen
+    plek op de weekas, en — met ``vandaag_wk`` — een standlijn die toont
+    waar het project nú staat t.o.v. de indicatieve planning."""
     from PIL import ImageDraw
 
     fase_rijen = [r for r in rijen if r["fase"] and not r["discipline"]]
     detail_rijen = [r for r in rijen if r["fase"] and r["discipline"]]
     mijlpaal_rijen = [r for r in rijen if not r["fase"]]
-    max_wk = max([r["eind_wk"] for r in rijen] + [1])
+    deadlines = [r for r in fase_rijen + mijlpaal_rijen if r.get("deadline_wk")]
+    tekst_mijlpalen = [r for r in mijlpaal_rijen if not r.get("deadline_wk")]
+    max_wk = int(math.ceil(max(
+        [r["eind_wk"] for r in rijen] + [d["deadline_wk"] for d in deadlines]
+        + [vandaag_wk or 0, 1])))
 
-    legenda_h = 3 * 24 + 16
+    legenda = [(_STATUS_KLEUR["afgerond"], "Afgerond"),
+              (_STATUS_KLEUR["actief"], "Actief/lopend"),
+              (_STATUS_KLEUR["wachtend"], "Wachtend op vorige fase"),
+              (_DEADLINE_KLEUR, "Deadline (herkende datum)"),
+              (_VANDAAG_KLEUR, "Vandaag")]
+    legenda_h = len(legenda) * 24 + 16
     hoogte = _MARGE_T + legenda_h
     layout = []  # (rij, y, h, hoofd)
     for f in fase_rijen:
@@ -135,24 +162,48 @@ def ontwerpplanning_kaart(rijen: list[dict], projectnaam: str = "") -> bytes:
             draw.text((xr + 14, y + h / 2), rij["tollgate"], font=_font(16, bold=True),
                       fill=_INK, anchor="lm")
 
-    for i, r in enumerate(mijlpaal_rijen):
+    y_lijn_top = _MARGE_T + legenda_h - 10
+
+    # tekst-mijlpalen zonder herkende datum (GSU/IBN): oude plek aan het
+    # einde van de planning, puur als label — geen echte deadline bekend
+    for r in tekst_mijlpalen:
         x = _x(r["start_wk"], max_wk)
         y = y_as_bot - 10
-        draw.line([x, _MARGE_T + legenda_h - 10, x, y],
-                 fill=_STATUS_KLEUR["gepland"], width=2)
+        draw.line([x, y_lijn_top, x, y], fill=_STATUS_KLEUR["gepland"], width=2)
         _ruit(draw, x, y, 8, _STATUS_KLEUR["gepland"])
         draw.text((x, y - 14), f"{r['toelichting']}: {r['mijlpaal_waarde']}",
                   font=_font(15, bold=True), fill=_INK, anchor="ms")
 
-    # legenda statuskleuren (gereserveerde balk bovenaan, boven de fasebalken)
-    legenda = [("afgerond", "Afgerond"), ("actief", "Actief/lopend"),
-              ("wachtend", "Wachtend op vorige fase")]
+    # deadlines: herkende mijlpaaldatum op de eigen chronologische plek —
+    # ook vóór het einde van de bijbehorende fasebalk als de indicatieve
+    # planning achterloopt op de echte datum (precies het signaal dat je
+    # wil zien)
+    for r in deadlines:
+        x = _x(r["deadline_wk"], max_wk)
+        y = y_as_bot - 10
+        draw.line([x, y_lijn_top, x, y], fill=_DEADLINE_KLEUR, width=2)
+        _ruit(draw, x, y, 8, _DEADLINE_KLEUR)
+        label = r["toelichting"].split(" — mijlpaal:")[0]
+        draw.text((x, y - 14), f"{label}: {r['mijlpaal_waarde']}",
+                  font=_font(15, bold=True), fill=_INK, anchor="ms")
+
+    # standlijn ("vandaag"): waar het project nú staat op de weekas
+    if vandaag_wk and vandaag_wk <= max_wk:
+        x = _x(vandaag_wk, max_wk)
+        _stippellijn(draw, x, y_lijn_top, y_as_bot, _VANDAAG_KLEUR, width=3)
+        draw.polygon([(x, y_lijn_top), (x + 11, y_lijn_top),
+                     (x + 11, y_lijn_top + 14), (x, y_lijn_top + 20)],
+                    fill=_VANDAAG_KLEUR)
+        draw.text((x + 14, y_lijn_top + 2), "VANDAAG", font=_font(13, bold=True),
+                  fill=_VANDAAG_KLEUR, anchor="la")
+
+    # legenda (gereserveerde balk bovenaan, boven de fasebalken)
     lx, ly = _RAND + 8, _RAND + 8
     draw.rectangle([lx - 4, ly - 4, lx + 260, ly + len(legenda) * 24],
                    fill=(255, 255, 255, 210))
-    for i, (k, tekst) in enumerate(legenda):
+    for i, (kleur, tekst) in enumerate(legenda):
         y = ly + i * 24
-        draw.rectangle([lx, y, lx + 22, y + 14], fill=_STATUS_KLEUR[k])
+        draw.rectangle([lx, y, lx + 22, y + 14], fill=kleur)
         draw.text((lx + 30, y + 7), tekst, font=_font(15), fill=_INK, anchor="lm")
 
     titel = "Ontwerpplanning — IV t/m NAO" + (f" · {projectnaam}" if projectnaam else "")
