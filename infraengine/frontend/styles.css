@@ -592,3 +592,10 @@ table.nota-meta td:first-child{color:var(--ink-3);width:130px}
 .mv-overzicht span{color:var(--ink-2)}
 .mv-overzicht strong{text-align:right;font-weight:600}
 .mv-overzicht .opm{margin:6px 0 0;color:var(--ink-3);font-size:11px}
+
+/* ---- NDFF-popup: soortenlijst per categorie ---- */
+#kaart-popup details{margin:6px 0 2px}
+#kaart-popup details summary{cursor:pointer;font-weight:600;font-size:12px}
+#kaart-popup .ndff-lijst{margin:3px 0 4px;padding-left:16px;line-height:1.35;
+  max-height:150px;overflow:auto}
+#kaart-popup .ndff-lijst li{margin:1.5px 0}

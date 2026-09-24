@@ -34,6 +34,7 @@ import kaart as kaart_mod
 import planning_kaart
 import klic
 import maatvoering
+import ndff as ndff_mod
 import nota as nota_mod
 import pdok
 import proces as proces_mod
@@ -303,6 +304,9 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         f_nge = ex.submit(pdok.regionale_nge_masks, bbox, dims.ncols, dims.nrows)
         f_buis = ex.submit(pdok.regionale_buisleiding_masks, bbox,
                            dims.ncols, dims.nrows)
+        # NDFF beschermde soorten per km-hok (informatief; voedt de
+        # natuur-quickscan en de toetsing, weegt niet mee in het raster)
+        f_ndff = ex.submit(ndff_mod.voor_bbox, bbox)
 
         bgt = veilig("bgt", f_bgt, {})
         percelen = veilig("dkk-percelen", f_perc, [])
@@ -324,6 +328,10 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         sld1, sld2 = f_sld1.result(), f_sld2.result()
         sad, wbb, dek = f_sad.result(), f_wbb.result(), f_dek.result()
         stilte_mask = f_stilte.result()
+        ndff_data = veilig("NDFF beschermde soorten", f_ndff,
+                           {"hokken": {}, "hok_meta": {}, "fout": "geen antwoord"})
+    if ndff_data.get("fout"):
+        fouten.append(f"NDFF beschermde soorten: {ndff_data['fout']}")
 
     # bestaande netten uit een eventuele KLIC-import (lokaal bestand; leeg
     # zolang er geen KLIC-toegang is — voorbereid koppelvlak)
@@ -380,6 +388,10 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         "buisleiding_bronnen": list(buis_bronnen),
         "nwb": nwb, "legger_water": legger_water, "keringen": keringen,
         "klic_geoms": klic_geoms,
+        # per hok (voor ontdubbeling over corridor-deeltrajecten) én de
+        # samenvatting per categorie voor registers/toetsing/nota
+        "ndff": ndff_data,
+        "ndff_samenvatting": ndff_mod.samenvatting(ndff_data.get("hokken") or {}),
         "laag_fouten": fouten,
     }
 
@@ -550,6 +562,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     bomen_rivm_fracties: list = []
     percelen_alle: dict = {}
     eigendom_alle: dict = {}  # eigendomssignalen (BGT), ontdubbeld over chunks
+    ndff_hokken: dict = {}    # NDFF-soortdata per km-hok, ontdubbeld over chunks
     laag_fouten: dict = {}
     bgt_fouten: dict = {}
     bron_namen = {"bodem": [], "bomen": [], "nge": [], "buisleiding": []}
@@ -585,6 +598,9 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 bomen_alle.append((g, r))
         if data.get("bomen_rivm_fractie") is not None:
             bomen_rivm_fracties.append(data["bomen_rivm_fractie"])
+        for hid, d in ((data.get("ndff") or {}).get("hokken") or {}).items():
+            if not d.get("fout") or hid not in ndff_hokken:
+                ndff_hokken[hid] = d
 
     verbreed: list = []  # [{deeltraject, breedte_m}] voor de melding aan de gebruiker
 
@@ -704,6 +720,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     eigendom_sig = eigendom_mod.maak_signalen(eigendom_alle.values())
     varianten, fouten = [], []
     son_fouten: list = []  # BRO-sondeerdienst-fouten (gedeeld over varianten)
+    ndff_sam = ndff_mod.samenvatting(ndff_hokken)
     for naam in profielen:
         st = staat[naam]
         if st["fout"]:
@@ -725,11 +742,12 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         _verrijk_boringen(route, boringen)
         son_register = _sonderingen_register(route, boringen, son_fouten)
         hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
-        onderzoeken = build_onderzoeken(zones_m, boringen)
+        onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam)
         zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
         checks = build_checks(route, segmenten, kruisingen, boringen, zones_m,
                               bomen_rivm_fractie=(max(bomen_rivm_fracties)
-                                                  if bomen_rivm_fracties else None))
+                                                  if bomen_rivm_fracties else None),
+                              ndff=ndff_sam)
         # maatvoeringstoets over het volledige aaneengehechte tracé; de
         # snap-toets is per deeltraject al bij de generatie toegepast
         mv_checks, mv_overzicht = maatvoering.toets(
@@ -813,6 +831,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         "bomen_bronnen": bron_namen["bomen"],
         "bomen_rivm_fractie": (round(max(bomen_rivm_fracties), 3)
                                if bomen_rivm_fracties else None),
+        "ndff": ndff_sam,
         "varianten": varianten,
         "variant_fouten": fouten,
         "stations": req.stations,
@@ -886,10 +905,12 @@ def _verrijk_route(route: LineString, grid: Grid, bgt: dict, percelen: list,
     _verrijk_boringen(route, boringen)
     son_register = _sonderingen_register(route, boringen, data["laag_fouten"])
     hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
-    onderzoeken = build_onderzoeken(zones_m, boringen)
+    ndff_sam = data.get("ndff_samenvatting")
+    onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam)
     zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
     checks = build_checks(route, segments, crossings, boringen, zones_m,
-                          bomen_rivm_fractie=data.get("bomen_rivm_fractie"))
+                          bomen_rivm_fractie=data.get("bomen_rivm_fractie"),
+                          ndff=ndff_sam)
     # maatvoeringstoets (normen.py): buigradius, K&L-afstanden en
     # -kruisingshoeken, bomen, gevelafstand, snapping — bevindingen sluiten
     # aan op de bestaande toetsing (ernst/punt) met exacte metrering en
@@ -1028,6 +1049,7 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
         "bomen": [[round(g.x, 2), round(g.y, 2), round(r, 1)] for g, r in boom_zones],
         "bomen_bronnen": data["bomen_bronnen"],
         "bomen_rivm_fractie": data.get("bomen_rivm_fractie"),
+        "ndff": data.get("ndff_samenvatting"),
         "varianten": varianten,
         "variant_fouten": fouten,
         "stations": req.stations,
@@ -1157,6 +1179,7 @@ def trace_import_confirm(req: TraceImportConfirm):
             "bomen": [[round(g.x, 2), round(g.y, 2), round(r, 1)] for g, r in boom_zones],
             "bomen_bronnen": data["bomen_bronnen"],
             "bomen_rivm_fractie": data.get("bomen_rivm_fractie"),
+            "ndff": data.get("ndff_samenvatting"),
             "varianten": [variant],
             "variant_fouten": [],
             "richtlijnen_toegepast": [],
@@ -1245,6 +1268,28 @@ def regionale_bronnen(bbox: str):
     except ValueError:
         raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
     return pdok.regionale_bronnen_voor_bbox(delen)
+
+
+@app.get("/api/ndff/hokken")
+def ndff_hokken(bbox: str):
+    """NDFF beschermde soorten per km-hok in het kaartbeeld (open data).
+
+    bbox = 'xmin,ymin,xmax,ymax' in RD. Informatieve kaartlaag: hokken met
+    de beschermde soorten (Ow) per categorie (vaatplanten, broedvogels met
+    jaarrond beschermd nest, vleermuizen, grondgebonden zoogdieren,
+    amfibieën/reptielen) over de laatste PERIODE_JAREN jaar. Boven
+    MAX_HOKKEN_KAART hokken in beeld komt 'te_veel' terug (zoom verder in).
+    """
+    try:
+        delen = tuple(float(x) for x in bbox.split(","))
+        if len(delen) != 4:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
+    try:
+        return ndff_mod.kaartlaag(delen)
+    except Exception as e:
+        raise HTTPException(502, f"NDFF open data niet bereikbaar: {type(e).__name__}")
 
 
 # ---------------------------------------------------------------------------

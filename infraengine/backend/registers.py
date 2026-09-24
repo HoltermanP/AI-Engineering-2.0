@@ -12,6 +12,7 @@ from shapely.geometry import LineString, Point, mapping
 
 import brk
 import eigendom
+import ndff as ndff_mod
 from engine import (
     CL_BERM, CL_ERF, CL_FIETSPAD, CL_NATUURGROEN, CL_ONBEKEND, CL_ONVERHARD,
     CL_PAND, CL_PARKEER, CL_RIJBAAN, CL_SPOOR, CL_VERBODEN, CL_VOETPAD, CL_WATER,
@@ -434,7 +435,8 @@ def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0,
 # 6.4 Onderzoeken (FO): bodem, archeologie, natuur, grondonderzoek, NGE
 # ---------------------------------------------------------------------------
 
-def build_onderzoeken(zones_m: dict | None, boringen: list) -> list:
+def build_onderzoeken(zones_m: dict | None, boringen: list,
+                      ndff: dict | None = None) -> list:
     zones_m = {**LEGE_ZONES, **(zones_m or {})}
     items = []
 
@@ -446,10 +448,20 @@ def build_onderzoeken(zones_m: dict | None, boringen: list) -> list:
         })
 
     add("KLIC-oriëntatiemelding", "Ontwerpfase (WIBON); ligging bestaande netten")
+    # natuur-quickscan: gebiedsbescherming (Natura 2000/NNN) en/of
+    # soortenbescherming (NDFF-verspreidingsdata van beschermde soorten in
+    # de km-hokken van het gebied — hok-niveau, dus aanleiding, geen bewijs)
+    natuur = []
     if zones_m[ZN_NATURA] > 0 or zones_m[ZN_NNN] > 0:
-        add("Natuur-quickscan (flora en fauna)",
-            f"{zones_m[ZN_NATURA] + zones_m[ZN_NNN]:.0f} m tracé in of nabij "
-            f"beschermd natuurgebied")
+        natuur.append(f"{zones_m[ZN_NATURA] + zones_m[ZN_NNN]:.0f} m tracé in of "
+                      f"nabij beschermd natuurgebied")
+    ndff_tekst = ndff_mod.tekst(ndff)
+    if ndff_tekst:
+        natuur.append(f"NDFF {ndff['periode'][0]}–{ndff['periode'][1]}: beschermde "
+                      f"soorten (Ow) geregistreerd in {ndff['hokken']} km-hok(ken) "
+                      f"van het gebied — {ndff_tekst}")
+    if natuur:
+        add("Natuur-quickscan (flora en fauna)", "; ".join(natuur))
     if zones_m[ZN_BODEM] > 0:
         add("Milieuhygiënisch bodemonderzoek + saneringsplan-check",
             f"{zones_m[ZN_BODEM]:.0f} m tracé door verontreinigd of nazorggebied "
@@ -513,13 +525,37 @@ def build_onderzoeken(zones_m: dict | None, boringen: list) -> list:
 
 def build_checks(route: LineString, segments: list, crossings: list, boringen: list,
                  zones_m: dict | None = None,
-                 bomen_rivm_fractie: float | None = None) -> list:
+                 bomen_rivm_fractie: float | None = None,
+                 ndff: dict | None = None) -> list:
     checks = []
     zones_m = {**LEGE_ZONES, **(zones_m or {})}
 
     def add(ernst, toets, grondslag, melding, punt=None):
         checks.append({"ernst": ernst, "toets": toets, "grondslag": grondslag,
                        "melding": melding, "punt": punt})
+
+    # soortenbescherming (Omgevingswet): NDFF-verspreidingsdata op
+    # km-hokniveau — strikt beschermde soorten (Habitat-/Vogelrichtlijn,
+    # jaarrond beschermde nesten) vragen om een quickscan vóór de uitvoering
+    # en bepalen de seizoensbeperkingen; 'andere soorten' vaak provinciaal
+    # vrijgesteld bij ruimtelijke ontwikkeling, maar zorgplicht blijft
+    if ndff and ndff.get("soorten_totaal"):
+        strikt = ndff_mod.strikte_soorten(ndff)
+        if strikt:
+            add("waarschuwing", "Soortenbescherming (Ow, strikt beschermd)",
+                "Omgevingswet/Bal flora- en fauna-activiteit; Habitat-/Vogelrichtlijn",
+                f"NDFF ({ndff['periode'][0]}–{ndff['periode'][1]}): in de km-hokken van "
+                f"het gebied zijn {len(strikt)} strikt beschermde soorten geregistreerd — "
+                f"{', '.join(strikt[:6])}{' e.a.' if len(strikt) > 6 else ''}. Verblijfplaatsen, "
+                f"nesten en voortplantingswater langs het tracé in de quickscan "
+                f"onderzoeken; werkzaamheden buiten kwetsbare perioden plannen, "
+                f"anders ontheffing flora- en fauna-activiteit (provincie).")
+        else:
+            add("info", "Soortenbescherming (Ow, andere soorten)",
+                "Omgevingswet/Bal; zorgplicht art. 11.27",
+                f"NDFF ({ndff['periode'][0]}–{ndff['periode'][1]}): alleen nationaal "
+                f"beschermde 'andere soorten' geregistreerd ({ndff_mod.tekst(ndff)}); "
+                f"provinciale vrijstelling mogelijk, zorgplicht en werkprotocol blijven.")
 
     for s in segments:
         if s["klasse"] in (CL_PAND, CL_VERBODEN):

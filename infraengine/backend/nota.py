@@ -458,6 +458,10 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
             _zonder_geometrie(v.get("sonderingen", [])), 60, "sonderingen"),
         "vergunningen": v.get("vergunningen", []),
         "onderzoeken": v.get("onderzoeken", []),
+        # NDFF-verspreidingsdata (open data, km-hokniveau) van beschermde
+        # soorten in het gebied — voedt de natuurparagraaf/quickscan en de
+        # seizoensbeperkingen; bronvermelding NDFF is verplicht
+        "ndff_beschermde_soorten": _ndff_voor_nota(result.get("ndff")),
         "zro_status_totalen": zro_status_totalen,
         "zro": _cap(zro_rijen, 100, "ZRO-percelen"),
         "toetsing": v.get("toetsing", []),
@@ -506,6 +510,29 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
 # ---------------------------------------------------------------------------
 # Generatie: Markdown-stroom uit het model
 # ---------------------------------------------------------------------------
+
+def _ndff_voor_nota(sam: dict | None) -> dict | None:
+    """Compacte NDFF-samenvatting voor de nota-context: per categorie de
+    soorten met beschermingsregime (max. 12 per categorie), plus bron."""
+    if not sam:
+        return None
+    return {
+        "bron": sam.get("bron"),
+        "periode": sam.get("periode"),
+        "km_hokken": sam.get("hokken"),
+        "soorten_totaal": sam.get("soorten_totaal"),
+        "strikt_beschermd_totaal": sam.get("strikt_totaal"),
+        "categorieen": [
+            {"categorie": c["naam"],
+             "soorten": [f"{s['naam']} ({s.get('beleid_label', '')}; "
+                         f"{s['hokken']} hok(ken))" for s in c["soorten"][:12]],
+             "meer": max(0, c["aantal_soorten"] - 12)}
+            for c in sam.get("categorieen", []) if c["soorten"]],
+        "kanttekening": ("km-hokniveau; kwetsbare soorten zijn in de open data "
+                         "vervaagd — aanleiding voor de quickscan, geen bewijs van "
+                         "aan- of afwezigheid op het tracé"),
+    }
+
 
 def _risicoregister(projectnaam: str) -> list:
     """Top-risico's uit het procesdossier (data/proces/<project>.json)."""

@@ -45,6 +45,19 @@ const srcHighlight = new ol.source.Vector();
 const srcMaatvoering = new ol.source.Vector();  // normenkader-bevindingen
 const srcGrondwater = new ol.source.Vector();
 const srcGwIso = new ol.source.Vector();
+const srcNdff = new ol.source.Vector();     // NDFF km-hokken met beschermde soorten
+
+// kleur van een NDFF-hok naar het aantal beschermde soorten (Ow) erin
+const NDFF_KLASSEN = [
+  { tot: 0, kleur: "rgba(120,120,120,0.06)", rand: "rgba(120,120,120,0.55)", label: "geen beschermde soorten geregistreerd" },
+  { tot: 5, kleur: "rgba(232,168,56,0.18)", rand: "rgba(200,120,20,0.8)", label: "1–5 beschermde soorten" },
+  { tot: 15, kleur: "rgba(220,90,40,0.26)", rand: "rgba(190,60,20,0.85)", label: "6–15 beschermde soorten" },
+  { tot: Infinity, kleur: "rgba(163,48,42,0.34)", rand: "rgba(140,30,25,0.9)", label: "> 15 beschermde soorten" },
+];
+function ndffKlasse(hok) {
+  if (hok.fout) return { kleur: "rgba(0,0,0,0)", rand: "rgba(120,120,120,0.6)", label: "niet opgehaald" };
+  return NDFF_KLASSEN.find(k => hok.soorten <= k.tot);
+}
 
 const KLEUR_KLASSE = {
   0: "#b9bfba", 1: "#A5C495", 2: "#C4C8CC", 3: "#C9A0C4", 4: "#E8DCB8",
@@ -79,6 +92,25 @@ function gwKlasse(laatste) {
 }
 
 const lagen = {
+  // NDFF: kilometerhokken gekleurd naar het aantal beschermde soorten; label
+  // = aantal soorten (∗ = waarvan strikt beschermd). Klik = soortenlijst.
+  ndff: new ol.layer.Vector({
+    source: srcNdff, zIndex: 16, visible: false, declutter: true,
+    style: f => {
+      const hok = f.get("ndff");
+      const k = ndffKlasse(hok);
+      return new ol.style.Style({
+        fill: new ol.style.Fill({ color: k.kleur }),
+        stroke: new ol.style.Stroke({ color: k.rand, width: 1.2, lineDash: hok.fout ? [4, 4] : undefined }),
+        text: new ol.style.Text({
+          text: hok.fout ? "?" : `${hok.soorten}${hok.strikt ? "∗" : ""}`,
+          font: "600 12px 'IBM Plex Mono',monospace",
+          fill: new ol.style.Fill({ color: "#7a2a22" }),
+          stroke: new ol.style.Stroke({ color: "#fff", width: 3 }),
+        }),
+      });
+    },
+  }),
   // isohypsen: hoogtelijnen van de grondwaterstand, label = m t.o.v. NAP
   gwiso: new ol.layer.Vector({
     source: srcGwIso, zIndex: 17, visible: false, declutter: true,
@@ -506,7 +538,89 @@ async function laadGwIsohypsen() {
   }
 }
 
-map.on("moveend", () => { laadGrondwaterPutten(); laadGwIsohypsen(); });
+map.on("moveend", () => { laadGrondwaterPutten(); laadGwIsohypsen(); laadNdffHokken(); });
+
+/* --------------------- NDFF beschermde soorten (open data, per km-hok)
+   Informatieve laag: de km-hokken in beeld met de beschermde soorten (Ow)
+   per categorie, live via de backend uit de open data achter de Flora &
+   Fauna Verkenner. Laadt per kaartbeeld (max. 25 hokken); klik op een hok
+   voor de soortenlijst. Weegt niet mee in het tracé. */
+let ndffVolgnr = 0;
+let ndffMelding = "";
+let ndffPeriode = null;
+
+async function laadNdffHokken() {
+  if (!lagen.ndff.getVisible()) return;
+  const volgnr = ++ndffVolgnr;
+  const bbox = map.getView().calculateExtent(map.getSize());
+  ndffMelding = "hokken laden… (per hok enkele verzoeken aan de NDFF)";
+  ververLegenda();
+  try {
+    const r = await fetch("api/ndff/hokken?bbox=" + bbox.map(v => v.toFixed(0)).join(","));
+    const d = await r.json();
+    if (volgnr !== ndffVolgnr || !lagen.ndff.getVisible()) return;
+    if (!r.ok) {
+      srcNdff.clear();
+      ndffMelding = d.detail || "dienst niet bereikbaar";
+      ververLegenda();
+      return;
+    }
+    srcNdff.clear();
+    if (d.te_veel) {
+      ndffMelding = `${d.te_veel} km-hokken in beeld — zoom verder in (max. ${d.max})`;
+      ververLegenda();
+      return;
+    }
+    ndffPeriode = d.periode;
+    d.hokken.forEach(h => {
+      const f = new ol.Feature(new ol.geom.Polygon([h.coords]));
+      f.set("ndff", h);
+      srcNdff.addFeature(f);
+    });
+    const fout = d.hokken.filter(h => h.fout).length;
+    ndffMelding = !d.hokken.length ? "geen kilometerhokken in beeld"
+      : fout ? `${fout} hok(ken) niet opgehaald (NDFF-dienst)` : "";
+    ververLegenda();
+  } catch (e) {
+    if (volgnr !== ndffVolgnr) return;
+    ndffMelding = "dienst niet bereikbaar";
+    ververLegenda();
+  }
+}
+document.getElementById("lg-ndff").addEventListener("change", e => {
+  lagen.ndff.setVisible(e.target.checked);
+  if (e.target.checked) laadNdffHokken();
+  else { srcNdff.clear(); ndffMelding = ""; }
+  ververLegenda();
+});
+
+function toonNdffPopup(hok, coord) {
+  const kop = `<button class="sluit" title="Sluiten">×</button>` +
+    `<h3>NDFF km-hok ${rlEsc(hok.label)} — beschermde soorten</h3>`;
+  let inhoud;
+  if (hok.fout) {
+    inhoud = `<p class="opm">Niet opgehaald: ${rlEsc(hok.fout)}</p>`;
+  } else {
+    inhoud = popupRij("Soorten", `<strong>${hok.soorten}</strong> beschermd (Ow)` +
+        (hok.strikt ? `, waarvan ${hok.strikt} strikt (Habitat-/Vogelrichtlijn)` : "")) +
+      popupRij("Periode", ndffPeriode ? `${ndffPeriode[0]}–${ndffPeriode[1]}` : "") +
+      hok.categorieen.map(c => {
+        if (!c.soorten.length) return "";
+        const lijst = c.soorten.slice(0, 12).map(s =>
+          `<li>${rlEsc(s.naam)}${s.naam_wet ? ` <i>(${rlEsc(s.naam_wet)})</i>` : ""}` +
+          ` — ${s.aantal} wn.; ${rlEsc(s.beleid_label)}</li>`).join("");
+        const meer = c.soorten.length > 12 ? `<li>… nog ${c.soorten.length - 12} soorten</li>` : "";
+        return `<details open><summary>${rlEsc(c.naam)} (${c.soorten.length})</summary>` +
+          `<ul class="ndff-lijst">${lijst}${meer}</ul></details>`;
+      }).join("") +
+      '<p class="opm">Bron: NDFF open data (Flora &amp; Fauna Verkenner), km-hokniveau; ' +
+      'kwetsbare soorten zijn vervaagd. Aanleiding voor de quickscan, geen bewijs van ' +
+      'aan- of afwezigheid op het tracé. Bronvermelding NDFF verplicht.</p>';
+  }
+  popupEl.innerHTML = kop + inhoud;
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord);
+}
 document.getElementById("lg-grondwater").addEventListener("change", e => {
   lagen.grondwater.setVisible(e.target.checked);
   if (e.target.checked) laadGrondwaterPutten();
@@ -693,6 +807,10 @@ map.on("click", evt => {
     map.forEachFeatureAtPixel(evt.pixel, f => !!(put = f.get("gw")),
       { hitTolerance: 8, layerFilter: l => l === lagen.grondwater });
     if (put) { toonGrondwaterPopup(put, evt.coordinate); return; }
+    let hok = null;
+    map.forEachFeatureAtPixel(evt.pixel, f => !!(hok = f.get("ndff")),
+      { layerFilter: l => l === lagen.ndff });
+    if (hok) { toonNdffPopup(hok, evt.coordinate); return; }
     // geen boring/kruising/put geraakt: zichtbare datalagen op dit punt bevragen
     let seg = null;
     map.forEachFeatureAtPixel(evt.pixel, f => {
@@ -712,7 +830,8 @@ map.on("pointermove", evt => {
   if (mode !== "pan") { map.getTargetElement().style.cursor = ""; return; }
   const hit = map.hasFeatureAtPixel(evt.pixel,
     { hitTolerance: 8,
-      layerFilter: l => l === lagen.crossings || l === lagen.grondwater });
+      layerFilter: l => l === lagen.crossings || l === lagen.grondwater
+                        || l === lagen.ndff });
   map.getTargetElement().style.cursor = hit ? "pointer" : "";
 });
 
@@ -1226,7 +1345,16 @@ async function bereken() {
             ? ` — let op: RIVM Bomenkaart (AHN) toont hier wél ` +
               `~${Math.round(resultaat.bomen_rivm_fractie * 100)}% boombedekking, ` +
               `veldcheck nodig`
-            : ""));
+            : "")) +
+      (resultaat.ndff && resultaat.ndff.hokken
+        ? `\nNDFF (${resultaat.ndff.periode[0]}–${resultaat.ndff.periode[1]}): ` +
+          (resultaat.ndff.soorten_totaal
+            ? `${resultaat.ndff.soorten_totaal} beschermde soorten in ${resultaat.ndff.hokken} ` +
+              `km-hok(ken), waarvan ${resultaat.ndff.strikt_totaal} strikt — ` +
+              resultaat.ndff.categorieen.filter(c => c.aantal_soorten)
+                .map(c => `${c.naam.toLowerCase()} ${c.aantal_soorten}`).join(", ")
+            : `geen beschermde soorten geregistreerd in ${resultaat.ndff.hokken} km-hok(ken)`)
+        : "");
     // het automatisch afgeleide zoekgebied/de corridor wordt bewust niet
     // getekend: het vlak leidde af van het tracé en de rand was per ongeluk
     // versleepbaar; alleen een zelf getekend projectgebied blijft zichtbaar
@@ -1407,6 +1535,16 @@ function ververLegenda() {
   }
   if (lagen.bomen.getVisible() && !srcBomen.isEmpty())
     delen.push('<div class="rij"><span class="vlek boom"></span>boom + wortelzone</div>');
+  if (lagen.ndff.getVisible()) {
+    const vlak = k => `<span class="vlek" style="width:14px;height:10px;` +
+      `background:${k.kleur};border:1.5px solid ${k.rand}"></span>`;
+    delen.push("<strong>NDFF: beschermde soorten per km-hok</strong>" +
+      NDFF_KLASSEN.map(k => `<div class="rij">${vlak(k)}${k.label}</div>`).join("") +
+      '<div class="rij hint">getal = aantal soorten, ∗ = waarvan strikt beschermd' +
+      (ndffPeriode ? ` · ${ndffPeriode[0]}–${ndffPeriode[1]}` : "") + "</div>" +
+      (ndffMelding ? `<div class="rij">⚠ ${rlEsc(ndffMelding)}</div>` : "") +
+      '<div class="rij hint">klik op een hok voor de soortenlijst · bron NDFF</div>');
+  }
   if (lagen.grondwater.getVisible() || lagen.gwiso.getVisible()) {
     const put = kleur => `<span class="vlek" style="width:11px;height:11px;` +
       `border-radius:50%;background:${kleur};border:1.5px solid #fff;` +
