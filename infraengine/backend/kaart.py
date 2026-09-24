@@ -1,6 +1,6 @@
 """Kaartafbeeldingen voor de ontwikkelnota's (PNG, RD New).
 
-Drie beelden, gerenderd op een PDOK-luchtfoto-ondergrond (verbleekt, met
+Vier beelden, gerenderd op een PDOK-luchtfoto-ondergrond (verbleekt, met
 falende dienst als witte terugval):
 
   - ``overzichtskaart``  — het volledige tracé van één variant met stations
@@ -10,6 +10,10 @@ falende dienst als witte terugval):
     met legenda (bijlage variantenafweging);
   - ``variantkaart``     — één variant uitgelicht, de overige in lichtgrijs
     (per-variantbeeld in de bijlage).
+
+  - ``werkpakketkaart``  — één werkpakket ingezoomd met kruisingen, boringen
+    en moffen; de rest van het tracé in lichtgrijs (per-werkpakketbeeld in
+    hoofdstuk 3 van de nota's).
 
 De beelden worden ingebed in de Word-nota's (nota.py vervangt de
 ``[AFBEELDING: …]``-markers) en geserveerd via ``/api/kaart/*`` voor de
@@ -269,3 +273,76 @@ def variant_index(result: dict, naam: str) -> int | None:
         if naam in v["naam"].strip().lower():
             return i
     return None
+
+
+def werkpakket_index(result: dict, variant_idx: int, nr: str) -> int | None:
+    """Index van een werkpakket op nummer ('WP-01', 'WP01', 'wp 1' …)."""
+    def norm(t):
+        t = "".join(ch for ch in str(t).lower() if ch.isalnum())
+        cijfers = t[2:] if t.startswith("wp") else t
+        return "wp" + cijfers.lstrip("0")
+    doel = norm(nr)
+    for i, wp in enumerate(result["varianten"][variant_idx]
+                           .get("werkpakketten", [])):
+        if norm(wp["nr"]) == doel:
+            return i
+    return None
+
+
+def werkpakketkaart(result: dict, variant_idx: int, wp_idx: int,
+                    projectnaam: str = "") -> bytes:
+    """Eén werkpakket ingezoomd: tracé van het werkpakket in rood, de rest
+    lichtgrijs, met kruisingen (K), boringen (blauw), moffen en stations."""
+    from PIL import ImageDraw
+    v = result["varianten"][variant_idx]
+    route = shape(v["route"])
+    wp = v["werkpakketten"][wp_idx]
+    wp_geom = shape(wp["geometry"])
+    bbox, mpp = _bbox_om([wp_geom], BEELD_W, BEELD_H, marge=0.12)
+    kaart = _ondergrond(bbox, BEELD_W, BEELD_H)
+    x0, y1 = bbox[0], bbox[3]
+
+    def tf(x, y):
+        return ((x - x0) / mpp, (y1 - y) / mpp)
+
+    draw = ImageDraw.Draw(kaart)
+    _teken_route(draw, route, tf, _GRIJS, 5, rand=False)
+    for b in v.get("boringen", []):
+        if b.get("werkpakket") != wp["nr"] or not b.get("geometry"):
+            continue
+        try:
+            _teken_route(draw, shape(b["geometry"]), tf, VARIANT_KLEUREN[1], 9)
+        except Exception:
+            continue
+    _teken_route(draw, wp_geom, tf, VARIANT_KLEUREN[0], 7)
+
+    def label(x, y, tekst, kleur, dy=-16):
+        px, py = tf(x, y)
+        draw.ellipse([px - 8, py - 8, px + 8, py + 8], fill=kleur,
+                     outline=(255, 255, 255, 255), width=3)
+        draw.text((px, py + dy), tekst, font=_font(22, bold=True), fill=_INK,
+                  anchor="ms", stroke_width=4,
+                  stroke_fill=(255, 255, 255, 235))
+
+    for c in v.get("kruisingen", []):
+        if c.get("werkpakket") != wp["nr"]:
+            continue
+        try:
+            p = route.interpolate((c["chainage_van_m"] + c["chainage_tot_m"]) / 2)
+            label(p.x, p.y, c["nr"], VARIANT_KLEUREN[4])
+        except Exception:
+            continue
+    for m in v.get("moffen", []):
+        if m.get("werkpakket") != wp["nr"]:
+            continue
+        try:
+            p = route.interpolate(m["chainage_m"])
+            label(p.x, p.y, m.get("nr", "mof"), VARIANT_KLEUREN[3], dy=28)
+        except Exception:
+            continue
+    _teken_stations(draw, result.get("stations", []), tf, BEELD_W, BEELD_H)
+    _schaalbalk(draw, mpp, BEELD_W, BEELD_H)
+    _noordpijl(draw, BEELD_W)
+    titel = (f"{wp['nr']} {wp['naam']} — {wp['lengte_m']:.0f} m"
+             + (f" · {projectnaam}" if projectnaam else ""))
+    return _afronden(kaart, titel, _mpp_tekst(mpp))

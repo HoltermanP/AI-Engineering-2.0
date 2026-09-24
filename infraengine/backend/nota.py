@@ -79,8 +79,28 @@ _FMT_KOP = (
     "op een eigen regel exact de marker die daar genoemd wordt (bijv. "
     "`[AFBEELDING: overzichtstekening]` of `[AFBEELDING: "
     "planning-ontwerp]`) — de applicatie vervangt die marker door de "
-    "gerenderde kaart of Gantt-afbeelding; verzin geen andere markers.\n"
+    "gerenderde kaart of Gantt-afbeelding; per werkpakket gebruik je `[AFBEELDING: werkpakket WP-01]` (met het echte werkpakketnummer); verzin geen andere markers.\n"
     "Daarna deze hoofdstukken, met exact deze nummers en titels:\n"
+)
+
+# Per werkpakket een eigen paragraaf met toelichting en tekening; de data staat
+# gegroepeerd in `per_werkpakket` (bouw_context).
+_WP_PARAGRAAF = (
+    "Schrijf voor ELK werkpakket uit `per_werkpakket` (dus WP-01 t/m het "
+    "laatste, geen enkele overslaan of samenvoegen) een eigen paragraaf "
+    "`### <h>.<n> Werkpakket <nr> – <van> – <naar> – <meters> meters`, "
+    "opgebouwd uit: (1) direct onder de kop op een eigen regel de marker "
+    "`[AFBEELDING: werkpakket <nr>]` (bijv. `[AFBEELDING: werkpakket "
+    "WP-01]`) gevolgd door het onderschrift 'Figuur <n>. Tekening "
+    "<nr>'; (2) een toelichting in 3 tot 5 korte alinea's, elk met een "
+    "vetgedrukte openingszin als kopje: **Tracé en ligging** (ligging per "
+    "meters uit `ligging_m`, wegen en zijde), **Kruisingen en boringen** "
+    "(kruisingen met techniek, boringen met nummer, type en lengte, moffen), "
+    "**Omgeving en vergunningen** (vergunningen, ZRO-percelen/eigenaren, "
+    "toetsingsbevindingen van dit werkpakket) en **Planning** (subfasen met "
+    "weken uit `planning`); sluit af met **Restpunten:** voor dit "
+    "werkpakket. Gebruik uitsluitend de data van het betreffende werkpakket "
+    "en laat een alinea weg waarvoor niets in de data staat. "
 )
 
 _FMT_STAART = (
@@ -128,10 +148,9 @@ NOTA_FASEN = {
             "'Figuur 2. Variantenoverzicht', en de onderbouwde keuze voor de "
             "**voorkeursvariant**; de uitgebreide toelichting per variant "
             "staat in Bijlage A; `### 3.2 Beschrijving voorkeurstracé` — "
-            "per verbinding/werkpakket het tracéverloop op hoofdlijnen "
-            "(ligging berm/voetpad/rijbaan, belangrijkste kruisingen met "
-            "voorgestelde techniek en HDD-/boringnummers); `### 3.3 "
-            "CAR-verzekering` — toets: aanneemsom > €20.000.000 of een boring "
+            "korte inleiding op het voorkeurstracé, daarna per werkpakket: "
+            + _WP_PARAGRAAF.replace("<h>.<n>", "3.2.<n>")
+            + "`### 3.3 CAR-verzekering` — toets: aanneemsom > €20.000.000 of een boring "
             "> €250.000 vereist aanvullende CAR; toets op de RAW-calculatie.\n"
             "`## 4. Omgeving` — `### 4.1 Stakeholders per werkpakket`: per "
             "werkpakket een tabel (Stakeholder | Vergunning, toestemming | "
@@ -180,16 +199,13 @@ NOTA_FASEN = {
             "`## 3. Ontwerp` — de kern van het DO: open het hoofdstuk met "
             "de marker `[AFBEELDING: overzichtstekening]` op een eigen "
             "regel en onderschrift 'Figuur 1 – WP-overzichtstekening'; "
-            "groepeer daarna het tracé in "
-            "logische verbindingen (reeksen werkpakketten) en beschrijf per "
-            "verbinding `### 3.x Verbinding x – WPxx t/m WPyy – <meters> "
-            "meters` het tracéverloop als lopende tekst, zoals een "
-            "ontwerpleider dat doet: aan welke zijde van welke weg, waar "
-            "wordt overgestoken (persing), welke watergangen/wegen/spoor met "
-            "welke techniek en welk boringnummer worden gekruist, moffen aan "
-            "begin- en eindpunt, en sluit elke verbinding af met "
-            "**Restpunten:** (bijv. boringen nog in concept, definitief in "
-            "UO). Afsluitend `### 3.x CAR-verzekering` — toets aanneemsom "
+            "beschrijf daarna het tracé "
+            "als lopende tekst zoals een ontwerpleider dat doet (aan welke "
+            "zijde van welke weg, waar wordt overgestoken, welke "
+            "watergangen/wegen/spoor met welke techniek en boringnummer). "
+            "Doe dat per werkpakket: "
+            + _WP_PARAGRAAF.replace("<h>.<n>", "3.<n>")
+            + "Afsluitend `### 3.x CAR-verzekering` — toets aanneemsom "
             "> €20.000.000 / boring > €250.000 op de RAW-calculatie.\n"
             "`## 4. Omgeving` — `### 4.1 Stakeholders per werkpakket`: per "
             "werkpakket een tabel (Stakeholder | Vergunning, toestemming | "
@@ -234,10 +250,11 @@ NOTA_FASEN = {
             "`## 3. Ontwerp` — uitvoeringsgereed: `### 3.1 HDD-boringen "
             "detailoverzicht` — tabel van alle boringen (Nr | Techniek | "
             "Lengte m | Intredepunt RD | Uittredepunt RD | Status) uit het "
-            "boorregister; daarna per werkpakket `### 3.x Werkpakket WPxx – "
-            "(<van> – <naar>) – <meters> meters` met de uitvoeringswijze "
+            "boorregister; daarna per werkpakket: "
+            + _WP_PARAGRAAF.replace("<h>.<n>", "3.<n>")
+            + "Beschrijf hierbij de uitvoeringswijze "
             "(sleufwerk per ligging, boringen definitief, moffen op "
-            "haspellengte) en verwijzingen naar [werkplan civiel werk], "
+            "haspellengte) en verwijs naar [werkplan civiel werk], "
             "[werkplan warm werk], [bedieningsplan] en [keuringsplan]; "
             "afsluitend `### 3.x CAR-verzekering` — toets aanneemsom "
             "> €20.000.000 / boring > €250.000.\n"
@@ -331,6 +348,49 @@ def _zonder_geometrie(rows: list, extra_weg: tuple = ()) -> list:
     return [{k: v for k, v in r.items() if k not in weg} for r in rows]
 
 
+def _zro_compact(rijen: list, n: int = 12) -> dict:
+    """ZRO-percelen van één werkpakket, beperkt tot de kernvelden."""
+    kern = ("nr", "perceel", "eigenaar", "ingenomen_lengte_m", "status_dossier")
+    return {"aantal": len(rijen),
+            "rijen": [{k: z[k] for k in kern} for z in rijen[:n]],
+            "overige_niet_getoond": max(0, len(rijen) - n)}
+
+
+def _per_werkpakket(v: dict, segmenten: list, kruisingen: list,
+                    zro_rijen: list) -> list:
+    """Alle registers gegroepeerd per werkpakket — voedt de paragraaf met
+    toelichting en tekening per werkpakket in hoofdstuk 3."""
+    def van(rijen, wp_nr, extra_weg=()):
+        return _zonder_geometrie(
+            [r for r in rijen if r.get("werkpakket") == wp_nr], extra_weg)
+
+    zro_wp = {z["nr"]: z.get("werkpakket") for z in v.get("zro", [])}
+    uit = []
+    for wp in v.get("werkpakketten", []):
+        nr = wp["nr"]
+        ligging: dict = {}
+        for sg in segmenten:
+            if sg.get("werkpakket") == nr:
+                ligging[sg["ligging"]] = round(
+                    ligging.get(sg["ligging"], 0) + sg["lengte_m"], 1)
+        uit.append({
+            "nr": nr, "naam": wp["naam"], "lengte_m": wp["lengte_m"],
+            "chainage_van_m": wp["chainage_van_m"],
+            "chainage_tot_m": wp["chainage_tot_m"],
+            "ligging_m": ligging,
+            "kruisingen": van(kruisingen, nr),
+            "boringen": van(v.get("boringen", []), nr),
+            "moffen": van(v.get("moffen", []), nr),
+            "zro": _zro_compact([z for z in zro_rijen
+                                 if zro_wp.get(z["nr"]) == nr]),
+            "vergunningen": van(v.get("vergunningen", []), nr),
+            "toetsing": van(v.get("toetsing", []), nr),
+            "planning": [p for p in v.get("planning", [])
+                         if p.get("werkpakket") == nr],
+        })
+    return uit
+
+
 def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
     """Compacte projectcontext uit het rekenresultaat + ZRO-dossiers."""
     import zro as zro_mod
@@ -417,6 +477,7 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
         "moffen_aantal": len(v.get("moffen", [])),
         "moffen": _cap(_zonder_geometrie(v.get("moffen", [])), 40, "moffen"),
         "werkpakketten": _zonder_geometrie(v.get("werkpakketten", [])),
+        "per_werkpakket": _per_werkpakket(v, segmenten, kruisingen, zro_rijen),
         "planning_per_werkpakket_wk": v.get("planning", []),
         "kosten": v.get("kosten", {}),
         "raw_calculatie": {
@@ -925,6 +986,14 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
             png = kaart_mod.overzichtskaart(result, variant_idx, proj["naam"])
         elif sleutel == "varianten":
             png = kaart_mod.variantenkaart(result, proj["naam"])
+        elif sleutel.startswith(("werkpakket", "wp")):
+            nr = re.sub(r"^(werkpakket|wp)[\s:–-]*", "", label.strip(),
+                        flags=re.I)
+            idx = kaart_mod.werkpakket_index(result, variant_idx, nr)
+            if idx is None:
+                raise NotaError(f"Onbekend werkpakket '{nr}'.")
+            png = kaart_mod.werkpakketkaart(result, variant_idx, idx,
+                                            proj["naam"])
         elif sleutel.startswith("variant"):
             rest = label.strip()[len("variant"):].strip(" :–-")
             idx = kaart_mod.variant_index(result, rest)

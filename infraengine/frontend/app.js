@@ -2717,6 +2717,11 @@ function kaartMarkerSrc(label) {
   if (l.startsWith("overzicht"))
     return "api/kaart/overzicht.jpg?variant=" + actieveVariant;
   if (l === "varianten") return "api/kaart/varianten.jpg";
+  if (/^werkpakket|^wp/.test(l)) {
+    const nr = label.replace(/^(werkpakket|wp)[:\s–-]*/i, "").trim();
+    return "api/kaart/werkpakket.jpg?variant=" + actieveVariant
+      + "&wp=" + encodeURIComponent(/^wp/i.test(nr) ? nr : "WP-" + nr);
+  }
   if (l.startsWith("variant")) {
     const naam = label.replace(/^variant[:\s–-]*/i, "").trim().toLowerCase();
     const vs = (resultaat && resultaat.varianten) || [];

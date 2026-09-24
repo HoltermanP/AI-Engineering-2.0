@@ -2286,6 +2286,15 @@ def kaart_variant(variant: int = 0, projectnaam: str = ""):
     return _jpg(kaart_mod.variantkaart(LAST_RESULT, variant, projectnaam))
 
 
+@app.get("/api/kaart/werkpakket.jpg")
+def kaart_werkpakket(wp: str, variant: int = 0, projectnaam: str = ""):
+    _need_result(variant)
+    idx = kaart_mod.werkpakket_index(LAST_RESULT, variant, wp)
+    if idx is None:
+        raise HTTPException(404, f"Werkpakket '{wp}' bestaat niet.")
+    return _jpg(kaart_mod.werkpakketkaart(LAST_RESULT, variant, idx, projectnaam))
+
+
 @app.get("/api/proces/planning")
 def proces_planning(project: str):
     """Ontwerpplanning (IV t/m NAO), projectbreed — Planning-tab procespagina."""
