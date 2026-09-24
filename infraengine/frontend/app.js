@@ -46,6 +46,7 @@ const srcMaatvoering = new ol.source.Vector();  // normenkader-bevindingen
 const srcGrondwater = new ol.source.Vector();
 const srcGwIso = new ol.source.Vector();
 const srcNdff = new ol.source.Vector();     // NDFF km-hokken met beschermde soorten
+const srcKlant = new ol.source.Vector();    // klantlocaties (adressen) uit het IV
 
 // kleur van een NDFF-hok naar het aantal beschermde soorten (Ow) erin
 const NDFF_KLASSEN = [
@@ -68,13 +69,15 @@ const KLEUR_SOORT = { water: "#3F6B8A", rijbaan: "#4A5158", spoor: "#6d5bb8" };
 
 function stationStyle(f) {
   const idx = srcStations.getFeatures().indexOf(f) + 1;
+  // label uit het IV (RS/DR-nummer) als dat er is, anders MS1, MS2, …
+  const label = f.get("label") ? `${idx} ${f.get("label")}` : "MS" + idx;
   return new ol.style.Style({
     image: new ol.style.Circle({
       radius: 9, fill: new ol.style.Fill({ color: "#C8322B" }),
       stroke: new ol.style.Stroke({ color: "#fff", width: 2 }),
     }),
     text: new ol.style.Text({
-      text: "MS" + idx, offsetY: -16, font: "600 12px 'IBM Plex Mono',monospace",
+      text: label, offsetY: -16, font: "600 12px 'IBM Plex Mono',monospace",
       fill: new ol.style.Fill({ color: "#C8322B" }),
       stroke: new ol.style.Stroke({ color: "#fff", width: 3 }),
     }),
@@ -249,6 +252,24 @@ const lagen = {
     }),
   }),
   stations: new ol.layer.Vector({ source: srcStations, zIndex: 27, style: stationStyle }),
+  // klantlocaties uit het IV (transportbeperkingen/klantontwikkelingen):
+  // paars, met het tabelnummer uit het IV; klik = adres, vermogen, status
+  klant: new ol.layer.Vector({
+    source: srcKlant, zIndex: 25, declutter: true,
+    style: f => new ol.style.Style({
+      image: new ol.style.RegularShape({
+        points: 3, radius: 8, angle: 0,
+        fill: new ol.style.Fill({ color: "#7B3F9E" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 1.5 }),
+      }),
+      text: new ol.style.Text({
+        text: String(f.get("nr") || ""), offsetY: -14,
+        font: "600 11px 'IBM Plex Mono',monospace",
+        fill: new ol.style.Fill({ color: "#7B3F9E" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 3 }),
+      }),
+    }),
+  }),
   // werkpakket-labels (WP-01, …) halverwege elk tracédeel van station tot station
   werkpakketten: new ol.layer.Vector({
     source: srcWerkpakketten, zIndex: 28,
@@ -621,6 +642,22 @@ function toonNdffPopup(hok, coord) {
   popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
   kaartPopup.setPosition(coord);
 }
+function toonKlantPopup(k, coord) {
+  const kop = `<button class="sluit" title="Sluiten">×</button>` +
+    `<h3>Klantlocatie ${rlEsc(k.nr || "")} uit het IV</h3>`;
+  const inhoud =
+    popupRij("Adres", rlEsc([k.adres, k.plaats].filter(Boolean).join(", "))) +
+    popupRij("Soort", rlEsc(k.soort)) +
+    popupRij("Vermogen", rlEsc(k.vermogen)) +
+    popupRij("Status (IV)", rlEsc(k.klantstatus)) +
+    popupRij("Geocodering", rlEsc(k.gevonden) +
+      (k.status && k.status !== "gevonden" ? ` <em>(${rlEsc(k.status)})</em>` : "")) +
+    '<p class="opm">Bron: tabel klantontwikkelingen/transportbeperkingen in het ' +
+    'investeringsvoorstel; ligging via PDOK Locatieserver (adrespunt).</p>';
+  popupEl.innerHTML = kop + inhoud;
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord);
+}
 document.getElementById("lg-grondwater").addEventListener("change", e => {
   lagen.grondwater.setVisible(e.target.checked);
   if (e.target.checked) laadGrondwaterPutten();
@@ -811,6 +848,10 @@ map.on("click", evt => {
     map.forEachFeatureAtPixel(evt.pixel, f => !!(hok = f.get("ndff")),
       { layerFilter: l => l === lagen.ndff });
     if (hok) { toonNdffPopup(hok, evt.coordinate); return; }
+    let klant = null;
+    map.forEachFeatureAtPixel(evt.pixel, f => !!(klant = f.get("adres") ? f : null),
+      { hitTolerance: 8, layerFilter: l => l === lagen.klant });
+    if (klant) { toonKlantPopup(klant.getProperties(), evt.coordinate); return; }
     // geen boring/kruising/put geraakt: zichtbare datalagen op dit punt bevragen
     let seg = null;
     map.forEachFeatureAtPixel(evt.pixel, f => {
@@ -831,7 +872,7 @@ map.on("pointermove", evt => {
   const hit = map.hasFeatureAtPixel(evt.pixel,
     { hitTolerance: 8,
       layerFilter: l => l === lagen.crossings || l === lagen.grondwater
-                        || l === lagen.ndff });
+                        || l === lagen.ndff || l === lagen.klant });
   map.getTargetElement().style.cursor = hit ? "pointer" : "";
 });
 
@@ -3272,10 +3313,51 @@ async function nieuwProject() {
   document.getElementById("opt-varianten").checked = false;
   document.getElementById("opt-haspel").value = 500;
   zetExportKnoppen(false);
+  srcKlant.clear();
   statusEl.textContent = "Nieuw project — plaats stations en bereken een tracé.";
   updateUI();
 }
 document.getElementById("btn-new").addEventListener("click", nieuwProject);
+
+/* ------------------------------------------ IV → kaart (procespagina) */
+// Zet de stationsreeks (knooppunten uit het IV, in de volgorde van de
+// verbinding) en de klantlocaties op de kaart. Bestaande invoer en een
+// eventueel berekend tracé worden vervangen; de projectnaam blijft staan.
+// Aangeroepen vanuit proces.js na "toepassen" van het IV-voorstel.
+function zetIvOpKaart(stations, labels, klanten, naam) {
+  [srcArea, srcStations, srcVia, srcForbidden, srcKlant].forEach(s => s.clear());
+  resultaat = null;
+  actieveVariant = 0;
+  toonResultaat();
+  document.getElementById("variant-select").innerHTML = "";
+  toonTab();
+  document.getElementById("legenda").innerHTML = "";
+  zetExportKnoppen(false);
+  stations.forEach((c, i) => {
+    const f = new ol.Feature(new ol.geom.Point(c));
+    if (labels && labels[i]) f.set("label", labels[i]);
+    srcStations.addFeature(f);
+  });
+  (klanten || []).forEach(k => {
+    if (k.x == null) return;
+    const f = new ol.Feature(new ol.geom.Point([k.x, k.y]));
+    f.setProperties({ nr: k.nr, soort: k.soort, adres: k.adres, plaats: k.plaats,
+                      vermogen: k.vermogen, klantstatus: k.klantstatus,
+                      gevonden: k.gevonden, status: k.status });
+    srcKlant.addFeature(f);
+  });
+  setTimeout(() => {
+    map.updateSize();
+    const ext = srcStations.getExtent();
+    if (srcKlant.getFeatures().length) ol.extent.extend(ext, srcKlant.getExtent());
+    map.getView().fit(ext, { padding: [80, 80, 80, 80], duration: 400 });
+  }, 60);
+  statusEl.textContent =
+    `IV → kaart: “${naam}” — ${stations.length} knooppunten als stations geplaatst` +
+    (klanten && klanten.length ? ` en ${klanten.length} klantlocaties (paars).` : ".") +
+    " Controleer de ligging, versleep waar nodig en bereken het tracé.";
+  updateUI();
+}
 
 /* --------------------------------------------- trace-import (DXF/PDF) */
 let importToken = null;
@@ -3424,9 +3506,13 @@ document.getElementById("btn-save").addEventListener("click", async () => {
   const state = {
     area: coordsVanPolygon(srcArea),
     stations: puntenVan(srcStations),
+    station_labels: srcStations.getFeatures().map(f => f.get("label") || ""),
     via: puntenVan(srcVia),
     forbidden: srcForbidden.getFeatures().map(f =>
       f.getGeometry().getCoordinates()[0].slice(0, -1)),
+    klanten: srcKlant.getFeatures().map(f => ({
+      ...f.getProperties(), geometry: undefined,
+      xy: f.getGeometry().getCoordinates() })),
     weights: leesWeights(),
     variants: document.getElementById("opt-varianten").checked,
     haspel_m: parseFloat(document.getElementById("opt-haspel").value) || 500,
@@ -3450,9 +3536,20 @@ document.getElementById("project-lijst").addEventListener("change", async e => {
   const p = await r.json();
   const s = p.state;
   document.getElementById("project-naam").value = p.name;
-  srcArea.clear(); srcStations.clear(); srcVia.clear(); srcForbidden.clear();
+  srcArea.clear(); srcStations.clear(); srcVia.clear(); srcForbidden.clear(); srcKlant.clear();
   if (s.area) srcArea.addFeature(new ol.Feature(new ol.geom.Polygon([[...s.area, s.area[0]]])));
-  (s.stations || []).forEach(c => srcStations.addFeature(new ol.Feature(new ol.geom.Point(c))));
+  (s.stations || []).forEach((c, i) => {
+    const f = new ol.Feature(new ol.geom.Point(c));
+    if (s.station_labels && s.station_labels[i]) f.set("label", s.station_labels[i]);
+    srcStations.addFeature(f);
+  });
+  (s.klanten || []).forEach(k => {
+    const { xy, ...props } = k;
+    if (!xy) return;
+    const f = new ol.Feature(new ol.geom.Point(xy));
+    f.setProperties(props);
+    srcKlant.addFeature(f);
+  });
   (s.via || []).forEach(c => srcVia.addFeature(new ol.Feature(new ol.geom.Point(c))));
   (s.forbidden || []).forEach(ring =>
     srcForbidden.addFeature(new ol.Feature(new ol.geom.Polygon([[...ring, ring[0]]]))));

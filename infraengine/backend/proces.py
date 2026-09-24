@@ -189,6 +189,8 @@ def _S(id_, fase, discipline, naam, product, *, nr="", review=False,
 #   nota:<fase>  — bestaande AI-ontwerpnota (VO/DO/UO)
 #   risico       — AI genereert/actualiseert het kans- en risicoregister
 #   intake       — AI-analyse van het geüploade IV-document
+#   iv_kaart     — AI-extractie van knooppunten/adressen/hoeveelheden uit
+#                  het IV, gegeocodeerd naar de kaart (iv_kaart.py)
 # ---------------------------------------------------------------------------
 
 STAPPEN: list[dict] = [
@@ -200,9 +202,12 @@ STAPPEN: list[dict] = [
        "Intakeverslag (scope, stations, randvoorwaarden)", review=True,
        uitvoering="hybride", cap="intake",
        opm="AI leest het IV-document en destilleert scope en aandachtspunten."),
-    _S("IV-03", "IV", D_TECH, "Projectgebied en stations intekenen",
-       "Projectgebied + stations in kaart", review=True, uitvoering="mens",
-       opm="In het kaartscherm: gebied tekenen, MS-stations plaatsen."),
+    _S("IV-03", "IV", D_TECH, "Knooppunten en stations uit het IV op de kaart",
+       "Knooppunten (RS/OS/DR) + klantlocaties in kaart", review=True,
+       uitvoering="hybride", cap="iv_kaart",
+       opm="AI haalt knooppunten, volgorde, klantadressen, hoeveelheden en "
+           "mijlpalen uit het IV en zet ze via de PDOK Locatieserver op de "
+           "kaart; de mens controleert de ligging en verschuift waar nodig."),
     _S("IV-04", "IV", D_TECH, "Eerste tracéverkenning (varianten) rekenen",
        "Berekend tracé met varianten + MCA", review=True,
        uitvoering="hybride", cap="data:trace",
@@ -1226,6 +1231,8 @@ def overzicht(project: str, result: dict | None) -> dict:
                                     if planning_start else None),
             "config": {"ai_automatisch": cfg.get("ai_automatisch", True)},
             "heeft_result": bool(result and result.get("varianten")),
+            # IV-03: is er een kaartvoorstel uit het IV (iv_kaart.py)?
+            "iv_voorstel": iv_voorstel_samenvatting(state),
             "budget": {
                 "taakstellend_huidig": (budget["taakstellend"]["historie"][-1]
                                         if budget["taakstellend"]["historie"] else None),
@@ -1442,13 +1449,36 @@ def _cap_raming(result, variant, project):
     som = calc.get("aannemingssom_excl_btw")
     if som is None:
         raise ProcesError("Geen RAW-calculatie in het resultaat.")
-    return {"samenvatting": f"RAW-raming: aannemingssom € {som:,.0f} excl. "
-                            f"btw ({calc.get('prijspeil', 'prijspeil onbekend')}), "
-                            f"uitvoeringsduur ± {calc.get('uitvoeringsduur_wk', '?')} "
-                            "weken. Volledige begroting in het Excel-werkblad "
-                            "RAW-calculatie.".replace(",", "."),
+    samenvatting = (f"RAW-raming: aannemingssom € {som:,.0f} excl. "
+                    f"btw ({calc.get('prijspeil', 'prijspeil onbekend')}), "
+                    f"uitvoeringsduur ± {calc.get('uitvoeringsduur_wk', '?')} "
+                    "weken. Volledige begroting in het Excel-werkblad "
+                    "RAW-calculatie.").replace(",", ".")
+    samenvatting += iv_referentie_tekst(project, v.get("lengte_m"), som)
+    return {"samenvatting": samenvatting,
             "artefacten": [("RAW-calculatie (Excel)", "xlsx",
                             f"/api/export/xlsx?variant={variant}")]}
+
+
+def iv_referentie_tekst(project: str, lengte_m, som) -> str:
+    """Budgetcheck tegen het IV: de kabelhoeveelheden en het budget (k€)
+    uit het investeringsvoorstel naast het berekende tracé en de RAW-som.
+    Leeg als er geen IV-voorstel (IV-03) is."""
+    iv = laad_state(project).get("iv") or {}
+    delen = []
+    kabel = iv.get("kabel_m_totaal") or 0
+    if kabel and lengte_m:
+        afw = (float(lengte_m) - kabel) / kabel * 100
+        delen.append(f"IV noemt {kabel:,.0f} m kabel in totaal; berekend "
+                     f"tracé {float(lengte_m):,.0f} m ({afw:+.0f}%)")
+    budget = (iv.get("project") or {}).get("budget_keur")
+    if isinstance(budget, (int, float)) and budget > 0 and som:
+        afw = (float(som) / 1000 - budget) / budget * 100
+        delen.append(f"IV-budget {budget:,.0f} k€ incl. WO; RAW-aannemingssom "
+                     f"{float(som) / 1000:,.0f} k€ excl. btw ({afw:+.0f}%)")
+    if not delen:
+        return ""
+    return (" IV-referentie: " + "; ".join(delen) + ".").replace(",", ".")
 
 
 def _cap_planning(result, variant, project):
@@ -2230,3 +2260,149 @@ def bewaar_intake(project: str, markdown: str, *, door: str = "AI") -> dict:
                     + ("" if modus == "ai" else " — goedkeuring gevraagd"))
     bewaar_state(state)
     return {"ok": True, "bestand": naam, "status": st["status"]}
+
+
+# ---------------------------------------------------------------------------
+# IV → kaart (stap IV-03): knooppunten, verbindingen, klantadressen,
+# hoeveelheden, mijlpalen en risico's uit het IV, gegeocodeerd naar RD en
+# doorgezet naar de kaart en het procesdossier (zie iv_kaart.py)
+# ---------------------------------------------------------------------------
+
+def iv_voorstel_samenvatting(state: dict) -> dict | None:
+    iv = state.get("iv")
+    if not isinstance(iv, dict) or not iv.get("knooppunten"):
+        return None
+    return {"gegenereerd": iv.get("gegenereerd", ""),
+            "statistiek": iv.get("statistiek", {}),
+            "verbindingen": [v.get("naam", "") for v in iv.get("verbindingen", [])],
+            "toegepast": iv.get("toegepast")}
+
+
+def iv_kaart_genereer(project: str, *, door: str = "AI") -> dict:
+    """AI-extractie van het geüploade IV + geocodering; bewaart het voorstel
+    in het procesdossier (state['iv']) en als JSON-artefact bij IV-03."""
+    import iv_kaart
+    anthropic = _anthropic()
+    blokken = _iv_blokken(project)
+    try:
+        extractie = iv_kaart.extraheer(anthropic, MODEL, blokken, project)
+        voorstel = iv_kaart.bouw_voorstel(extractie)
+    except iv_kaart.IvKaartError as e:
+        raise ProcesError(str(e))
+    map_ = artefact_dir(project)
+    (map_ / "IV-extractie.json").write_text(
+        json.dumps({"extractie": extractie, "voorstel": voorstel},
+                   ensure_ascii=False, indent=1))
+    cfg = laad_config()
+    stap = STAP_INDEX["IV-03"]
+    modus = _stap_config(cfg, stap)["uitvoering"]
+    state = laad_state(project)
+    state["iv"] = voorstel
+    st = _stap_state(state, "IV-03")
+    s = voorstel["statistiek"]
+    st["toelichting"] = (f"{s['knooppunten']} knooppunten uit het IV "
+                         f"({s['gevonden']} gevonden, {s['onzeker']} onzeker, "
+                         f"{s['niet_gevonden']} niet gevonden), "
+                         f"{len(voorstel['verbindingen'])} verbinding(en), "
+                         f"{s['klanten_gevonden']}/{s['klanten']} klantadressen "
+                         "gegeocodeerd.")
+    _artefact_toevoegen(st, "IV-extractie (JSON)", "json",
+                        f"/api/proces/artefact?project={_slug(project)}"
+                        "&bestand=IV-extractie.json")
+    st["status"] = "gereed" if modus == "ai" else "concept_gereed"
+    _log(st, "AI: knooppunten en gegevens uit het IV gehaald", door)
+    _melding(state, f"IV → kaart: {st['toelichting']} Controleer de ligging "
+                    "op de kaart (IV-03).")
+    bewaar_state(state)
+    return voorstel
+
+
+def iv_kaart_voorstel(project: str) -> dict:
+    iv = laad_state(project).get("iv")
+    if not isinstance(iv, dict) or not iv.get("knooppunten"):
+        raise ProcesError("Nog geen kaartvoorstel uit het IV; laat eerst de "
+                          "AI-extractie draaien (IV-03).")
+    return iv
+
+
+def iv_kaart_toepassen(project: str, verbinding: int = 0, *,
+                       door: str = "mens") -> dict:
+    """Voorstel doorzetten: mijlpalen en opdrachtgever in de projectgegevens,
+    IV-risico's in het kans- en risicoregister, en de stations van de
+    gekozen verbinding + klantlocaties terug voor het kaartscherm. Idempotent
+    voor de procesgegevens (vult alleen lege velden, dedupliceert risico's)."""
+    iv = iv_kaart_voorstel(project)
+    verbindingen = iv.get("verbindingen") or []
+    if not verbindingen:
+        raise ProcesError("Het IV-voorstel bevat geen verbinding met "
+                          "knooppunten.")
+    if not 0 <= verbinding < len(verbindingen):
+        raise ProcesError("Onbekende verbinding.")
+    vb = verbindingen[verbinding]
+    if len(vb.get("stations") or []) < 2:
+        raise ProcesError(f"Verbinding '{vb['naam']}' heeft minder dan twee "
+                          "gevonden knooppunten; plaats de stations "
+                          "handmatig.")
+
+    state = laad_state(project)
+    # mijlpalen + opdrachtgever: alleen lege velden vullen
+    gegevens = laad_gegevens(project)
+    gevuld = []
+    for m in iv.get("mijlpalen") or []:
+        veld = m.get("veld")
+        if veld in MIJLPAAL_VELDEN and not gegevens["mijlpalen"].get(veld):
+            gegevens["mijlpalen"][veld] = m["datum"][:40]
+            gevuld.append(f"{MIJLPAAL_LABELS[veld]}: {m['datum']}")
+    opdrachtgever = (iv.get("project") or {}).get("opdrachtgever") or ""
+    if opdrachtgever and not gegevens["verificatie"].get("opdrachtgever"):
+        gegevens["verificatie"]["opdrachtgever"] = str(opdrachtgever)[:120]
+        gevuld.append(f"opdrachtgever: {opdrachtgever}")
+    state["gegevens"] = gegevens
+
+    # risico's uit het IV → register (bron 'IV'), zonder dubbelen
+    bestaand = state.get("risico", [])
+    bestaande_oms = {r["omschrijving"].strip().lower() for r in bestaand}
+    hoogste = max((int(r["nr"].split("-")[1]) for r in bestaand
+                   if re.match(r"RIS-\d+$", r.get("nr", ""))), default=0)
+    toegevoegd = 0
+    for r in iv.get("risicos") or []:
+        oms = r.get("omschrijving", "").strip()
+        if not oms or oms.lower() in bestaande_oms:
+            continue
+        hoogste += 1
+        rij = {"nr": f"RIS-{hoogste:03d}", "omschrijving": oms[:300],
+               "oorzaak": r.get("oorzaak", "")[:400],
+               "gevolg": r.get("gevolg", "")[:400],
+               "intern_extern": r.get("intern_extern", "Extern"),
+               "aspect": r.get("aspect", "Omgeving"), "stadium": "IV",
+               "allocatie": "OG", "eigenaar": "", "status": "Concept",
+               "werkpakket": "tracébreed", "kans": 3,
+               "geld": 0, "tijd": 3, "kwaliteit": 0, "veiligheid": 0,
+               "omgeving": 0,
+               "maatregelen": ([{"maatregel": r["maatregel"][:300],
+                                 "soort": "Preventief",
+                                 "status": "In overweging", "actiehouder": ""}]
+                               if r.get("maatregel") else []),
+               "bron": "IV"}
+        rij["score"] = risico_score(rij)
+        bestaand.append(rij)
+        bestaande_oms.add(oms.lower())
+        toegevoegd += 1
+    bestaand.sort(key=lambda r: -r.get("score", 0))
+    state["risico"] = bestaand
+
+    iv["toegepast"] = {"tijd": time.strftime("%Y-%m-%d %H:%M"),
+                       "verbinding": verbinding, "naam": vb["naam"]}
+    state["iv"] = iv
+    st = _stap_state(state, "IV-03")
+    _log(st, f"voorstel op de kaart gezet: {vb['naam']} "
+             f"({len(vb['stations'])} stations)", door)
+    _melding(state, f"IV → kaart toegepast: '{vb['naam']}' als stationsreeks "
+                    f"({len(vb['stations'])} punten), "
+                    f"{toegevoegd} IV-risico's in het register"
+                    + (", " + ", ".join(gevuld) if gevuld else "") + ".")
+    bewaar_state(state)
+    klanten = [k for k in iv.get("klantlocaties") or [] if k.get("x") is not None]
+    return {"ok": True, "verbinding": vb, "stations": vb["stations"],
+            "labels": vb.get("labels", []), "klantlocaties": klanten,
+            "risicos_toegevoegd": toegevoegd, "gevuld": gevuld}

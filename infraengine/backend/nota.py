@@ -471,6 +471,10 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
         # namen verificatietabel/projectteam + mijlpalen uit het
         # projectgegevens-scherm (procespagina) — voedt het titelblok en §5.3
         "projectgegevens": _projectgegevens(projectnaam),
+        # het investeringsvoorstel (startdocument): samenvatting,
+        # uitgangspunten, hoeveelheden, budget en wat het IV níet geeft —
+        # uit de AI-extractie van IV-03 (iv_kaart.py), zonder geometrie
+        "investeringsvoorstel": _investeringsvoorstel(projectnaam),
         # structured ontwerpplanning (IV t/m NAO, tollgates + mijlpalen) uit
         # het procesdossier — voedt de mijlpalentabel in §5.3
         "ontwerpplanning": _ontwerpplanning(projectnaam),
@@ -548,6 +552,33 @@ def _risicoregister(projectnaam: str) -> list:
               "allocatie", "werkpakket", "kans", "score", "status",
               "maatregelen")}
             for r in rijen[:25]]
+
+
+def _investeringsvoorstel(projectnaam: str) -> dict | None:
+    """Kerngegevens van het IV uit het procesdossier (stap IV-03)."""
+    if not projectnaam:
+        return None
+    try:
+        import proces as proces_mod
+        iv = proces_mod.laad_state(projectnaam).get("iv") or {}
+    except Exception:
+        return None
+    if not iv.get("knooppunten"):
+        return None
+    return {"project": iv.get("project", {}),
+            "samenvatting": iv.get("samenvatting", ""),
+            "knooppunten": [{"id": k["id"], "soort": k["soort"],
+                             "plaats": k.get("plaats", "")}
+                            for k in iv["knooppunten"]],
+            "verbindingen": [{"naam": v["naam"], "soort": v["soort"],
+                              "kabel": v.get("kabel", ""),
+                              "knooppunten": v["knooppunten"]}
+                             for v in iv.get("verbindingen", [])],
+            "hoeveelheden": iv.get("hoeveelheden", []),
+            "kabel_m_totaal": iv.get("kabel_m_totaal"),
+            "mijlpalen": iv.get("mijlpalen", []),
+            "uitgangspunten": iv.get("uitgangspunten", []),
+            "ontbrekend_in_iv": iv.get("ontbrekend", [])}
 
 
 def _projectgegevens(projectnaam: str) -> dict:

@@ -469,3 +469,42 @@ td.acties .klein.mens{border-color:rgba(13,148,136,.4);color:#0B6E66;
 .stepper:not(.compact) .st-naam{white-space:normal;line-height:1.15;max-width:150px;
   overflow:visible;text-overflow:clip;font-size:11px}
 .stepper:not(.compact) .st-naam{overflow-wrap:anywhere;hyphens:auto;max-width:130px}
+
+/* ---------------------------------------------------- IV → kaart overlay */
+#proces-iv-overlay{position:fixed;inset:0;z-index:60;
+  background:rgba(12,20,36,.45);backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;padding:24px}
+#proces-iv-overlay[hidden]{display:none}
+#proces-iv-venster{background:var(--surface);border-radius:var(--r-l);
+  box-shadow:0 24px 80px rgba(12,20,36,.35);width:min(1180px,96vw);
+  height:min(88vh,960px);display:flex;flex-direction:column;overflow:hidden}
+#proces-iv-kop{display:flex;align-items:center;gap:10px;padding:12px 18px;
+  border-bottom:1px solid var(--rule)}
+#proces-iv-kop button{border:1px solid var(--rule);background:var(--surface);
+  padding:6px 14px;cursor:pointer;font-size:12.5px;font-weight:600;
+  border-radius:999px}
+#proces-iv-kop button:disabled{opacity:.45;cursor:default}
+#proces-iv-toepassen{border-color:rgba(63,169,124,.5)!important;color:#1F7A55}
+#proces-iv-wrap{flex:1;overflow:auto;background:var(--surface-2);padding:22px}
+#proces-iv-sheet{background:#fff;border:1px solid var(--rule);border-radius:10px;
+  max-width:1040px;margin:0 auto;padding:36px 44px;min-height:60%;
+  box-shadow:var(--schaduw-kaart);font-size:13px;line-height:1.5}
+#proces-iv-sheet h1{font-family:var(--disp);font-size:21px;margin:0 0 10px}
+#proces-iv-sheet h2{font-family:var(--disp);font-size:15.5px;margin:22px 0 8px;
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#proces-iv-sheet .opm{color:var(--ink-2);font-size:12.5px}
+#proces-iv-sheet table.iv-kop{border-collapse:collapse;margin:8px 0 12px}
+#proces-iv-sheet table.iv-kop th{text-align:left;padding:2px 14px 2px 0;
+  color:var(--ink-2);font-weight:600;white-space:nowrap;vertical-align:top}
+#proces-iv-sheet table.iv-kop td{padding:2px 0}
+#proces-iv-sheet table.iv-tabel{width:100%;border-collapse:collapse;font-size:12.5px}
+#proces-iv-sheet table.iv-tabel th,#proces-iv-sheet table.iv-tabel td{
+  text-align:left;padding:5px 8px;border-bottom:1px solid var(--rule);vertical-align:top}
+#proces-iv-sheet table.iv-tabel th{color:var(--ink-2);font-weight:600;font-size:11.5px;
+  text-transform:uppercase;letter-spacing:.03em}
+#proces-iv-sheet td.num{text-align:right}
+#proces-iv-sheet small{color:var(--ink-2)}
+#proces-iv-sheet select{font:inherit;padding:4px 8px;border:1px solid var(--rule);
+  border-radius:6px;max-width:100%}
+#proces-iv-sheet ul{padding-left:20px}
+#proces-iv-sheet li{margin:3px 0}

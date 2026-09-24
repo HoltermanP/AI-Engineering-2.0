@@ -2205,6 +2205,40 @@ def proces_intake_document(req: ProcesIntakeDoc):
         raise HTTPException(422, str(e))
 
 
+class ProcesIvKaart(BaseModel):
+    project: str
+    verbinding: int = 0
+
+
+@app.post("/api/proces/iv-kaart/genereer")
+def proces_iv_kaart_genereer(req: ProcesIvKaart):
+    """IV → kaart (IV-03): AI-extractie van knooppunten, verbindingen,
+    klantadressen, hoeveelheden, mijlpalen en risico's uit het geüploade
+    IV, gegeocodeerd via de PDOK Locatieserver. Duurt 1-3 minuten."""
+    try:
+        return proces_mod.iv_kaart_genereer(req.project)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/proces/iv-kaart")
+def proces_iv_kaart(project: str):
+    try:
+        return proces_mod.iv_kaart_voorstel(project)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/proces/iv-kaart/toepassen")
+def proces_iv_kaart_toepassen(req: ProcesIvKaart):
+    """Voorstel doorzetten naar procesgegevens (mijlpalen, opdrachtgever,
+    risico's) en de stations/klantlocaties teruggeven voor het kaartscherm."""
+    try:
+        return proces_mod.iv_kaart_toepassen(req.project, req.verbinding)
+    except proces_mod.ProcesError as e:
+        raise HTTPException(422, str(e))
+
+
 @app.post("/api/proces/risico/genereer")
 def proces_risico_genereer(req: ProcesRisicoGenereer):
     try:
@@ -2393,6 +2427,7 @@ def proces_artefact(project: str, bestand: str):
         raise HTTPException(404, "Artefact niet gevonden.")
     media = {".pdf": "application/pdf", ".md": "text/markdown; charset=utf-8",
              ".txt": "text/plain; charset=utf-8",
+             ".json": "application/json; charset=utf-8",
              ".docx": "application/vnd.openxmlformats-officedocument"
                       ".wordprocessingml.document"}.get(
         pad.suffix.lower(), "application/octet-stream")

@@ -560,15 +560,20 @@ function htmlStapActies(s, f) {
         b.push(`<button class="klein ai" data-actie="ai-risico">🤖 AI-risicoanalyse</button>`);
       else if (s.cap === "intake")
         b.push(`<button class="klein ai" data-actie="ai-intake">🤖 AI-intakeverslag</button>`);
+      else if (s.cap === "iv_kaart")
+        b.push(`<button class="klein ai" data-actie="ai-ivkaart" title="AI haalt knooppunten, volgorde, klantadressen, hoeveelheden en mijlpalen uit het IV en geocodeert ze">🤖 IV → kaart</button>`);
       else
         b.push(`<button class="klein ai" data-actie="ai-doc">🤖 AI-concept opstellen</button>`);
     }
+    if (s.cap === "iv_kaart" && procesData?.iv_voorstel)
+      b.push(`<button class="klein" data-actie="iv-bekijk" title="Voorstel uit het IV bekijken en op de kaart zetten">📍 Voorstel bekijken</button>`);
     if (s.status === "concept_gereed") {
       b.push(`<button class="klein ok" data-actie="goedkeur">👤 ✓ Goedkeuren</button>`);
       b.push(`<button class="klein afkeur" data-actie="afkeur">👤 ✗ Afkeuren</button>`);
       if (heeftAi)
         b.push(`<button class="klein ai" data-actie="${s.cap.startsWith("data:") ? "ai-data"
-          : s.cap === "risico" ? "ai-risico" : s.cap === "intake" ? "ai-intake" : "ai-doc"}"
+          : s.cap === "risico" ? "ai-risico" : s.cap === "intake" ? "ai-intake"
+          : s.cap === "iv_kaart" ? "ai-ivkaart" : "ai-doc"}"
           title="AI opnieuw laten uitvoeren">🤖 opnieuw</button>`);
     } else {
       if (s.status !== "bezig")
@@ -577,6 +582,8 @@ function htmlStapActies(s, f) {
       b.push(`<button class="klein" data-actie="nvt">n.v.t.</button>`);
     }
   } else {
+    if (s.cap === "iv_kaart" && procesData?.iv_voorstel)
+      b.push(`<button class="klein" data-actie="iv-bekijk">📍 Voorstel bekijken</button>`);
     b.push(`<button class="klein" data-actie="heropen">↺ Heropenen</button>`);
   }
   return b.join(" ");
@@ -665,6 +672,17 @@ async function stapActie(stapId, actie, btn) {
       openDocOverlay(stapId, "doc");
     } else if (actie === "ai-intake") {
       openDocOverlay(stapId, "intake");
+    } else if (actie === "ai-ivkaart") {
+      btn.disabled = true; btn.textContent = "AI leest het IV… (± 1-3 min)";
+      const voorstel = await prFetch("api/proces/iv-kaart/genereer", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project }),
+      });
+      await ververs();
+      openIvOverlay(voorstel);
+    } else if (actie === "iv-bekijk") {
+      const voorstel = await prFetch(`api/proces/iv-kaart?project=${encodeURIComponent(project)}`);
+      openIvOverlay(voorstel);
     } else if (actie === "ai-risico") {
       btn.disabled = true; btn.textContent = "AI analyseert… (± 1-2 min)";
       await prFetch("api/proces/risico/genereer", {
@@ -829,6 +847,136 @@ prEl("proces-doc-opslaan").addEventListener("click", async () => {
     ververs();
   } catch (e) {
     prEl("proces-doc-status").textContent = `Fout: ${e.message}`;
+    knop.disabled = false;
+  }
+});
+
+/* ------------------------------------------- IV → kaart: voorstel-overlay */
+
+const IV_STATUS = {
+  gevonden: ["gevonden", "chip-groen"], onzeker: ["onzeker", "chip-amber"],
+  niet_gevonden: ["niet gevonden", "chip-rood"],
+};
+let ivVoorstel = null;
+
+function ivChip(status) {
+  const [lbl, cls] = IV_STATUS[status] || [status || "", "chip-grijs"];
+  return `<span class="chip ${cls}">${prEsc(lbl)}</span>`;
+}
+
+function openIvOverlay(voorstel) {
+  ivVoorstel = voorstel;
+  const p = voorstel.project || {};
+  const st = voorstel.statistiek || {};
+  const vbs = voorstel.verbindingen || [];
+  const kop = [
+    ["Titel", p.titel], ["Opdrachtgever", p.opdrachtgever], ["Auteur / versie",
+    [p.auteur, p.datum_versie].filter(Boolean).join(" — ")],
+    ["UMS / risicoregister", [p.ums_nummer, p.risicoregister].filter(Boolean).join(" / ")],
+    ["Voedend station", p.voedend_station], ["Regio / gemeente",
+    [p.regio, p.gemeente].filter(Boolean).join(" / ")],
+    ["Budget (IV)", p.budget_keur != null ? `${p.budget_keur} k€` +
+      (p.nauwkeurigheid ? ` (${p.nauwkeurigheid})` : "") : "niet in het IV (weggelaten)"],
+    ["Gewenste IBN", p.gewenste_ibn],
+  ].filter(([, v]) => v).map(([k, v]) =>
+    `<tr><th>${prEsc(k)}</th><td>${prEsc(v)}</td></tr>`).join("");
+
+  const verbindingOpties = vbs.map((v, i) =>
+    `<option value="${i}">${prEsc(v.naam)} — ${prEsc(v.soort)}, ${v.stations.length} stations` +
+    `${v.kabel ? `, ${prEsc(v.kabel)}` : ""}, hemelsbreed ${(v.hemelsbreed_m / 1000).toFixed(1)} km` +
+    `${v.ontbrekend.length ? `, ${v.ontbrekend.length} knooppunt(en) niet gevonden` : ""}</option>`
+  ).join("");
+
+  const knooppunten = (voorstel.knooppunten || []).map(k => `
+    <tr><td class="mono">${prEsc(k.id)}</td><td>${prEsc(k.soort)}</td>
+      <td>${prEsc(k.plaats || k.naam)}</td>
+      <td>${prEsc(k.gevonden || "—")}${k.opmerking ? `<br><small>${prEsc(k.opmerking)}</small>` : ""}</td>
+      <td>${ivChip(k.status)}</td>
+      <td class="mono smal">${k.x != null ? `${Math.round(k.x)}, ${Math.round(k.y)}` : ""}</td>
+      <td><small>${prEsc(k.bron)}</small></td></tr>`).join("");
+
+  const klanten = (voorstel.klantlocaties || []).map(k => `
+    <tr><td class="mono">${prEsc(k.nr)}</td><td>${prEsc(k.soort)}</td>
+      <td>${prEsc([k.adres, k.plaats].filter(Boolean).join(", "))}</td>
+      <td>${prEsc(k.vermogen)}</td><td>${prEsc(k.klantstatus)}</td>
+      <td>${ivChip(k.status)}</td></tr>`).join("");
+
+  const hoeveelheden = (voorstel.hoeveelheden || []).map(h =>
+    `<tr><td>${prEsc(h.omschrijving)}</td><td class="mono num">${h.aantal.toLocaleString("nl-NL")}</td><td>${prEsc(h.eenheid)}</td></tr>`).join("");
+  const mijlpalen = (voorstel.mijlpalen || []).map(m =>
+    `<tr><td>${prEsc(m.naam)}</td><td class="mono">${prEsc(m.datum)}</td><td><small>${prEsc(m.veld ? "→ projectmijlpaal " + m.veld : "")}</small></td></tr>`).join("");
+  const risicos = (voorstel.risicos || []).map(r =>
+    `<li><strong>${prEsc(r.omschrijving)}</strong>${r.gevolg ? ` — ${prEsc(r.gevolg)}` : ""}${r.maatregel ? `<br><small>maatregel: ${prEsc(r.maatregel)}</small>` : ""}</li>`).join("");
+  const lijst = arr => (arr || []).map(u => `<li>${prEsc(u)}</li>`).join("");
+
+  prEl("proces-iv-status").textContent = voorstel.toegepast
+    ? `Op de kaart gezet op ${voorstel.toegepast.tijd} (${voorstel.toegepast.naam})`
+    : `Gegenereerd ${voorstel.gegenereerd}`;
+  prEl("proces-iv-sheet").innerHTML = `
+    <h1>IV → kaart: voorstel uit het investeringsvoorstel</h1>
+    <p class="opm">De AI heeft de knooppunten, de volgorde uit de schematische
+      netstructuur, klantadressen, hoeveelheden, mijlpalen en risico's uit het IV
+      gehaald. Plaatsaanduidingen zijn via de PDOK Locatieserver naar RD vertaald:
+      <em>gevonden</em> = straat/plaats-treffer, <em>onzeker</em> = alleen een ruime
+      treffer of een dubbel punt — controleer die op de kaart. Het tracé zelf rekent
+      InfraEngine tussen de knooppunten; de kaartfiguur uit het IV wordt niet overgetrokken.</p>
+    <table class="iv-kop">${kop}</table>
+    <p>${prEsc(voorstel.samenvatting)}</p>
+
+    <h2>Verbinding op de kaart zetten</h2>
+    ${vbs.length ? `<p><label>Verbinding <select id="iv-verbinding">${verbindingOpties}</select></label>
+      <span class="opm">De knooppunten worden in deze volgorde als MS-stations geplaatst
+      (een ring sluit op het beginstation); klantlocaties komen als paarse laag.</span></p>`
+      : '<p class="leeg">Geen verbinding met knooppunten gevonden in het IV; plaats de stations handmatig.</p>'}
+
+    <h2>Knooppunten <span class="chip chip-grijs">${st.knooppunten || 0}</span>
+      ${ivChip("gevonden")} ${st.gevonden || 0} &nbsp; ${ivChip("onzeker")} ${st.onzeker || 0} &nbsp;
+      ${ivChip("niet_gevonden")} ${st.niet_gevonden || 0}</h2>
+    <table class="iv-tabel"><thead><tr><th>Id</th><th>Soort</th><th>Plaats</th>
+      <th>Gevonden als</th><th>Status</th><th>RD</th><th>Bron</th></tr></thead>
+      <tbody>${knooppunten}</tbody></table>
+
+    ${klanten ? `<h2>Klantlocaties <span class="chip chip-grijs">${st.klanten_gevonden}/${st.klanten} gegeocodeerd</span></h2>
+    <table class="iv-tabel"><thead><tr><th>Nr</th><th>Soort</th><th>Adres</th><th>Vermogen</th>
+      <th>Status (IV)</th><th>Geocodering</th></tr></thead><tbody>${klanten}</tbody></table>` : ""}
+
+    ${hoeveelheden ? `<h2>Hoeveelheden uit het IV${voorstel.kabel_m_totaal ? ` <span class="chip chip-grijs">${voorstel.kabel_m_totaal.toLocaleString("nl-NL")} m kabel totaal</span>` : ""}</h2>
+    <table class="iv-tabel"><tbody>${hoeveelheden}</tbody></table>
+    <p class="opm">Referentie voor de budgetcheck in de raming (IV-06): berekende tracélengte en RAW-som worden hiertegen afgezet.</p>` : ""}
+
+    ${mijlpalen ? `<h2>Mijlpalen</h2><table class="iv-tabel"><tbody>${mijlpalen}</tbody></table>
+    <p class="opm">Mijlpalen met een koppeling vullen de projectmijlpalen (Projectgegevens) als die nog leeg zijn.</p>` : ""}
+
+    ${risicos ? `<h2>Risico's uit het IV <span class="chip chip-grijs">${(voorstel.risicos || []).length}</span></h2>
+    <ul>${risicos}</ul><p class="opm">Worden bij toepassen in het kans- en risicoregister gezet (bron IV, stadium IV).</p>` : ""}
+
+    ${(voorstel.uitgangspunten || []).length ? `<h2>Uitgangspunten en randvoorwaarden</h2><ul>${lijst(voorstel.uitgangspunten)}</ul>` : ""}
+    ${(voorstel.ontbrekend || []).length ? `<h2>Wat het IV niet geeft</h2><ul>${lijst(voorstel.ontbrekend)}</ul>` : ""}`;
+  prEl("proces-iv-toepassen").disabled = !vbs.length ||
+    !vbs.some(v => v.stations.length >= 2);
+  prEl("proces-iv-overlay").hidden = false;
+}
+
+prEl("proces-iv-sluiten").addEventListener("click", () => {
+  prEl("proces-iv-overlay").hidden = true;
+});
+
+prEl("proces-iv-toepassen").addEventListener("click", async () => {
+  const knop = prEl("proces-iv-toepassen");
+  const sel = document.getElementById("iv-verbinding");
+  const verbinding = sel ? parseInt(sel.value, 10) || 0 : 0;
+  knop.disabled = true;
+  prEl("proces-iv-status").textContent = "Toepassen…";
+  try {
+    const r = await prFetch("api/proces/iv-kaart/toepassen", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: prProject(), verbinding }),
+    });
+    prEl("proces-iv-overlay").hidden = true;
+    sluitProces();
+    zetIvOpKaart(r.stations, r.labels, r.klantlocaties, r.verbinding.naam);
+  } catch (e) {
+    prEl("proces-iv-status").textContent = `Fout: ${e.message}`;
     knop.disabled = false;
   }
 });
