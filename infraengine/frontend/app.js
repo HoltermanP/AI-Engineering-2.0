@@ -2746,7 +2746,23 @@ function mdNaarHtml(md) {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>");
   const lijstRe = /^([-*–]|\d+[.)])\s+/;
-  const lines = md.replace(/\r/g, "").split("\n");
+  const lines0 = md.replace(/\r/g, "").split("\n");
+  // elke werkpakketparagraaf krijgt een tekening, ook als het model de marker
+  // weglaat (zelfde regel als voeg_wp_afbeeldingen_toe in backend/nota.py)
+  const lines = [], gezien = new Set();
+  lines0.forEach((r, k) => {
+    lines.push(r);
+    const m = r.trim().match(/^###\s.*?\b(WP[-\s]?\d+)/i);
+    if (!m) return;
+    const sl = m[1].replace(/\D/g, "");
+    if (gezien.has(sl)) return;
+    gezien.add(sl);
+    const volgende = (lines0.slice(k + 1).find(x => x.trim()) || "").trim();
+    if (/^\[AFBEELDING:/i.test(volgende)) return;
+    let nr = m[1].toUpperCase().replace(/\s/g, "-");
+    if (!nr.includes("-")) nr = nr.slice(0, 2) + "-" + nr.slice(2);
+    lines.push("", `[AFBEELDING: werkpakket ${nr}]`, "");
+  });
   let html = "", i = 0, para = [];
   const flush = () => {
     if (para.length) { html += `<p>${inline(para.join(" "))}</p>`; para = []; }

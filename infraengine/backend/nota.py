@@ -928,6 +928,36 @@ def _docx_pakket(body: str, footer_tekst: str,
     return buf.getvalue()
 
 
+_WP_KOP_RE = re.compile(r"^#{3}\s.*?\b(WP[-\s]?\d+)", re.I)
+_AFB_LOS_RE = re.compile(r"^\[AFBEELDING:", re.I)
+
+
+def voeg_wp_afbeeldingen_toe(md: str) -> str:
+    """Zorgt dat elke werkpakketparagraaf (`### … Werkpakket WP-xx …`) een
+    tekening van dat werkpakket heeft: ontbreekt de marker direct onder de
+    kop (het model laat hem soms weg of zet hem op een andere plek), dan
+    wordt hij hier ingevoegd."""
+    lines = md.replace("\r", "").split("\n")
+    uit: list = []
+    gezien: set = set()   # alleen bij de eerste kop per werkpakket (hfst. 3)
+    for i, regel in enumerate(lines):
+        uit.append(regel)
+        m = _WP_KOP_RE.match(regel.strip())
+        if not m:
+            continue
+        sleutel = re.sub(r"\D", "", m.group(1))
+        if sleutel in gezien:
+            continue
+        gezien.add(sleutel)
+        volgende = next((r.strip() for r in lines[i + 1:] if r.strip()), "")
+        if not _AFB_LOS_RE.match(volgende):
+            nr = re.sub(r"\s", "-", m.group(1).upper())
+            if "-" not in nr:
+                nr = nr[:2] + "-" + nr[2:]
+            uit += ["", f"[AFBEELDING: werkpakket {nr}]", ""]
+    return "\n".join(uit)
+
+
 def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
                        projectnaam: str, markdown: str) -> tuple[str, bytes]:
     """Nota-Markdown naar een opgemaakt Word-document.
@@ -938,7 +968,8 @@ def markdown_naar_docx(result: dict, fase: str, variant_idx: int,
         raise NotaError("Nota-inhoud is onwaarschijnlijk groot; geweigerd.")
     context = bouw_context(result, variant_idx, projectnaam)
     proj = context["project"]
-    blocks = _md_blocks(markdown.split(FOUT_MARK)[0])
+    blocks = _md_blocks(voeg_wp_afbeeldingen_toe(
+        markdown.split(FOUT_MARK)[0]))
 
     # eerste h1 = documenttitel (op de titelpagina), rest is inhoud
     titel = NOTA_FASEN[fase]["titel"]
