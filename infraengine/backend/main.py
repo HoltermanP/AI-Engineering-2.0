@@ -9,6 +9,7 @@ import base64
 import dataclasses
 import io
 import json
+import gc
 import math
 import os
 import re
@@ -221,6 +222,42 @@ def _insert_via(stations: list, via: list) -> list:
     return waypoints
 
 
+def _geheugen_instellen() -> None:
+    """glibc-malloc afstellen (alleen Linux; elders een no-op). De
+    berekeningen draaien in werkerthreads en alloceren grote numpy-/PIL-
+    buffers: met de standaardinstellingen krijgt elke thread een eigen arena
+    en blijven vrijgegeven buffers op de heap staan, waardoor de RSS nooit
+    zakt en herberekeningen oplopen tot de 2 GB-grens van Render. Twee
+    arena's, en grote buffers (> 1 MB) via mmap zodat ze bij free() direct
+    naar het OS teruggaan. Equivalent van MALLOC_ARENA_MAX/…_THRESHOLD_ in de
+    omgeving, maar zonder dat de Dockerfile/Render-config dat hoeft te zetten."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.mallopt(-8, 2)              # M_ARENA_MAX
+        libc.mallopt(-3, 1 << 20)        # M_MMAP_THRESHOLD
+        libc.mallopt(-1, 1 << 20)        # M_TRIM_THRESHOLD
+    except Exception:
+        pass
+
+
+_geheugen_instellen()
+
+
+def _geheugen_vrijgeven() -> None:
+    """Na een berekening: cyclisch afval opruimen en (op Linux/glibc) vrije
+    heap-pagina's aan het OS teruggeven. Zonder dit blijft de RSS van het
+    proces op de piek van de zwaarste berekening staan — en tikt elke
+    herberekening (bijv. tracé verslepen) daar bovenop, tot Render het proces
+    wegens geheugengebrek herstart (502)."""
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass  # geen glibc (macOS/Windows): niets te trimmen
+
+
 def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -> dict:
     """Alle datalagen voor één werkgebied (bbox), parallel opgehaald.
 
@@ -239,7 +276,7 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
 
     dims = Grid(bbox, cell)  # alleen voor rasterafmetingen van de WMS-maskers
     cx, cy = gemeente_punt or ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    with ThreadPoolExecutor(max_workers=6) as ex:
         mask = lambda url, laag: ex.submit(pdok.fetch_wms_mask, url, laag,
                                            bbox, dims.ncols, dims.nrows)
         f_bgt = ex.submit(pdok.fetch_bgt, bbox)
@@ -657,6 +694,8 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 cs = list(deel.coords)
                 st["coords"].extend(cs if not st["coords"] else cs[1:])
                 st["lengte"] += deel.length
+                del grid, deel, bgt_deel
+                _geheugen_vrijgeven()
             del painters, datas, data
 
     _voortgang("registers en toetsing samenstellen")
@@ -822,6 +861,7 @@ def compute(req: ComputeRequest):
         return result
     finally:
         PROGRESS["actief"] = False
+        _geheugen_vrijgeven()
 
 
 def _verrijk_route(route: LineString, grid: Grid, bgt: dict, percelen: list,

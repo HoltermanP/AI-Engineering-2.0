@@ -645,6 +645,7 @@ def route_chunk(grid: Grid, start: tuple, end: tuple, end_radius_m: float = 0.0,
             )
     tb = mcp.traceback(rb)
     pts = [grid.cell_to_world(r, c) for r, c in tb]
+    del mcp, cumcost, tb  # MCP-rasters vrij vóór het gladstrijken
     if len(pts) < 2:  # start en eind in dezelfde cel (heel korte verbinding)
         pts = pts * 2
     return smooth_route(pts, grid, slack)
@@ -673,6 +674,10 @@ def shortest_path(grid: Grid, waypoints: list, slack: float = 1.05) -> list:
         if coords:
             seg = seg[1:]
         coords.extend(seg)
+        # de MCP-structuren (kosten-, cumulatieve-kosten- en heap-rasters, samen
+        # ~50 bytes/cel) niet vasthouden tot de volgende verbinding klaar is:
+        # anders leven er bij via-punten twee tegelijk
+        del mcp, cumcost, tb
     return coords
 
 

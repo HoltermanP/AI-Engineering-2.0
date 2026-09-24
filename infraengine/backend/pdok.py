@@ -54,6 +54,7 @@ _session.headers["User-Agent"] = "InfraEngine-prototype/0.1"
 # losse entries (WMS-maskers, WFS-featurelijsten) groot genoeg dat 300 stuks
 # ruim over de 1 GB konden oplopen en, samen met de rest van een berekening,
 # het proces uit zijn geheugen lieten lopen (Render OOM-restart).
+import json
 import sys
 from collections import OrderedDict
 
@@ -62,7 +63,7 @@ _cache_bytes: dict = {}          # key -> geschatte grootte van de waarde (bytes
 _cache_bytes_totaal = 0
 _cache_lock = threading.Lock()
 _CACHE_MAX = 300  # entries (~10 per deeltraject → ± 30 recente deeltrajecten)
-_CACHE_MAX_BYTES = 150 * 1024 * 1024  # 150 MB, ongeacht aantal entries
+_CACHE_MAX_BYTES = 80 * 1024 * 1024  # 80 MB, ongeacht aantal entries
 
 
 def _byte_estimaat(obj, _seen=None) -> int:
@@ -78,6 +79,14 @@ def _byte_estimaat(obj, _seen=None) -> int:
     nbytes = getattr(obj, "nbytes", None)  # numpy-arrays (WMS-maskers)
     if isinstance(nbytes, int):
         return nbytes
+    if hasattr(obj, "geom_type"):
+        # shapely-geometrie: het GEOS-object zelf zit buiten sys.getsizeof;
+        # ruwe schatting op basis van het aantal coördinaten
+        try:
+            from shapely import get_num_coordinates
+            return 300 + 32 * int(get_num_coordinates(obj))
+        except Exception:
+            return 1024
     grootte = sys.getsizeof(obj)
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -119,13 +128,30 @@ def _bbox_key(bbox: tuple) -> tuple:
     return tuple(round(v, 1) for v in bbox)
 
 
+# BGT-attributen die nergens in de app gelezen worden (codelijst-namespaces,
+# "leeg"-vlaggen, registratiedatums): ~45 sleutels per feature, waarvan we er
+# een handvol gebruiken. Wegsnoeien scheelt per feature ruim de helft van het
+# attribuutgeheugen in de PDOK-cache en in de rekenpijplijn.
+_PROPS_WEG = frozenset({
+    "bag_pnd", "in_onderzoek", "relatieve_hoogteligging", "op_talud",
+    "creation_date", "termination_date", "lv_publicatiedatum",
+    "tijdstip_registratie", "type_overbruggingsdeel",
+    "hoort_bij_typeoverbrugging", "overbrugging_is_beweegbaar",
+})
+
+
+def _snoei_props(props: dict) -> dict:
+    return {k: v for k, v in props.items()
+            if k not in _PROPS_WEG and not k.endswith(("_codespace", "_leeg"))}
+
+
 def _fetch_ogc_collection(api: str, collection: str, bbox: tuple) -> list:
     """Alle features van één OGC API Features-collectie binnen de bbox, met paging."""
     feats = []
     url = f"{api}/collections/{collection}/items"
     params = {
         "f": "json",
-        "limit": 1000,
+        "limit": 400,  # kleinere pagina's: de JSON-parse-piek per verzoek blijft klein
         "bbox": ",".join(str(v) for v in bbox),
         "bbox-crs": CRS_RD,
         "crs": CRS_RD,
@@ -133,7 +159,9 @@ def _fetch_ogc_collection(api: str, collection: str, bbox: tuple) -> list:
     while url:
         r = _session.get(url, params=params, timeout=60)
         r.raise_for_status()
-        data = r.json()
+        # json.loads op de bytes: r.json() decodeert eerst naar een str-kopie
+        data = json.loads(r.content)
+        del r
         for f in data.get("features", []):
             props = f.get("properties", {})
             if props.get("eind_registratie"):
@@ -147,7 +175,7 @@ def _fetch_ogc_collection(api: str, collection: str, bbox: tuple) -> list:
                 continue
             if g.is_empty:
                 continue
-            feats.append((g, props))
+            feats.append((g, _snoei_props(props)))
         # paging via next-link
         url = None
         params = None
@@ -155,6 +183,7 @@ def _fetch_ogc_collection(api: str, collection: str, bbox: tuple) -> list:
             if link.get("rel") == "next":
                 url = link["href"]
                 break
+        del data  # pagina direct loslaten, niet pas bij de volgende iteratie
     return feats
 
 
@@ -170,7 +199,7 @@ def fetch_bgt(bbox: tuple) -> dict:
     if hit:
         return waarde
     result: dict = {}
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(_fetch_bgt_collection, c, bbox): c for c in BGT_COLLECTIONS}
         for fut in as_completed(futs):
             c = futs[fut]
@@ -740,10 +769,17 @@ def fetch_wms_mask(url: str, layer: str, bbox: tuple, ncols: int, nrows: int):
         r.raise_for_status()
         if "image" not in r.headers.get("Content-Type", ""):
             raise ValueError("geen afbeelding terug")
-        im = _Image.open(_io.BytesIO(r.content)).convert("RGBA")
+        im = _Image.open(_io.BytesIO(r.content))
+        # alleen het alfakanaal (1 byte/px) i.p.v. een volledige RGBA-kopie
+        # (4 bytes/px, en dan nog een keer als numpy-array): bij ~10 maskers
+        # tegelijk was dat de grootste geheugenpiek van het ophalen
+        alfa = (im.getchannel("A") if im.mode in ("RGBA", "LA", "PA")
+                else im.convert("RGBA").getchannel("A"))
+        del im
         if (w, h) != (ncols, nrows):
-            im = im.resize((ncols, nrows), _Image.NEAREST)
-        mask = _np.array(im)[:, :, 3] > 0
+            alfa = alfa.resize((ncols, nrows), _Image.NEAREST)
+        mask = _np.asarray(alfa) > 0
+        del alfa
     except Exception:
         mask = None
     return _cache_put(key, mask)

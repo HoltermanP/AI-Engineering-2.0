@@ -25,7 +25,7 @@ _session.headers["User-Agent"] = "InfraEngine-prototype/0.1"
 
 _cache: OrderedDict = OrderedDict()
 _lock = threading.Lock()
-_CACHE_MAX = 60
+_CACHE_MAX = 20   # tot ~2 MB per entry (700×700 float32)
 
 
 def _fetch_grid(bbox: tuple):
