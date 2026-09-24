@@ -289,10 +289,12 @@ def inspecteer_pdf(data: bytes) -> list[CandidateLayer]:
     per_laag = _pdf_lagen_verzamelen(doc)
     if not per_laag:
         raise TraceImportError(
-            "Geen vector-lijnpaden gevonden in deze PDF. Alleen vector-PDF's "
-            "(rechtstreeks vanuit CAD geëxporteerd, met echte lijnobjecten) "
-            "worden ondersteund — een scan of foto van een tekening kan niet "
-            "worden gelezen.")
+            "Geen vector-lijnpaden gevonden in deze PDF. Deze import is voor "
+            "CAD-tekeningen (vector-PDF met echte lijnobjecten, of DXF). Is dit "
+            "een investeringsvoorstel (IV) of een document met kaartfiguren? "
+            "Ga dan naar de procespagina (◫ Proces): upload het IV bij stap "
+            "IV-01 en kies bij IV-03 '🤖 IV → kaart' — de AI haalt de "
+            "knooppunten en adressen uit het document en zet ze op de kaart.")
     return _kandidaten_van(per_laag)
 
 
