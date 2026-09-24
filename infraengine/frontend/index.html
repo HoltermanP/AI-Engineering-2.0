@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="styles.css?v=3">
 <link rel="stylesheet" href="registers.css?v=2">
-<link rel="stylesheet" href="proces.css?v=2">
+<link rel="stylesheet" href="proces.css?v=3">
 </head>
 <body>
 <header id="topbar">
@@ -352,9 +352,13 @@
   </div>
   <div id="proces-layout">
     <aside id="proces-zijbalk">
-      <section>
-        <h3>Wacht op jou</h3>
+      <section class="zb-mens">
+        <h3>👤 Wacht op jou</h3>
         <div id="proces-taken"><p class="leeg">Geen openstaande taken.</p></div>
+      </section>
+      <section class="zb-ai">
+        <h3>🤖 AI kan nu uitvoeren</h3>
+        <div id="proces-ai-taken"><p class="leeg">Geen AI-stappen open.</p></div>
       </section>
       <section>
         <h3>Meldingen</h3>
@@ -416,10 +420,10 @@
         <button id="proces-admin-opslaan">Opslaan</button>
         <button id="proces-admin-sluiten">Sluiten</button>
       </div>
-      <p class="hint">Vink stappen/producten aan of uit en kies per stap wie hem uitvoert:
-        <strong>AI</strong> (voert uit, direct gereed), <strong>Hybride</strong> (AI maakt het
-        concept, de mens keurt goed) of <strong>Mens</strong> (handmatig). Stappen zonder
-        automatisering kunnen alleen door de mens. Fasen zijn als geheel uit te schakelen.</p>
+      <p class="hint">Vink stappen/producten aan of uit en kies per stap wie hem uitvoert.
+        Stappen zonder automatisering kunnen alleen door de mens. Fasen zijn als geheel uit te
+        schakelen. Goedkeuringen en tollgate-besluiten blijven altijd menselijk.</p>
+      <div id="proces-admin-uitleg"></div>
       <div id="proces-admin-inhoud"></div>
     </div>
   </div>
@@ -429,6 +433,6 @@
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
 <script src="app.js?v=3"></script>
 <script src="registers.js?v=2"></script>
-<script src="proces.js?v=2"></script>
+<script src="proces.js?v=3"></script>
 </body>
 </html>

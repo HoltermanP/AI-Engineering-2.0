@@ -283,3 +283,189 @@ tr.tsb-totaalrij td{border-top:2px solid var(--rule);background:var(--surface-2)
   font-size:12px;background:var(--surface)}
 .admin-vlag{display:flex;align-items:center;gap:6px;font-size:12px;
   color:var(--ink-2)}
+
+/* =====================================================================
+   Visuele laag: AI / hybride / mens, "aan zet", stepper en voortgangsring
+   ===================================================================== */
+
+/* ---- uitvoering-badges ---- */
+.uv{display:inline-flex;align-items:center;gap:5px;border-radius:999px;
+  padding:2px 9px 2px 7px;font-size:11px;font-weight:600;white-space:nowrap;
+  border:1px solid transparent;line-height:1.5}
+.uv .uv-ic{font-size:11.5px}
+.uv-ai{background:var(--blauw-soft);color:#2A55B8;border-color:rgba(62,111,222,.22)}
+.uv-hybride{background:var(--paars-soft);color:#5B3FC4;border-color:rgba(124,92,240,.22)}
+.uv-mens{background:var(--teal-soft);color:#0B6E66;border-color:rgba(13,148,136,.22)}
+.uv-dot{display:inline-block;width:9px;height:9px;border-radius:99px;margin-right:4px}
+.uv-dot.uv-ai{background:var(--blauw)}
+.uv-dot.uv-hybride{background:var(--paars)}
+.uv-dot.uv-mens{background:var(--teal)}
+
+/* ---- verdeling AI / hybride / mens (gestapelde balk) ---- */
+.uv-balk{display:flex;height:12px;border-radius:99px;overflow:hidden;
+  background:rgba(12,20,36,.06);margin:6px 0 4px}
+.uv-seg{display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-size:9px;color:#fff;min-width:0;overflow:hidden}
+.uv-seg.uv-ai{background:var(--blauw)}
+.uv-seg.uv-hybride{background:var(--paars)}
+.uv-seg.uv-mens{background:var(--teal)}
+.uv-legenda{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;color:var(--ink-2)}
+.uv-leg{display:inline-flex;align-items:center}
+.dash-verdeling-kop{display:block;font-family:var(--disp);font-size:11px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3)}
+
+/* ---- "aan zet" ---- */
+.az{display:inline-flex;align-items:center;gap:4px;border-radius:8px;
+  padding:2px 8px;font-size:11px;font-weight:600;white-space:nowrap}
+.az-mens{background:var(--amber-soft);color:#8A5A0B;border:1px solid rgba(199,126,20,.3)}
+.az-ai{background:var(--blauw-soft);color:#2A55B8;border:1px solid rgba(62,111,222,.25)}
+.az-klaar{background:var(--ok-soft);color:var(--ok)}
+.az-wacht,.az-uit{background:rgba(12,20,36,.05);color:var(--ink-3)}
+.az-cel{white-space:nowrap}
+.dash-az{display:flex;flex-wrap:wrap;gap:4px}
+tr.rij-jij td.az-cel .az-mens{box-shadow:0 0 0 3px rgba(199,126,20,.12)}
+
+/* ---- dashboard-hero ---- */
+.dash-hero-kaart{background:
+  radial-gradient(520px 200px at 0% 0%,rgba(62,111,222,.08),transparent 60%),
+  radial-gradient(520px 200px at 100% 100%,rgba(63,169,124,.08),transparent 60%),
+  var(--surface-2)}
+.dash-hero{display:grid;grid-template-columns:auto 1fr auto;gap:22px;
+  align-items:center}
+.dash-hero h3{font-family:var(--disp);font-size:17px;margin:0 0 4px}
+.dash-hero-tekst{min-width:0}
+.dash-verdeling{margin-top:8px;max-width:520px}
+.dash-aanzet{display:flex;flex-direction:column;gap:8px;min-width:230px}
+.dash-aanzet-kop{font-family:var(--disp);font-size:11px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3)}
+.az-groot{display:flex;align-items:center;gap:12px;border-radius:12px;
+  padding:8px 12px;cursor:pointer;text-align:left;font-family:var(--sans);
+  font-size:12px;font-weight:600;transition:transform .12s,box-shadow .12s}
+.az-groot:hover{transform:translateY(-1px);box-shadow:var(--schaduw-s)}
+.az-groot b{font-family:var(--disp);font-size:24px;font-weight:700;min-width:34px;
+  text-align:center;line-height:1}
+.az-groot span{line-height:1.3}
+.donut-txt{font-family:var(--disp);font-size:22px;font-weight:700;fill:var(--ink)}
+.donut-sub{font-family:var(--mono);font-size:9.5px;fill:var(--ink-3)}
+.fase-kaart .fase-titel .donut-txt{font-size:15px}
+@media (max-width:1100px){.dash-hero{grid-template-columns:auto 1fr}
+  .dash-aanzet{grid-column:1/-1;flex-direction:row}}
+
+/* ---- fasestepper met tollgates ---- */
+.stepper{display:flex;align-items:center;gap:4px;margin:0 0 14px;padding:12px 14px;
+  border:1px solid var(--rule);border-radius:var(--r-l);background:var(--surface-2);
+  overflow-x:auto}
+.stepper.compact{padding:8px 12px;margin-bottom:12px}
+.st-node{display:flex;align-items:center;gap:9px;border:1px solid transparent;
+  background:none;cursor:pointer;border-radius:12px;padding:5px 10px 5px 6px;
+  font-family:var(--sans);color:var(--ink-2);text-align:left;flex:0 0 auto;
+  transition:background .12s,border-color .12s}
+.st-node:hover{background:rgba(12,20,36,.04)}
+.st-node.huidig{border-color:var(--rule);background:var(--surface);box-shadow:var(--schaduw-s)}
+.st-bol{display:inline-flex;align-items:center;justify-content:center;
+  width:30px;height:30px;border-radius:99px;font-family:var(--disp);font-size:11px;
+  font-weight:700;background:rgba(12,20,36,.07);color:var(--ink-3);flex:none}
+.st-node.st-afgerond .st-bol{background:var(--ok);color:#fff}
+.st-node.st-actief .st-bol{background:var(--blauw);color:#fff;
+  box-shadow:0 0 0 4px rgba(62,111,222,.18);animation:st-puls 2.2s ease-in-out infinite}
+.st-node.st-uit .st-bol{background:rgba(12,20,36,.04);color:var(--ink-3);
+  text-decoration:line-through}
+@keyframes st-puls{50%{box-shadow:0 0 0 7px rgba(62,111,222,.08)}}
+.st-tekst{display:flex;flex-direction:column;gap:1px;min-width:0}
+.st-code{font-family:var(--mono);font-size:10px;color:var(--ink-3)}
+.st-node.st-actief .st-code{color:var(--blauw)}
+.st-naam{font-size:11.5px;font-weight:600;white-space:nowrap;color:var(--ink)}
+.stepper.compact .st-naam{display:none}
+.stepper.compact .st-node.huidig .st-naam{display:block}
+.st-mini{display:block;width:88px;height:3px;border-radius:99px;background:rgba(12,20,36,.08);
+  overflow:hidden;margin-top:2px}
+.st-mini i{display:block;height:100%;background:linear-gradient(90deg,var(--blauw),#3FA97C)}
+.stepper.compact .st-mini{width:52px}
+.st-gate{display:inline-flex;align-items:center;gap:3px;font-family:var(--mono);
+  font-size:10px;color:var(--ink-3);padding:2px 7px;border-radius:8px;cursor:pointer;
+  border:1px dashed var(--rule-2);flex:0 0 auto;background:var(--surface)}
+.st-gate i{font-style:normal;font-size:12px}
+.st-gate small{font-size:9px;opacity:.75}
+.st-gate.gate-gereed{color:#8A6A14;border-color:#D9A62A;border-style:solid;background:var(--amber-soft)}
+.st-gate.gate-genomen{color:var(--ok);border-color:#3FA97C;border-style:solid;background:var(--ok-soft)}
+.st-lijn{flex:1 1 14px;min-width:10px;height:2px;background:var(--rule)}
+
+/* ---- uitlegkaarten AI / hybride / mens ---- */
+.uitleg{margin:0 0 14px}
+.uitleg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.uitleg-kaart{border:1px solid var(--rule);border-radius:var(--r-m);padding:10px 12px;
+  background:var(--surface-2);border-left-width:4px}
+.uitleg-kaart p{margin:4px 0 0;font-size:11.5px;color:var(--ink-2);line-height:1.45}
+.uk-kop{display:flex;align-items:center;gap:8px;font-size:12.5px}
+.uk-ic{font-size:15px}
+.uk-ai{border-left-color:var(--blauw)}
+.uk-hybride{border-left-color:var(--paars)}
+.uk-mens{border-left-color:var(--teal)}
+.uitleg-regel{margin:8px 2px 0;font-size:12px;color:var(--ink-2)}
+.uitleg.compact{padding:6px 18px 0}
+.uitleg.compact .uitleg-kaart p{display:none}
+.uitleg.compact .uitleg-regel{margin-top:6px;font-size:11.5px}
+
+/* ---- fasepagina ---- */
+.fase-titel{display:flex;align-items:center;gap:14px}
+.fase-titel h3{margin:0 0 3px}
+.fase-titel .hint{margin:0}
+.fase-verdeling{min-width:260px;max-width:380px;flex:1}
+.fase-legenda{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 6px}
+.fase-legenda .hint{margin:0}
+section.disc{margin:0 0 6px}
+h4.discipline{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.disc-meta{display:inline-flex;gap:4px;align-items:center;text-transform:none;
+  letter-spacing:0;font-weight:500}
+.stappen-tabel td:first-child{border-left:3px solid transparent;padding-left:8px}
+.stappen-tabel tr.rij-ai td:first-child{border-left-color:var(--blauw)}
+.stappen-tabel tr.rij-hybride td:first-child{border-left-color:var(--paars)}
+.stappen-tabel tr.rij-mens td:first-child{border-left-color:var(--teal)}
+.stappen-tabel tbody tr:nth-child(even) td{background:rgba(12,20,36,.015)}
+.stappen-tabel tbody tr:hover td{background:rgba(62,111,222,.04)}
+.stap-product{font-size:12px;color:var(--ink-2);margin-top:1px}
+.stap-product .rev{font-family:var(--mono);font-size:9.5px;color:#8A6A14;
+  background:var(--amber-soft);border-radius:6px;padding:0 5px;margin-left:4px}
+.stap-log{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);margin-top:3px;
+  white-space:nowrap}
+td.acties .klein.mens{border-color:rgba(13,148,136,.4);color:#0B6E66;
+  background:rgba(13,148,136,.05)}
+
+/* ---- tollgate ---- */
+.tollgate summary{gap:10px}
+.tg-icoon{color:var(--ink-3);font-size:14px}
+.tollgate.gereed .tg-icoon{color:#D9A62A}
+.tollgate.genomen .tg-icoon{color:#3FA97C}
+.tg-teller{font-size:10.5px;color:var(--ink-3)}
+.tg-mens{margin-left:auto}
+.tg-besluit .az{margin-right:4px}
+
+/* ---- zijbalk ---- */
+#proces-zijbalk section.zb-mens{border-left:4px solid var(--amber)}
+#proces-zijbalk section.zb-ai{border-left:4px solid var(--blauw)}
+.taak-ai{border-color:rgba(62,111,222,.25)}
+.taak-ai:hover{border-color:var(--blauw)}
+.taak-ai .taak-fase{color:var(--blauw);border-color:rgba(62,111,222,.35)}
+#proces-zijbalk .hint{margin:4px 0 0}
+
+/* ---- correcties na visuele controle ---- */
+.stepper .st-node{flex:1 1 0;min-width:0}
+.stepper .st-node .st-tekst{min-width:0}
+.stepper .st-naam{overflow:hidden;text-overflow:ellipsis;max-width:170px}
+.stepper.compact .st-node{flex:0 0 auto}
+.stepper .st-lijn{flex:0 0 10px}
+.stappen-tabel{table-layout:fixed}
+.stappen-tabel th:nth-child(1){width:5%}
+.stappen-tabel th:nth-child(2){width:33%}
+.stappen-tabel th:nth-child(3){width:11%}
+.stappen-tabel th:nth-child(4){width:14%}
+.stappen-tabel th:nth-child(5){width:16%}
+.stappen-tabel th.smal,.stappen-tabel td.smal{white-space:normal}
+.stappen-tabel td.acties{max-width:none;white-space:normal}
+.stappen-tabel td.acties .klein{white-space:normal;text-align:left;line-height:1.3}
+.stappen-tabel .stap-log{white-space:normal}
+.stappen-tabel .az{white-space:normal;line-height:1.3}
+.stappen-tabel .artefact{max-width:100%}
+.stepper:not(.compact) .st-naam{white-space:normal;line-height:1.15;max-width:150px;
+  overflow:visible;text-overflow:clip;font-size:11px}
+.stepper:not(.compact) .st-naam{overflow-wrap:anywhere;hyphens:auto;max-width:130px}

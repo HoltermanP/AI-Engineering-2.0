@@ -30,7 +30,7 @@ const PR_STATUS = {
   nvt:            ["n.v.t.", "chip-grijs door"],
   afgekeurd:      ["afgekeurd", "chip-rood"],
 };
-const PR_UITVOERING = { ai: "🤖 AI", mens: "👤 Mens", hybride: "🤖+👤 Hybride" };
+const PR_UITVOERING = { ai: "🤖 AI voert uit", mens: "👤 Mens voert uit", hybride: "🤖→👤 AI schrijft, mens keurt goed" };
 const PR_FASE_STATUS = {
   actief: ["actief", "chip-blauw"], wachtend: ["wachtend", "chip-grijs"],
   afgerond: ["afgerond", "chip-groen"], uit: ["uitgeschakeld", "chip-grijs door"],
@@ -129,15 +129,33 @@ function toonProces() {
   prEl("proces-tabs").querySelectorAll("button").forEach(b =>
     b.addEventListener("click", () => { procesTab = b.dataset.tab; toonProces(); }));
 
-  // takenlijst
+  // takenlijst: wat op een mens wacht (backend) en wat de AI nu kan doen
+  // (afgeleid uit de stappen van de actieve fase)
   const taken = procesData.taken || [];
   prEl("proces-taken").innerHTML = taken.length
     ? taken.slice(0, 14).map(t =>
-        `<button class="taak" data-fase="${t.fase}" data-stap="${t.stap || ""}">
+        `<button class="taak taak-mens" data-fase="${t.fase}" data-stap="${t.stap || ""}">
            <span class="taak-fase">${t.fase}</span> ${prEsc(t.naam)}
-           <span class="taak-actie">${prEsc(t.actie)}</span></button>`).join("")
-    : '<p class="leeg">Geen openstaande taken.</p>';
-  prEl("proces-taken").querySelectorAll(".taak").forEach(b =>
+           <span class="taak-actie">👤 ${prEsc(t.actie)}</span></button>`).join("")
+    : '<p class="leeg">✓ Niets wacht op jou.</p>';
+  const aiTaken = [];
+  for (const f of procesData.fasen || []) {
+    if (f.status !== "actief") continue;
+    for (const s of f.stappen) {
+      const z = aanZet(s, f);
+      if (z.wie === "ai") aiTaken.push({ fase: f.code, stap: s.id, naam: s.naam, actie: z.label });
+    }
+  }
+  prEl("proces-ai-taken").innerHTML = aiTaken.length
+    ? aiTaken.slice(0, 14).map(t =>
+        `<button class="taak taak-ai" data-fase="${t.fase}" data-stap="${t.stap}">
+           <span class="taak-fase">${t.fase}</span> ${prEsc(t.naam)}
+           <span class="taak-actie">🤖 ${prEsc(t.actie)}</span></button>`).join("") +
+      (procesData.config?.ai_automatisch
+        ? '<p class="hint">Datastappen lopen automatisch mee na elke berekening (⚙ Admin).</p>'
+        : '<p class="hint">Automatisch uitvoeren na elke berekening staat uit (⚙ Admin).</p>')
+    : '<p class="leeg">Geen AI-stappen open in de actieve fase.</p>';
+  document.querySelectorAll("#proces-taken .taak, #proces-ai-taken .taak").forEach(b =>
     b.addEventListener("click", () => { procesTab = b.dataset.fase; toonProces();
       if (b.dataset.stap) setTimeout(() => {
         const rij = document.querySelector(`tr[data-stap="${b.dataset.stap}"]`);
@@ -168,6 +186,139 @@ function toonProces() {
 
 /* --------------------------------------------------------------- dashboard */
 
+/* Uitvoering (AI / hybride / mens) en "wie is aan zet" — één visuele taal
+   voor dashboard, fasepagina, zijbalk en admin. */
+const PR_UV = {
+  ai:      { icoon: "🤖", kort: "AI", lang: "AI voert uit",
+             uitleg: "De AI voert de stap uit op basis van de projectdata en zet hem direct op gereed." },
+  hybride: { icoon: "🤖→👤", kort: "AI → mens", lang: "AI schrijft, mens keurt goed",
+             uitleg: "De AI maakt het concept; een mens beoordeelt, past aan en keurt goed (of af)." },
+  mens:    { icoon: "👤", kort: "Mens", lang: "Mens voert uit",
+             uitleg: "Handmatig werk: schouwen, overleggen, ondertekenen, beslissen — de AI doet hier niets." },
+};
+
+function uvBadge(u, lang = false) {
+  const d = PR_UV[u] || PR_UV.mens;
+  return `<span class="uv uv-${u}" title="${prEsc(d.uitleg)}">
+    <span class="uv-ic">${d.icoon}</span>${lang ? d.lang : d.kort}</span>`;
+}
+
+// verdeling van de actieve stappen over AI / hybride / mens
+function uvVerdeling(stappen) {
+  const v = { ai: 0, hybride: 0, mens: 0, totaal: 0 };
+  for (const s of stappen) {
+    if (!s.actief) continue;
+    const u = (s.cap && s.uitvoering !== "mens") ? s.uitvoering : "mens";
+    v[u] += 1; v.totaal += 1;
+  }
+  return v;
+}
+
+function uvBalk(v, metLegenda = true) {
+  if (!v.totaal) return "";
+  const seg = u => v[u]
+    ? `<span class="uv-seg uv-${u}" style="width:${(100 * v[u] / v.totaal).toFixed(1)}%"
+         title="${v[u]} × ${PR_UV[u].lang}">${v[u]}</span>` : "";
+  const leg = u => v[u]
+    ? `<span class="uv-leg"><i class="uv-dot uv-${u}"></i>${PR_UV[u].icoon} ${v[u]} ${PR_UV[u].kort}</span>` : "";
+  return `<div class="uv-balk">${seg("ai")}${seg("hybride")}${seg("mens")}</div>` +
+    (metLegenda ? `<div class="uv-legenda">${leg("ai")}${leg("hybride")}${leg("mens")}</div>` : "");
+}
+
+/* Wie moet nu iets doen bij deze stap? */
+function aanZet(s, f) {
+  if (!s.actief) return { wie: "uit", label: "uitgeschakeld (admin)" };
+  if (f.status === "uit") return { wie: "uit", label: "fase uitgeschakeld" };
+  if (f.status === "wachtend") return { wie: "wacht", label: "wacht op vorige tollgate" };
+  if (s.status === "nvt") return { wie: "klaar", label: "n.v.t." };
+  if (s.status === "gereed") return { wie: "klaar", label: "klaar" };
+  if (s.status === "concept_gereed") return { wie: "mens", label: "jij: AI-concept beoordelen" };
+  const heeftAi = !!s.cap && s.uitvoering !== "mens";
+  if (!heeftAi) return { wie: "mens", label: s.status === "bezig" ? "jij: afronden" : "jij: uitvoeren" };
+  if (s.uitvoering === "ai") return { wie: "ai", label: "AI: uitvoeren" };
+  return { wie: "ai", label: "AI: concept maken → daarna jij" };
+}
+
+function aanZetChip(z) {
+  const ic = { ai: "🤖", mens: "👤", klaar: "✓", wacht: "⏳", uit: "—" }[z.wie] || "";
+  return `<span class="az az-${z.wie}">${ic} ${prEsc(z.label)}</span>`;
+}
+
+// teller "aan zet" over de stappen van één fase of het hele project
+function aanZetTelling(fasen) {
+  const t = { ai: 0, mens: 0, tollgate: 0 };
+  for (const f of fasen) {
+    if (f.status !== "actief") continue;
+    for (const s of f.stappen) {
+      const z = aanZet(s, f);
+      if (z.wie === "ai") t.ai += 1;
+      else if (z.wie === "mens") t.mens += 1;
+    }
+    if (f.tollgate_gereed && f.tollgate_status !== "genomen") t.tollgate += 1;
+  }
+  return t;
+}
+
+function laatsteLog(s) {
+  const e = (s.log || [])[s.log.length - 1];
+  if (!e) return "";
+  const door = e.door === "AI" ? "🤖 AI" : e.door ? `👤 ${prEsc(e.door)}` : "";
+  return `<div class="stap-log">${prEsc(e.actie)}${door ? ` · ${door}` : ""} · ${prEsc(e.tijd)}</div>`;
+}
+
+/* voortgangsring (SVG) */
+function donut(pct, size = 92, dikte = 10, label = "") {
+  const r = (size - dikte) / 2, c = 2 * Math.PI * r;
+  return `<svg class="donut" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img"
+      aria-label="${pct}% gereed">
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="rgba(12,20,36,.08)" stroke-width="${dikte}"/>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="url(#donut-grad)" stroke-width="${dikte}"
+      stroke-linecap="round" stroke-dasharray="${(c * pct / 100).toFixed(1)} ${c.toFixed(1)}"
+      transform="rotate(-90 ${size / 2} ${size / 2})"/>
+    <defs><linearGradient id="donut-grad" x1="0" x2="1"><stop offset="0" stop-color="#3E6FDE"/><stop offset="1" stop-color="#3FA97C"/></linearGradient></defs>
+    <text x="50%" y="50%" dy=".36em" text-anchor="middle" class="donut-txt">${pct}%</text>
+    ${label ? `<text x="50%" y="50%" dy="1.9em" text-anchor="middle" class="donut-sub">${prEsc(label)}</text>` : ""}
+  </svg>`;
+}
+
+/* fasestepper met tollgates: IV ◆T1 VO ◆TM2 DO ◆T3 UO ◆T4 NAO ◆T5 */
+// korte fasenamen voor de stepper (de volledige naam staat in de title)
+const PR_FASE_KORT = { IV: "Intake", VO: "Voorlopig ontwerp", DO: "Definitief ontwerp",
+                       UO: "Uitvoeringsgereed ontwerp", NAO: "Overdracht realisatie" };
+
+function htmlStepper(huidig, compact = false) {
+  const fasen = procesData.fasen || [];
+  return `<div class="stepper ${compact ? "compact" : ""}">` + fasen.map((f, i) => {
+    const genomen = f.tollgate_status === "genomen";
+    const gate = genomen ? "genomen" : f.tollgate_gereed ? "gereed" : "open";
+    const gateLbl = genomen ? "genomen" : f.tollgate_gereed ? "klaar voor review" : "open";
+    const pct = f.voortgang.totaal ? Math.round(100 * f.voortgang.gereed / f.voortgang.totaal) : 0;
+    return `
+      <button class="st-node st-${f.status} ${f.code === huidig ? "huidig" : ""}" data-tab="${f.code}"
+          title="${prEsc(f.naam)} — ${f.voortgang.gereed}/${f.voortgang.totaal} gereed">
+        <span class="st-bol">${f.status === "afgerond" ? "✓" : f.code}</span>
+        <span class="st-tekst"><span class="st-code">${f.code}</span>
+          <span class="st-naam">${prEsc(PR_FASE_KORT[f.code] || f.naam)}</span>
+          <span class="st-mini"><i style="width:${pct}%"></i></span></span>
+      </button>
+      <span class="st-gate gate-${gate}" data-tab="${f.code}"
+          title="${prEsc(f.tollgate_naam)} — ${gateLbl} · besluit altijd door een mens">
+        <i>◆</i><b>${prEsc(f.tollgate)}</b><small>👤</small></span>
+      ${i < fasen.length - 1 ? '<span class="st-lijn"></span>' : ""}`;
+  }).join("") + "</div>";
+}
+
+function htmlUitleg(compact = false) {
+  const kaart = u => `<div class="uitleg-kaart uk-${u}">
+      <div class="uk-kop"><span class="uk-ic">${PR_UV[u].icoon}</span><strong>${PR_UV[u].lang}</strong></div>
+      <p>${PR_UV[u].uitleg}</p></div>`;
+  return `<div class="uitleg ${compact ? "compact" : ""}">
+    <div class="uitleg-grid">${kaart("ai")}${kaart("hybride")}${kaart("mens")}</div>
+    <p class="uitleg-regel">👤 <strong>Goedkeuringen en tollgate-besluiten zijn altijd menselijk.</strong>
+      De AI levert concepten, data-producten en analyses; wie wat doet stel je per stap in via ⚙ Admin.</p>
+  </div>`;
+}
+
 // tonen als telling naast gereed/n.v.t. (die al in de voortgangsbalk zitten)
 const DASH_STATUS_ORDE = ["te_doen", "bezig", "concept_gereed", "afgekeurd"];
 
@@ -191,8 +342,14 @@ function dashFaseKaart(f) {
   const genomen = f.tollgate_status === "genomen";
   const tgCls = genomen ? "chip-groen" : f.tollgate_gereed ? "chip-amber" : "chip-grijs";
   const tgLbl = genomen ? "genomen" : f.tollgate_gereed ? "klaar voor review" : "nog niet gereed";
+  const t = aanZetTelling([f]);
+  const az = f.status === "actief"
+    ? `<div class="dash-az">
+        ${t.mens ? `<span class="az az-mens">👤 ${t.mens} wacht op jou</span>` : ""}
+        ${t.ai ? `<span class="az az-ai">🤖 ${t.ai} kan de AI nu doen</span>` : ""}
+        ${!t.mens && !t.ai ? '<span class="az az-klaar">✓ niets open</span>' : ""}</div>` : "";
   return `
-  <div class="dash-fase dash-klik" data-tab="${f.code}" title="Naar fase ${prEsc(f.naam)}">
+  <div class="dash-fase dash-klik st-${f.status}" data-tab="${f.code}" title="Naar fase ${prEsc(f.naam)}">
     <div class="dash-fase-kop">
       <strong>${f.code}</strong>
       <span class="chip ${fcls}">${fs}</span>
@@ -202,8 +359,10 @@ function dashFaseKaart(f) {
       <div class="balk"><div class="vul" style="width:${pct}%"></div></div>
       <span class="mono">${f.voortgang.gereed}/${f.voortgang.totaal}</span>
     </div>
+    ${uvBalk(uvVerdeling(f.stappen), false)}
+    ${az}
     <div class="dash-chips">${dashStatusChips(f)}</div>
-    <div class="dash-tg" title="${prEsc(f.tollgate_naam)}">
+    <div class="dash-tg" title="${prEsc(f.tollgate_naam)} · besluit door een mens">
       <span class="tg-badge">${prEsc(f.tollgate)}</span>
       <span class="chip ${tgCls}">${tgLbl}</span>
     </div>
@@ -215,6 +374,10 @@ function htmlDashboard() {
   const totGereed = fasen.reduce((a, f) => a + f.voortgang.gereed, 0);
   const totTotaal = fasen.reduce((a, f) => a + f.voortgang.totaal, 0);
   const pct = totTotaal ? Math.round(100 * totGereed / totTotaal) : 0;
+  const alleStappen = fasen.flatMap(f => f.stappen);
+  const verdeling = uvVerdeling(alleStappen);
+  const t = aanZetTelling(fasen);
+  const actief = fasen.find(f => f.status === "actief");
 
   const risicos = procesData.risico || [];
   const rTel = { rood: 0, amber: 0, groen: 0 };
@@ -230,17 +393,30 @@ function htmlDashboard() {
     : '<p class="leeg">Nog niet vastgesteld — zie 💶 Budget in de kopbalk.</p>';
 
   return `
-  <div class="fase-kaart">
-    <div class="fase-kop"><h3>Projectdashboard</h3></div>
+  <div class="fase-kaart dash-hero-kaart">
     <div class="dash-hero">
-      <span class="dash-groot">${pct}%</span>
-      <div class="fase-voortgang dash-hero-balk">
-        <div class="balk"><div class="vul" style="width:${pct}%"></div></div>
+      ${donut(pct, 104, 11, "gereed")}
+      <div class="dash-hero-tekst">
+        <h3>Projectdashboard</h3>
+        <p class="hint">${totGereed} van ${totTotaal} actieve processtappen gereed of n.v.t. —
+          hele ontwerpfase, IV t/m NAO${actief ? ` · nu in <strong>${prEsc(actief.naam)}</strong>` : ""}.</p>
+        <div class="dash-verdeling">
+          <span class="dash-verdeling-kop">Wie doet wat (${verdeling.totaal} stappen)</span>
+          ${uvBalk(verdeling)}
+        </div>
+      </div>
+      <div class="dash-aanzet">
+        <span class="dash-aanzet-kop">Nu aan zet</span>
+        <button class="az-groot az-mens" data-tab="${actief ? actief.code : "dashboard"}">
+          <b>${t.mens + t.tollgate}</b><span>👤 wacht op jou${t.tollgate ? ` (waarvan ${t.tollgate} tollgate-review)` : ""}</span></button>
+        <button class="az-groot az-ai" data-tab="${actief ? actief.code : "dashboard"}">
+          <b>${t.ai}</b><span>🤖 kan de AI nu uitvoeren</span></button>
       </div>
     </div>
-    <p class="hint">${totGereed} van ${totTotaal} actieve processtappen gereed of n.v.t. —
-      hele ontwerpfase, IV t/m NAO. Klik op een fase voor de stappenlijst.</p>
   </div>
+
+  ${htmlStepper(actief ? actief.code : null)}
+  ${htmlUitleg()}
 
   <div class="dash-grid">${fasen.map(dashFaseKaart).join("")}</div>
 
@@ -253,6 +429,7 @@ function htmlDashboard() {
         ${rTel.groen ? `<span class="chip chip-groen">${rTel.groen} beheerst</span>` : ""}
         ${risicos.length ? "" : '<span class="leeg">nog geen risico\'s</span>'}
       </div>
+      <p class="hint">🤖 AI stelt voor · 👤 jij beoordeelt en beheert.</p>
     </div>
     <div class="dash-stat-kaart">
       <h4>Tollgates</h4>
@@ -264,7 +441,7 @@ function htmlDashboard() {
                     title="${prEsc(f.tollgate_naam)}">${prEsc(f.tollgate)}</span>`;
         }).join(" ")}
       </div>
-      <p class="hint">${tgTel} van ${fasen.length} genomen.</p>
+      <p class="hint">${tgTel} van ${fasen.length} genomen · 👤 besluit altijd door een mens.</p>
     </div>
     <div class="dash-stat-kaart dash-klik" id="dash-budget-kaart" title="Budget openen">
       <h4>Taakstellend budget</h4>
@@ -286,14 +463,27 @@ function htmlFase(code) {
   const [fs, fcls] = PR_FASE_STATUS[f.status] || ["", ""];
   const pct = f.voortgang.totaal
     ? Math.round(100 * f.voortgang.gereed / f.voortgang.totaal) : 0;
+  const t = aanZetTelling([f]);
+  const verdeling = uvVerdeling(f.stappen);
 
-  let html = `
+  let html = htmlStepper(code, true) + `
   <div class="fase-kaart">
     <div class="fase-kop">
-      <h3>${prEsc(f.naam)} <span class="chip ${fcls}">${fs}</span></h3>
-      <div class="fase-voortgang" title="${f.voortgang.gereed} van ${f.voortgang.totaal} actieve stappen gereed">
-        <div class="balk"><div class="vul" style="width:${pct}%"></div></div>
-        <span class="mono">${f.voortgang.gereed}/${f.voortgang.totaal}</span>
+      <div class="fase-titel">
+        ${donut(pct, 64, 8)}
+        <div>
+          <h3>${prEsc(f.naam)} <span class="chip ${fcls}">${fs}</span></h3>
+          <p class="hint">${f.voortgang.gereed} van ${f.voortgang.totaal} actieve stappen gereed ·
+            tollgate ${prEsc(f.tollgate)} ${f.tollgate_status === "genomen" ? "genomen"
+              : f.tollgate_gereed ? "klaar voor review" : "nog niet gereed"}</p>
+        </div>
+      </div>
+      <div class="fase-verdeling">
+        <span class="dash-verdeling-kop">Wie doet wat</span>
+        ${uvBalk(verdeling)}
+        ${f.status === "actief" ? `<div class="dash-az">
+          <span class="az az-mens">👤 ${t.mens} wacht op jou</span>
+          <span class="az az-ai">🤖 ${t.ai} kan de AI nu doen</span></div>` : ""}
       </div>
     </div>
     ${htmlTollgate(f)}
@@ -303,17 +493,30 @@ function htmlFase(code) {
     html += `<p class="hint proces-hint">⚠ Er is nog geen berekend tracé actief — AI-stappen
       hebben projectdata nodig. Open het project in het ontwerpscherm en bereken (of herlaad) het tracé.</p>`;
 
+  html += `<div class="fase-legenda">${uvBadge("ai", true)} ${uvBadge("hybride", true)} ${uvBadge("mens", true)}
+    <span class="hint">· kolom <strong>Aan zet</strong> toont wie nu iets moet doen</span></div>`;
+
   const disciplines = [...new Set(f.stappen.map(s => s.discipline))];
   for (const d of disciplines) {
     const stappen = f.stappen.filter(s => s.discipline === d);
-    html += `<h4 class="discipline">${prEsc(d)}</h4>
-    <table class="register proces-tabel"><thead><tr>
-      <th class="smal">Nr</th><th>Activiteit</th><th>Product / beheersdocument</th>
-      <th class="smal">Review</th><th class="smal">Uitvoering</th>
-      <th>Status</th><th>Acties &amp; producten</th>
+    const act = stappen.filter(s => s.actief);
+    const klaar = act.filter(s => s.status === "gereed" || s.status === "nvt").length;
+    const dv = uvVerdeling(stappen);
+    html += `<section class="disc">
+    <h4 class="discipline"><span>${prEsc(d)}</span>
+      <span class="disc-meta">
+        <span class="chip ${klaar === act.length && act.length ? "chip-groen" : "chip-grijs"}">${klaar}/${act.length} gereed</span>
+        ${dv.ai ? `<span class="uv uv-ai">🤖 ${dv.ai}</span>` : ""}
+        ${dv.hybride ? `<span class="uv uv-hybride">🤖→👤 ${dv.hybride}</span>` : ""}
+        ${dv.mens ? `<span class="uv uv-mens">👤 ${dv.mens}</span>` : ""}
+      </span></h4>
+    <table class="register proces-tabel stappen-tabel"><thead><tr>
+      <th class="smal">Nr</th><th>Activiteit &amp; product</th>
+      <th class="smal">Uitvoering</th><th class="smal">Status</th>
+      <th>Aan zet</th><th>Acties &amp; producten</th>
     </tr></thead><tbody>`;
     for (const s of stappen) html += htmlStapRij(s, f);
-    html += "</tbody></table>";
+    html += "</tbody></table></section>";
   }
   return html;
 }
@@ -321,19 +524,21 @@ function htmlFase(code) {
 function htmlStapRij(s, f) {
   const [lbl, cls] = PR_STATUS[s.status] || [s.status, "chip-grijs"];
   const inactief = !s.actief;
+  const uv = (s.cap && s.uitvoering !== "mens") ? s.uitvoering : "mens";
+  const z = aanZet(s, f);
   const artefacten = (s.artefacten || []).map(a =>
     `<a class="artefact" href="${a.url}" target="_blank"
         title="${prEsc(a.soort)} · ${prEsc(a.tijd)}">📄 ${prEsc(a.naam)}</a>`).join(" ");
   const toel = s.toelichting
     ? `<div class="stap-toel">${prEsc(s.toelichting)}</div>` : "";
-  return `<tr data-stap="${s.id}" class="${inactief ? "stap-uit" : ""}">
+  return `<tr data-stap="${s.id}" class="rij-${uv} ${inactief ? "stap-uit" : ""} ${z.wie === "mens" ? "rij-jij" : ""}">
     <td class="mono smal">${prEsc(s.nr || s.id)}</td>
-    <td><strong>${prEsc(s.naam)}</strong>${s.opmerking
-        ? `<div class="stap-opm">${prEsc(s.opmerking)}</div>` : ""}</td>
-    <td>${prEsc(s.product)}${toel}</td>
-    <td class="smal">${s.review ? "✔" : ""}</td>
-    <td class="smal"><span class="uitvoering u-${s.uitvoering}">${PR_UITVOERING[s.uitvoering] || s.uitvoering}</span></td>
-    <td><span class="chip ${cls}">${lbl}</span></td>
+    <td><strong>${prEsc(s.naam)}</strong>
+      <div class="stap-product">${prEsc(s.product)}${s.review ? ' <span class="rev" title="onderdeel van de tollgate-review">✔ review</span>' : ""}</div>
+      ${s.opmerking ? `<div class="stap-opm">${prEsc(s.opmerking)}</div>` : ""}${toel}</td>
+    <td class="smal">${uvBadge(uv)}</td>
+    <td class="smal"><span class="chip ${cls}">${lbl}</span>${laatsteLog(s)}</td>
+    <td class="az-cel">${aanZetChip(z)}</td>
     <td class="acties">${inactief ? '<span class="leeg">uitgeschakeld (admin)</span>'
                                   : htmlStapActies(s, f) + " " + artefacten}</td>
   </tr>`;
@@ -347,24 +552,28 @@ function htmlStapActies(s, f) {
   const heeftAi = !!s.cap && s.uitvoering !== "mens";
   if (!klaar) {
     if (s.id === "IV-01")
-      b.push(`<button class="klein" data-actie="iv-upload">⇪ IV-document uploaden</button>`);
-    if (heeftAi) {
+      b.push(`<button class="klein mens" data-actie="iv-upload">👤 ⇪ IV-document uploaden</button>`);
+    if (heeftAi && s.status !== "concept_gereed") {
       if (s.cap.startsWith("data:"))
-        b.push(`<button class="klein ai" data-actie="ai-data">▶ AI uitvoeren</button>`);
+        b.push(`<button class="klein ai" data-actie="ai-data">🤖 AI uitvoeren</button>`);
       else if (s.cap === "risico")
-        b.push(`<button class="klein ai" data-actie="ai-risico">▶ AI-risicoanalyse</button>`);
+        b.push(`<button class="klein ai" data-actie="ai-risico">🤖 AI-risicoanalyse</button>`);
       else if (s.cap === "intake")
-        b.push(`<button class="klein ai" data-actie="ai-intake">✎ AI-intakeverslag</button>`);
+        b.push(`<button class="klein ai" data-actie="ai-intake">🤖 AI-intakeverslag</button>`);
       else
-        b.push(`<button class="klein ai" data-actie="ai-doc">✎ AI-concept opstellen</button>`);
+        b.push(`<button class="klein ai" data-actie="ai-doc">🤖 AI-concept opstellen</button>`);
     }
     if (s.status === "concept_gereed") {
-      b.push(`<button class="klein ok" data-actie="goedkeur">✓ Goedkeuren</button>`);
-      b.push(`<button class="klein afkeur" data-actie="afkeur">✗ Afkeuren</button>`);
+      b.push(`<button class="klein ok" data-actie="goedkeur">👤 ✓ Goedkeuren</button>`);
+      b.push(`<button class="klein afkeur" data-actie="afkeur">👤 ✗ Afkeuren</button>`);
+      if (heeftAi)
+        b.push(`<button class="klein ai" data-actie="${s.cap.startsWith("data:") ? "ai-data"
+          : s.cap === "risico" ? "ai-risico" : s.cap === "intake" ? "ai-intake" : "ai-doc"}"
+          title="AI opnieuw laten uitvoeren">🤖 opnieuw</button>`);
     } else {
       if (s.status !== "bezig")
-        b.push(`<button class="klein" data-actie="start">Start</button>`);
-      b.push(`<button class="klein ok" data-actie="gereed">Gereed</button>`);
+        b.push(`<button class="klein mens" data-actie="start">👤 Start</button>`);
+      b.push(`<button class="klein ok" data-actie="gereed">👤 Gereed</button>`);
       b.push(`<button class="klein" data-actie="nvt">n.v.t.</button>`);
     }
   } else {
@@ -377,29 +586,36 @@ function htmlTollgate(f) {
   const tg = f.tollgate_besluit || {};
   const genomen = f.tollgate_status === "genomen";
   const review = f.stappen.filter(s => s.review && s.actief);
+  const okN = review.filter(s => s.status === "gereed" || s.status === "nvt").length;
   const rows = review.map(s => {
     const ok = s.status === "gereed" || s.status === "nvt";
     return `<tr><td class="mono smal">${prEsc(s.nr || s.id)}</td>
       <td>${prEsc(s.product)}</td>
+      <td class="smal">${uvBadge((s.cap && s.uitvoering !== "mens") ? s.uitvoering : "mens")}</td>
       <td><span class="chip ${ok ? "chip-groen" : "chip-rood"}">${ok ? "voldoet" : "voldoet niet"}</span></td>
       <td>${prEsc(ok ? (s.toelichting || "") : (s.toelichting || "nog niet gereed"))}</td></tr>`;
   }).join("");
+  const staat = genomen ? "genomen" : f.tollgate_gereed ? "gereed" : "";
   return `
-  <details class="tollgate ${genomen ? "genomen" : f.tollgate_gereed ? "gereed" : ""}">
+  <details class="tollgate ${staat}">
     <summary>
+      <span class="tg-icoon">◆</span>
       <span class="tg-badge">${prEsc(f.tollgate)}</span> ${prEsc(f.tollgate_naam)}
       <span class="chip ${genomen ? "chip-groen" : f.tollgate_gereed ? "chip-amber" : "chip-grijs"}">
         ${genomen ? `genomen · ${prEsc(tg.door || "")} · ${prEsc(tg.tijd || "")}`
                   : f.tollgate_gereed ? "gereed voor review" : "nog niet gereed"}</span>
+      <span class="tg-teller mono">${okN}/${review.length} producten voldoen</span>
+      <span class="az az-mens tg-mens">👤 besluit door mens</span>
     </summary>
-    <p class="hint">Tollgate-review: alle producten met ✔ worden beoordeeld (voldoet /
-      voldoet niet). Het besluit is altijd menselijk; bij "voldoet niet"-punten is een
+    <p class="hint">Tollgate-review: alle producten met ✔ review worden beoordeeld (voldoet /
+      voldoet niet). Het besluit is <strong>altijd menselijk</strong>; bij "voldoet niet"-punten is een
       toelichting (afwijkingsbesluit) verplicht.</p>
     <table class="register proces-tabel"><thead><tr>
-      <th class="smal">Nr</th><th>Product</th><th>Oordeel</th><th>Toelichting</th>
-    </tr></thead><tbody>${rows || '<tr><td colspan="4" class="leeg">Geen review-producten in deze fase.</td></tr>'}</tbody></table>
+      <th class="smal">Nr</th><th>Product</th><th class="smal">Uitvoering</th><th>Oordeel</th><th>Toelichting</th>
+    </tr></thead><tbody>${rows || '<tr><td colspan="5" class="leeg">Geen review-producten in deze fase.</td></tr>'}</tbody></table>
     ${genomen ? (tg.toelichting ? `<p class="hint">Toelichting: ${prEsc(tg.toelichting)}</p>` : "") : `
     <div class="tg-besluit">
+      <span class="az az-mens">👤 jij beslist</span>
       <input id="tg-door" type="text" placeholder="naam beslisser (verplicht)">
       <input id="tg-toel" type="text" placeholder="toelichting / afwijkingsbesluit">
       <button class="klein ok" data-tg="genomen">✓ Tollgate nemen</button>
@@ -1096,6 +1312,7 @@ async function openAdmin() {
     html += "</tbody></table></details>";
   }
   wrap.innerHTML = html;
+  prEl("proces-admin-uitleg").innerHTML = htmlUitleg(true);
   prEl("proces-admin-overlay").hidden = false;
 }
 
