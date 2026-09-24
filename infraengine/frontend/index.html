@@ -138,6 +138,7 @@
       </header>
       <div id="sv-beeld">
         <div id="sv-pano"></div>
+        <canvas id="sv-overlay"></canvas>
         <div id="sv-melding"></div>
       </div>
       <div id="sv-controls">
@@ -154,6 +155,10 @@
         </select>
         <input id="sv-slider" type="range" min="0" max="1000" value="0" step="1"
                title="Positie langs het tracé">
+        <label id="sv-overlay-label" title="Tracé op het maaiveld in het beeld tekenen">
+          <input id="sv-overlay-aan" type="checkbox" checked> tracé</label>
+        <span id="sv-draai" title="Kijkrichting draaien">
+          <button id="sv-draai-l">⟲</button><button id="sv-draai-r">⟳</button></span>
       </div>
     </div>
 

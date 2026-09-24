@@ -2292,9 +2292,92 @@ function svZetMarker(coord) {  // blauwe stip op het tracé
   else f.setGeometry(new ol.geom.Point(coord));
 }
 
+/* Tracé op het maaiveld: perspectiefprojectie van de routepunten op een vlak
+   terrein op camerahoogte − SV_CAM_HOOGTE (auto-camera ≈ 2,5 m). Hoogteverschil
+   tussen weg en tracé wordt niet meegenomen. Camerastaat: positie (RD), heading,
+   pitch en horizontale beeldhoek. Met API-sleutel volgt die staat het panorama
+   (draaien, zoomen); zonder sleutel is de iframe-kijkrichting onbekend, dus
+   staat die vast (90°) en draaien we via de ⟲/⟳-knoppen. */
+const SV_CAM_HOOGTE = 2.5, SV_TRACE_BREEDTE = 1.2, SV_OVERLAY_BEREIK = 250;
+let svCam = null;  // { rd, heading, pitch, fov }
+
+function svTekenOverlay() {
+  const cv = sv("sv-overlay");
+  const W = cv.clientWidth, H = cv.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!svCam || !svCoords || !sv("sv-overlay-aan").checked) return;
+
+  const th = (svCam.heading * Math.PI) / 180, pt = (svCam.pitch * Math.PI) / 180;
+  const sinT = Math.sin(th), cosT = Math.cos(th), sinP = Math.sin(pt), cosP = Math.cos(pt);
+  const fpx = (W / 2) / Math.tan((svCam.fov * Math.PI) / 360);
+  const proj = (x, y) => {  // RD → scherm, null als achter/te dicht bij de camera
+    const dx = x - svCam.rd[0], dy = y - svCam.rd[1];
+    const voor = dx * sinT + dy * cosT, rechts = dx * cosT - dy * sinT;
+    const diepte = voor * cosP - SV_CAM_HOOGTE * sinP;   // grond ligt h onder de camera
+    const op = -voor * sinP - SV_CAM_HOOGTE * cosP;
+    if (diepte < 0.8) return null;
+    return [W / 2 + (rechts / diepte) * fpx, H / 2 - (op / diepte) * fpx];
+  };
+
+  // route hersamplen (≤ 2 m) met zijwaartse rand voor de bandbreedte
+  const pts = [];
+  for (let i = 1; i < svCoords.length; i++) {
+    const a = svCoords[i - 1], b = svCoords[i];
+    const l = svCum[i] - svCum[i - 1];
+    if (l < 1e-6) continue;
+    const nx = -(b[1] - a[1]) / l, ny = (b[0] - a[0]) / l;  // linkernormaal
+    const n = Math.max(1, Math.ceil(l / 2));
+    for (let k = (i === 1 ? 0 : 1); k <= n; k++) {
+      const t = k / n, x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+      if (Math.hypot(x - svCam.rd[0], y - svCam.rd[1]) > SV_OVERLAY_BEREIK) { pts.push(null); continue; }
+      const h = SV_TRACE_BREEDTE / 2;
+      pts.push({ c: proj(x, y), l: proj(x + nx * h, y + ny * h), r: proj(x - nx * h, y - ny * h),
+                 d: Math.hypot(x - svCam.rd[0], y - svCam.rd[1]) });
+    }
+  }
+  // van ver naar dichtbij tekenen is niet nodig: lint is egaal van kleur
+  ctx.fillStyle = "rgba(214,54,46,.55)";
+  ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.lineWidth = 1;
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i - 1], q = pts[i];
+    if (!p || !q || !p.l || !p.r || !q.l || !q.r) continue;
+    ctx.beginPath();
+    ctx.moveTo(p.l[0], p.l[1]); ctx.lineTo(q.l[0], q.l[1]);
+    ctx.lineTo(q.r[0], q.r[1]); ctx.lineTo(p.r[0], p.r[1]);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();  // randen
+    ctx.moveTo(p.l[0], p.l[1]); ctx.lineTo(q.l[0], q.l[1]);
+    ctx.moveTo(p.r[0], p.r[1]); ctx.lineTo(q.r[0], q.r[1]);
+    ctx.stroke();
+  }
+  // hartlijn en positiemarker (waar het beeld op gericht staat)
+  ctx.setLineDash([6, 5]); ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let open = false;
+  for (const p of pts) {
+    if (!p || !p.c) { open = false; continue; }
+    if (open) ctx.lineTo(p.c[0], p.c[1]); else { ctx.moveTo(p.c[0], p.c[1]); open = true; }
+  }
+  ctx.stroke(); ctx.setLineDash([]);
+  const m = proj(...svPuntOp(svChainage));
+  if (m) {
+    ctx.fillStyle = "#1A73E8"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(m[0], m[1], 6, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+  }
+}
+new ResizeObserver(() => svTekenOverlay()).observe(document.getElementById("sv-beeld"));
+sv("sv-overlay-aan").addEventListener("change", () => { svPasFrameInteractieAan(); svTekenOverlay(); });
+
 function svZetCamera(coord, heading) {  // werkelijke camerapositie; null = verbergen
   let f = svFeature("camera");
-  if (!coord) { if (f) srcStreetview.removeFeature(f); return; }
+  if (!coord) { svCam = null; svTekenOverlay(); if (f) srcStreetview.removeFeature(f); return; }
+  svCam = { rd: coord, heading, pitch: svCam ? svCam.pitch : 0, fov: svCam ? svCam.fov : 90 };
+  svTekenOverlay();
   if (!f) { f = new ol.Feature(); f.set("kind", "camera"); srcStreetview.addFeature(f); }
   f.setGeometry(new ol.geom.Point(coord));
   f.set("heading", heading);
@@ -2330,7 +2413,31 @@ function svZoekPano(lat, lon, radius) {  // sleutelloos pano zoeken (JSONP)
   });
 }
 
-let svFrameVolgnr = 0;
+let svFrameVolgnr = 0, svLaatstePano = null;
+function svZetFrameSrc(pano, heading) {
+  sv("sv-frame").src = "https://www.google.com/maps/embed?pb=" +
+    `!4v1!6m8!1m7!1s${encodeURIComponent(pano.id)}` +
+    `!2m2!1d${pano.lat.toFixed(6)}!2d${pano.lon.toFixed(6)}` +
+    `!3f${Math.round(heading)}!4f0!5f0.7820865974627469`;
+}
+// Met overlay staat de iframe-kijkrichting vast (anders klopt de projectie niet
+// meer); draaien gaat dan via de knoppen. Zonder overlay: vrij kijken in het iframe.
+function svPasFrameInteractieAan() {
+  const vast = !svKey && sv("sv-overlay-aan").checked;
+  const fr = sv("sv-frame");
+  if (fr) fr.style.pointerEvents = vast ? "none" : "";
+  sv("sv-draai").classList.toggle("zichtbaar", vast);
+}
+function svDraai(delta) {
+  if (!svCam || !svLaatstePano) return;
+  const h = (svCam.heading + delta + 360) % 360;
+  svCam.heading = h;
+  const f = svFeature("camera"); if (f) f.set("heading", h);
+  svZetFrameSrc(svLaatstePano, h);
+  svTekenOverlay();
+}
+sv("sv-draai-l").addEventListener("click", () => svDraai(-20));
+sv("sv-draai-r").addEventListener("click", () => svDraai(20));
 function svToonFrame(coord, heading) {  // sleutelloze inbedding (iframe)
   clearTimeout(svFrameTimer);  // schuiven: pas herladen als de hand stilstaat
   svFrameTimer = setTimeout(async () => {
@@ -2368,10 +2475,9 @@ function svToonFrame(coord, heading) {  // sleutelloze inbedding (iframe)
           "tracé; de camera is op het tracépunt gericht."
         : "");
       fr.style.display = "";
-      fr.src = "https://www.google.com/maps/embed?pb=" +
-        `!4v1!6m8!1m7!1s${encodeURIComponent(pano.id)}` +
-        `!2m2!1d${pano.lat.toFixed(6)}!2d${pano.lon.toFixed(6)}` +
-        `!3f${Math.round(heading)}!4f0!5f0.7820865974627469`;
+      svLaatstePano = pano;
+      svPasFrameInteractieAan();
+      svZetFrameSrc(pano, heading);
     } catch (e) {
       if (mijn === svFrameVolgnr) {
         fr.style.display = "none"; svZetCamera(null); svMelding(e.message);
@@ -2416,10 +2522,18 @@ async function svInitPano() {
     const op = svPuntOp(m);
     if (Math.hypot(op[0] - rd[0], op[1] - rd[1]) < 150) svToonPositie(m);
   });
-  svPano.addListener("pov_changed", () => {
+  const svVolgPov = () => {
+    const pov = svPano.getPov();
     const f = svFeature("camera");
-    if (f) f.set("heading", svPano.getPov().heading);
-  });
+    if (f) f.set("heading", pov.heading);
+    if (svCam) {
+      svCam.heading = pov.heading; svCam.pitch = pov.pitch;
+      svCam.fov = 180 / Math.pow(2, pov.zoom != null ? pov.zoom : svPano.getZoom());
+      svTekenOverlay();
+    }
+  };
+  svPano.addListener("pov_changed", svVolgPov);
+  svPano.addListener("zoom_changed", svVolgPov);
 }
 
 function svMelding(tekst) {  // html of "" (verbergen)
@@ -2435,6 +2549,7 @@ function svToonPositie(m) {  // marker, teller, schuif en externe link — geen 
   const coord = svPuntOp(svChainage);
   const heading = svHeadingOp(svChainage);
   svZetMarker(coord);
+  svTekenOverlay();
   sv("sv-positie").textContent = `${Math.round(svChainage)} / ${Math.round(tot)} m`;
   sv("sv-slider").max = Math.round(tot);
   sv("sv-slider").value = Math.round(svChainage);
@@ -2470,6 +2585,7 @@ async function svLaadBeeld() {  // beeld op de huidige chainage laden
     svLaatstGezet = r.data.location.pano;  // eigen update: chainage niet terugzetten
     svPano.setPano(r.data.location.pano);
     svPano.setPov({ heading, pitch: 0 });
+    if (svCam) { svCam.heading = heading; svCam.pitch = 0; svCam.fov = 180 / Math.pow(2, svPano.getZoom() || 1); svTekenOverlay(); }
   } catch (e) {
     if (e.message === "Google Maps-script laden mislukt") {
       svKey = "";                       // sleutel onbruikbaar → sleutelloos verder
@@ -2512,6 +2628,7 @@ function svSluit() {
   clearTimeout(svLaadTimer);
   sv("sv-paneel").classList.add("dicht");
   srcStreetview.clear();
+  svCam = null; svTekenOverlay();
   if (mode === "street") setMode("pan");
 }
 
