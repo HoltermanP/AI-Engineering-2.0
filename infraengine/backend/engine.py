@@ -276,16 +276,20 @@ class Painter:
 
     def build(self, weights: dict) -> Grid:
         w = {**DEFAULT_WEIGHTS, **(weights or {})}
+
+        def prijs(key: str) -> float:
+            if key.endswith("*gesloten"):
+                return w[key.split("*")[0]] * w["gesloten_verharding"]
+            return w[key]
+
         grid = Grid(self.bbox, self.cell)
         grid.cost[:] = w["onbekend"]
         grid.klass[:] = CL_ONBEKEND
         for mask, code, key, factor in self.ops:
             if key is None:
                 grid.paint(mask, code, factor)  # vaste waarde (∞ voor uitsluitingen)
-            elif key.endswith("*gesloten"):
-                grid.paint(mask, code, w[key.split("*")[0]] * w["gesloten_verharding"] * factor)
             else:
-                grid.paint(mask, code, w[key] * factor)
+                grid.paint(mask, code, prijs(key) * factor)
         # zonelagen: vermenigvuldigen bovenop de basiskosten; Natura 2000 sluit
         # alles buiten bestaande weg of berm hard uit (FO §3.1)
         for mask, bit, key in self.zone_ops:
@@ -300,25 +304,37 @@ class Painter:
         grid.hard = self.hard_geom
         if self.hard_geom is not None:
             grid._hard_prep = prep(self.hard_geom)
-        grid.schamp = [(prep(g), g, float(w[key])) for g, key in self.schamp_geoms]
+        grid.schamp = [(prep(g), g, float(prijs(key))) for g, key in self.schamp_geoms]
         return grid
 
 
 def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
                   zones: dict | None = None) -> Painter:
-    """Maskers opbouwen in schilderorde: terrein → wegen → obstakels → zones."""
+    """Maskers opbouwen in schilderorde: terrein → verharding → berm/groen →
+    obstakels → zones.
+
+    Schilderorde bij de randcellen: de rasterisatie kent een cel aan een vlak
+    toe zodra het vlak het celmidden dekt, maar op de grens is de vulling
+    "te dik" (tot een halve cel). Wie het laatst schildert wint dus de
+    randcellen. Daarom komt de goedkoopste ligging het laatst: de berm en
+    groenstrook ná de wegdelen, en binnen de wegdelen het voetpad ná de
+    rijbaan. Een smalle berm (1–1,5 m) naast een trottoir blijft zo in het
+    raster bestaan in plaats van door de verharding te worden weggeschilderd;
+    de exacte ligging tegen de verhardingsrand regelt daarna de vector-exacte
+    schamp-correctie (`verwijder_schampen`), die voor alle verharding geldt.
+    """
     painter = Painter(bbox, cell)
     grid = Grid(bbox, cell)  # alleen voor rasterize-hulpfuncties
 
     def geoms(coll, pred=None):
         return [g for g, p in bgt.get(coll, []) if pred is None or pred(p)]
 
-    # 1. terrein — begroeid gesplitst: urbaan groen, agrarisch (privaat-proxy),
-    #    natuurlijk groen (kwetsbaar; binnen Natura 2000 uitgesloten)
+    # 1. terrein — begroeid gesplitst: agrarisch (privaat-proxy), natuurlijk
+    #    groen (kwetsbaar; binnen Natura 2000 uitgesloten); urbaan groen
+    #    (groenvoorziening) is voorkeursligging en volgt ná de wegdelen (3)
     begroeid = bgt.get("begroeidterreindeel", [])
-    painter.add(grid.rasterize([g for g, p in begroeid
-                                if (p.get("fysiek_voorkomen") or "") in BGT_URBAAN_GROEN]),
-                CL_BERM, "berm_groen")
+    groen_urbaan = [g for g, p in begroeid
+                    if (p.get("fysiek_voorkomen") or "") in BGT_URBAAN_GROEN]
     painter.add(grid.rasterize([g for g, p in begroeid
                                 if (p.get("fysiek_voorkomen") or "") in BGT_AGRARISCH]),
                 CL_ERF, "erf_prive")
@@ -327,27 +343,29 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
                                 (BGT_URBAAN_GROEN | BGT_AGRARISCH)]),
                 CL_NATUURGROEN, "natuur_groen")
 
+    # onbegroeid terrein: onverhard, verhard buiten de weg (plein, pad op
+    # terrein: open of gesloten verharding) en erf
     onbegroeid = bgt.get("onbegroeidterreindeel", [])
+    terrein_open_verhard = [g for g, p in onbegroeid
+                            if p.get("fysiek_voorkomen") == "open verharding"]
+    terrein_dicht_verhard = [g for g, p in onbegroeid
+                             if p.get("fysiek_voorkomen") == "gesloten verharding"]
     painter.add(grid.rasterize([g for g, p in onbegroeid
-                                if p.get("fysiek_voorkomen") not in ("erf", "gesloten verharding")]),
+                                if p.get("fysiek_voorkomen") not in
+                                ("erf", "open verharding", "gesloten verharding")]),
                 CL_ONVERHARD, "overig_onverhard")
-    painter.add(grid.rasterize([g for g, p in onbegroeid
-                                if p.get("fysiek_voorkomen") == "gesloten verharding"]),
-                CL_ONVERHARD, "overig_onverhard*gesloten")
     painter.add(grid.rasterize([g for g, p in onbegroeid if p.get("fysiek_voorkomen") == "erf"]),
                 CL_ERF, "erf_prive")
+    painter.add(grid.rasterize(terrein_dicht_verhard), CL_ONVERHARD, "overig_onverhard*gesloten")
+    painter.add(grid.rasterize(terrein_open_verhard), CL_ONVERHARD, "overig_onverhard")
 
-    # 2. ondersteunend wegdeel (berm, verkeerseiland)
-    painter.add(grid.rasterize(geoms("ondersteunendwegdeel", lambda p: p.get("functie") == "berm")),
-                CL_BERM, "berm_groen")
-    painter.add(grid.rasterize(geoms("ondersteunendwegdeel", lambda p: p.get("functie") != "berm")),
-                CL_BERM, "berm_groen", 1.3)
-
-    # 3. wegdelen per functie; gesloten verharding × factor
+    # 2. wegdelen per functie, duurste eerst (rijbaan) en goedkoopste laatst
+    #    (voetpad), zodat op de grens de lichtste ligging de randcel houdt;
+    #    gesloten verharding × factor
     wegdelen = bgt.get("wegdeel", [])
-    per_functie = {CL_VOETPAD: "voetpad", CL_FIETSPAD: "fietspad",
-                   CL_PARKEER: "parkeervlak", CL_RIJBAAN: "rijbaan"}
-    rijbaan_geoms: list = []
+    per_functie = {CL_RIJBAAN: "rijbaan", CL_PARKEER: "parkeervlak",
+                   CL_FIETSPAD: "fietspad", CL_VOETPAD: "voetpad"}
+    verharding_geoms: dict = {}  # gewicht-sleutel → vlakken (voor de schamp-correctie)
     for code, key in per_functie.items():
         open_g, dicht_g = [], []
         for g, p in wegdelen:
@@ -357,10 +375,26 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
             if cl != code:
                 continue
             (dicht_g if p.get("fysiek_voorkomen") == "gesloten verharding" else open_g).append(g)
-        painter.add(grid.rasterize(open_g), code, key)
         painter.add(grid.rasterize(dicht_g), code, f"{key}*gesloten")
+        painter.add(grid.rasterize(open_g), code, key)
+        # rijbaan: één vlak, beprijsd als open rijbaan (de schamp-toeslag is
+        # een randcorrectie, geen asfaltprijs); overige klassen per gewicht
         if code == CL_RIJBAAN:
-            rijbaan_geoms = open_g + dicht_g
+            verharding_geoms[key] = open_g + dicht_g
+        else:
+            verharding_geoms[key] = open_g
+            verharding_geoms[f"{key}*gesloten"] = dicht_g
+    verharding_geoms["overig_onverhard"] = terrein_open_verhard
+    verharding_geoms["overig_onverhard*gesloten"] = terrein_dicht_verhard
+
+    # 3. berm en groenstrook (voorkeursligging) ná de wegdelen: houdt de
+    #    randcellen tegen de verharding; ondersteunend wegdeel zonder
+    #    bermfunctie (verkeerseiland e.d.) iets zwaarder
+    painter.add(grid.rasterize(geoms("ondersteunendwegdeel", lambda p: p.get("functie") != "berm")),
+                CL_BERM, "berm_groen", 1.3)
+    painter.add(grid.rasterize(geoms("ondersteunendwegdeel", lambda p: p.get("functie") == "berm")
+                               + groen_urbaan),
+                CL_BERM, "berm_groen")
 
     # 4. lijnvormige obstakels: water en spoor als "kruisingsprijs per meter" (§3.2)
     water = geoms("waterdeel") + geoms("ondersteunendwaterdeel")
@@ -384,13 +418,15 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
     if forb_polys:
         painter.add(grid.rasterize(forb_polys), CL_VERBODEN, None, np.inf)
 
-    # exacte geometrie voor de vector-checks in de nabewerking
+    # exacte geometrie voor de vector-checks in de nabewerking: harde
+    # uitsluitingen, en alle verharding plus water en spoor voor de
+    # sub-celcorrectie (schampen); de prijs per meter is die van de ligging
     if hard or forb_polys:
         painter.hard_geom = unary_union(hard + forb_polys)
     waterdeel_zelf = geoms("waterdeel")
-    for geoms_lijst, key in ((rijbaan_geoms, "rijbaan"),
-                             (waterdeel_zelf, "water_kruising"),
-                             (spoor_vlak, "spoor_kruising")):
+    verharding_geoms["water_kruising"] = waterdeel_zelf
+    verharding_geoms["spoor_kruising"] = spoor_vlak
+    for key, geoms_lijst in verharding_geoms.items():
         if geoms_lijst:
             painter.schamp_geoms.append((unary_union(geoms_lijst), key))
 
@@ -439,6 +475,44 @@ def zone_lengtes(route: LineString, grid: Grid, sample_m: float = 2.0) -> dict:
     return {bit: round(cnt * stap, 1) for bit, cnt in tellers.items()}
 
 
+def zone_trajecten(route: LineString, grid: Grid, sample_m: float = 2.0) -> dict:
+    """Tracédelen per zonelaag: per ZN_-bit de aaneengesloten stukken van het
+    tracé die in die zone liggen, als lijsten van LineStrings (voor het
+    aanwijzen op de kaart van waar een onderzoek of toets betrekking op heeft).
+    Bemonstering en steek zijn gelijk aan `zone_lengtes`."""
+    n = max(2, int(route.length / sample_m) + 1)
+    stap = route.length / (n - 1) if n > 1 else 0
+    open_vanaf = {bit: None for bit in ZONE_NAMES}
+    delen = {bit: [] for bit in ZONE_NAMES}
+
+    def sluit(bit, tot_m):
+        m0 = open_vanaf[bit]
+        if m0 is None:
+            return
+        open_vanaf[bit] = None
+        # een enkel bemonsterd punt krijgt een halve steek aan weerszijden,
+        # zodat het deel op de kaart niet tot een punt ineenvalt
+        m0, m1 = max(0.0, m0 - stap / 2), min(route.length, tot_m + stap / 2)
+        if m1 - m0 <= 0:
+            return
+        delen[bit].append(_substring(route, m0, m1))
+
+    for i in range(n):
+        m = min(route.length, i * stap)
+        p = route.interpolate(m)
+        r, c = grid.world_to_cell(p.x, p.y)
+        z = int(grid.zones[r, c])
+        for bit in delen:
+            if z & bit:
+                if open_vanaf[bit] is None:
+                    open_vanaf[bit] = m
+            else:
+                sluit(bit, m - stap)
+    for bit in delen:
+        sluit(bit, route.length)
+    return delen
+
+
 # ---------------------------------------------------------------------------
 # Routing
 # ---------------------------------------------------------------------------
@@ -456,15 +530,16 @@ def _free_station(grid: Grid, xy: tuple, radius_m: float = 6.0) -> None:
 
 
 def _schamp_extra(grid: Grid, p0: tuple, p1: tuple) -> float:
-    """Sub-celcorrectie: vector-exacte meters van het lijnstuk over rijbaan,
-    water of spoor, beprijsd per meter.
+    """Sub-celcorrectie: vector-exacte meters van het lijnstuk over verharding
+    (rijbaan, fietspad, voetpad, parkeervlak, verhard terrein), water of
+    spoor, beprijsd per meter met het gewicht van die ligging.
 
     Het raster kent een cel volledig aan één klasse toe; een lijnstuk tussen
-    "berm-cellen" kan daardoor toch nét over de rand van de rijbaan lopen
-    zonder dat de rasterkosten dat zien. Deze toeslag maakt dat schampen
-    zichtbaar duur, zodat het gladstrijken het tracé er vanzelf naast legt.
-    Echte (haakse) kruisingen betalen de toeslag aan beide zijden van elke
-    vergelijking en blijven dus gewoon mogelijk."""
+    "berm-cellen" kan daardoor toch nét over de rand van het trottoir of de
+    rijbaan lopen zonder dat de rasterkosten dat zien. Deze toeslag maakt dat
+    schampen zichtbaar duur, zodat het gladstrijken het tracé er vanzelf
+    naast legt (in de berm). Echte (haakse) kruisingen betalen de toeslag aan
+    beide zijden van elke vergelijking en blijven dus gewoon mogelijk."""
     if not grid.schamp:
         return 0.0
     lijn = LineString([p0, p1])
@@ -727,6 +802,121 @@ BOOR_UITLOOP = {
     TECHNIEK_RAKET: 2.0,
 }
 BOOR_UITLOOP_DEFAULT = 3.0
+# in-/uittredepunt op vrij terrein: ligt het punt op de uitloopafstand nog
+# in een wegdeel, water, talud of spoor (of tegen een pand), dan schuift het
+# in stappen langs het tracé naar buiten, tot dit maximum
+BOOR_VRIJ_STAP_M = 0.5
+BOOR_VRIJ_MAX_M = 25.0
+
+
+def boorvrij_toets(bgt: dict | None = None, grid: "Grid | None" = None):
+    """Toets of een in-/uittredepunt op vrij terrein ligt.
+
+    Vrij = niet in een wegdeel (rijbaan, fietspad, voetpad, parkeervlak, …),
+    niet in water of de oeverzone (talud/onderhoudspad), niet binnen de
+    spoorzone en niet tegen een pand of andere harde uitsluiting. Berm en
+    (on)begroeid terrein zijn vrij. Retourneert een functie Point → bool.
+    """
+    geoms = []
+    if bgt:
+        for laag in ("waterdeel", "ondersteunendwaterdeel", "wegdeel"):
+            geoms.extend(g for g, _ in bgt.get(laag, []))
+        geoms.extend(g.buffer(2.5) for g, _ in bgt.get("spoor", []))
+    obst = prep(unary_union(geoms)) if geoms else None
+    hard = getattr(grid, "hard", None) if grid is not None else None
+
+    def vrij(p: Point) -> bool:
+        if obst is not None and obst.intersects(p):
+            return False
+        if hard is not None and hard.distance(p) < 0.1:
+            return False
+        return True
+    return vrij
+
+
+def boorspan(route: LineString, m0: float, m1: float, uitloop: float,
+             vrij=None) -> dict:
+    """In-/uittredepunt (chainage) van een boring onder obstakel [m0, m1].
+
+    Basis: de uitloop van de techniek vóór en na de obstakelrand, gemeten
+    langs het tracé. Ligt dat punt niet op vrij terrein (``vrij``), dan
+    schuift het in stappen van BOOR_VRIJ_STAP_M verder naar buiten, tot
+    BOOR_VRIJ_MAX_M; lukt dat niet, dan blijft het basispunt staan en wordt
+    ``vrij_in``/``vrij_uit`` False.
+    """
+    lengte = route.length
+
+    def zoek(m: float, richting: int) -> tuple:
+        basis = min(max(m, 0.0), lengte)
+        if vrij is None:
+            return basis, 0.0, True
+        d = 0.0
+        while d <= BOOR_VRIJ_MAX_M + 1e-9:
+            mm = basis + richting * d
+            if mm < 0.0 or mm > lengte:
+                break
+            if vrij(route.interpolate(mm)):
+                return mm, d, True
+            d += BOOR_VRIJ_STAP_M
+        return basis, 0.0, False
+
+    m_in, v_in, ok_in = zoek(m0 - uitloop, -1)
+    m_uit, v_uit, ok_uit = zoek(m1 + uitloop, +1)
+    return {"m_in": m_in, "m_uit": m_uit,
+            "verschoven_in_m": round(v_in, 1), "verschoven_uit_m": round(v_uit, 1),
+            "vrij_in": ok_in, "vrij_uit": ok_uit}
+
+
+def bepaal_boorpunten(route: LineString, crossings: list, bgt: dict | None = None,
+                      grid: "Grid | None" = None) -> set:
+    """In-/uittredepunt per sleufloze kruising vastleggen (in place).
+
+    Per kruising en per techniek (de definitieve techniek kan bij het
+    groeperen tot boringen nog opschalen): uitloop vanaf de obstakelrand,
+    verschoven naar vrij terrein (``boorspan``). De punten worden als
+    RD-coördinaat bewaard — ``boor_punten[techniek]`` en, voor de eigen
+    techniek, ``boor_in_rd``/``boor_uit_rd`` — zodat ze na het samenvoegen en
+    normaliseren van deeltrajecten exact op het tracé terug te vinden zijn;
+    een chainage verschuift dan, een coördinaat niet.
+
+    Retourneert de tracé-hoekpunten die de boorlijnen dragen: die mogen bij
+    het normaliseren niet meer verschuiven (``maatvoering.normaliseer_route``,
+    parameter ``vast``).
+    """
+    vrij = boorvrij_toets(bgt, grid)
+    hoekpunten = [(route.project(Point(xy)), xy) for xy in route.coords]
+    vast: set = set()
+    for c in crossings:
+        if c.get("techniek") not in BOOR_UITLOOP:
+            for k in ("boor_punten", "boor_in_rd", "boor_uit_rd"):
+                c.pop(k, None)
+            continue
+        punten = {}
+        m_min, m_max = route.length, 0.0
+        for techniek, uitloop in BOOR_UITLOOP.items():
+            s = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], uitloop, vrij)
+            p_in, p_uit = route.interpolate(s["m_in"]), route.interpolate(s["m_uit"])
+            punten[techniek] = {
+                "in_rd": (round(p_in.x, 2), round(p_in.y, 2)),
+                "uit_rd": (round(p_uit.x, 2), round(p_uit.y, 2)),
+                "verschoven_in_m": s["verschoven_in_m"],
+                "verschoven_uit_m": s["verschoven_uit_m"],
+                "vrij_in": s["vrij_in"], "vrij_uit": s["vrij_uit"],
+            }
+            m_min, m_max = min(m_min, s["m_in"]), max(m_max, s["m_uit"])
+        c["boor_punten"] = punten
+        c["boor_in_rd"] = punten[c["techniek"]]["in_rd"]
+        c["boor_uit_rd"] = punten[c["techniek"]]["uit_rd"]
+        # dragende hoekpunten: alles binnen de ruimste span plus het eerste
+        # hoekpunt ervoor en erna (die begrenzen de lijnstukken waarop de
+        # in-/uittredepunten liggen)
+        binnen = [i for i, (m, _) in enumerate(hoekpunten) if m_min - 0.01 <= m <= m_max + 0.01]
+        i_voor = max((i for i, (m, _) in enumerate(hoekpunten) if m < m_min - 0.01), default=None)
+        i_na = min((i for i, (m, _) in enumerate(hoekpunten) if m > m_max + 0.01), default=None)
+        for i in binnen + [i for i in (i_voor, i_na) if i is not None]:
+            vast.add(tuple(hoekpunten[i][1]))
+    return vast
+
 
 # Beslisdrempels (m, gemeten langs het tracé): tot waar een open kruising de
 # standaard is en vanaf waar een zwaardere techniek nodig is. Sleufloos wordt
@@ -1034,6 +1224,7 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
             if langs > KRUISING_LANGS_FACTOR * max(dwars, 1.0):
                 continue  # loopt in lengterichting door/langs het obstakel
             mid = route.interpolate((m0 + m1) / 2)
+            p0, p1 = route.interpolate(m0), route.interpolate(m1)
             kenmerken = wegkenmerken(m0, m1) if soort == "rijbaan" else {}
             voorstel = _techniek_voor_kruising(soort, round(dwars, 1), kenmerken)
             c = {
@@ -1042,12 +1233,18 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
                 "kruislengte_m": round(langs, 1),
                 "chainage_van_m": round(m0, 1),
                 "chainage_tot_m": round(m1, 1),
+                # obstakelranden als coördinaat: na samenvoegen van
+                # deeltrajecten worden de chainages hierop opnieuw gemeten
+                "van_rd": (round(p0.x, 2), round(p0.y, 2)),
+                "tot_rd": (round(p1.x, 2), round(p1.y, 2)),
                 "punt": (round(mid.x, 2), round(mid.y, 2)),
                 **kenmerken,
                 **voorstel,
             }
             if _sleufloos_verplicht(kenmerken):
                 c["sleufloos_verplicht"] = True
+            # zonder legger/NWB (verrijk_kruisingen) is elke kruising bijzonder
+            markeer_bijzonder_punt(c, legger_beschikbaar=False, nwb_beschikbaar=False)
             crossings.append(c)
     crossings.sort(key=lambda c: c["chainage_van_m"])
     for i, c in enumerate(crossings, 1):
@@ -1142,6 +1339,65 @@ def verrijk_kruisingen(crossings: list, legger_water: list | None = None,
                 c["wegbeheerder_bron"] = "NWB"
             if straat:
                 c["wegnaam"] = straat
+    for c in crossings:
+        markeer_bijzonder_punt(c, legger_beschikbaar=bool(legger_water),
+                               nwb_beschikbaar=bool(nwb))
+
+
+# ---------------------------------------------------------------------------
+# Bijzondere punten: welke kruisingen worden vermeld
+# ---------------------------------------------------------------------------
+# Een open ontgraving is het standaard sleufwerk en hoort niet als kruising
+# in register, nota en tekening. Vermeld wordt alleen een bijzonder punt:
+# elke sleufloze passage, en een open ontgraving waar een beheerder in het
+# spel is — een leggerwatergang van het waterschap (afdamming, melding
+# waterschapsverordening) of een openbare weg met wegbeheerder in het NWB
+# (verkeersmaatregelen, instemming wegbeheerder). Een sloot buiten de legger
+# of een erftoegang/pad zonder wegbeheerder is gewoon sleufwerk. Ontbreekt
+# de bron (legger of NWB niet geladen), dan blijft de kruising uit voorzorg
+# vermeld: liever één te veel dan een echte weg verzwijgen.
+BIJZONDER_SLEUFLOOS = "sleufloze passage"
+BIJZONDER_AFWIJKING = ("open ontgraving in afwijking van het techniekadvies "
+                       "of waar sleufloos verplicht is")
+
+
+def markeer_bijzonder_punt(c: dict, legger_beschikbaar: bool = True,
+                           nwb_beschikbaar: bool = True) -> None:
+    """`bijzonder_punt` (bool) en `bijzonder_reden` op een kruising zetten."""
+    def zet(bijzonder: bool, reden: str) -> None:
+        c["bijzonder_punt"] = bijzonder
+        c["bijzonder_reden"] = reden
+
+    if c.get("techniek") != TECHNIEK_OPEN:
+        return zet(True, BIJZONDER_SLEUFLOOS)
+    if (c.get("techniek_oorspronkelijk") or c.get("sleufloos_verplicht")
+            or c.get("legger_verbiedt_open")):
+        return zet(True, BIJZONDER_AFWIJKING)
+    if c["soort"] == "water":
+        cat = c.get("legger_categorie")
+        if cat:
+            return zet(True, f"leggerwatergang {cat}: afdamming en melding "
+                             "bij het waterschap")
+        if not legger_beschikbaar:
+            return zet(True, "legger niet geladen: beheer watergang onbekend")
+        return zet(False, "sloot buiten de legger van het waterschap: "
+                          "standaard sleufwerk")
+    if c["soort"] == "rijbaan":
+        srt = c.get("wegbeheerder_srt")
+        if srt:
+            beheerder = NWB_BEHEERDER.get(srt, "wegbeheerder").lower()
+            return zet(True, f"openbare weg ({beheerder}): verkeersmaatregelen "
+                             "en instemming wegbeheerder")
+        if not nwb_beschikbaar:
+            return zet(True, "NWB niet geladen: wegbeheerder onbekend")
+        return zet(False, "geen wegbeheerder in het NWB (erftoegang, pad): "
+                          "standaard sleufwerk")
+    return zet(True, "open kruising van een bijzonder object")
+
+
+def is_bijzonder_punt(c: dict) -> bool:
+    """Kruisingen zonder markering (oudere projecten) tellen als bijzonder."""
+    return c.get("bijzonder_punt", True) is not False
 
 
 # ---------------------------------------------------------------------------
@@ -1246,20 +1502,25 @@ ALTERNATIEF_DETAIL = {
 _OORDEEL_ORDE = {"voldoende": 0, "onzeker": 1, "onvoldoende": 2}
 
 
-def beoordeel_werkterreinen(route: LineString, crossings: list, grid: Grid) -> None:
+def beoordeel_werkterreinen(route: LineString, crossings: list, grid: Grid,
+                            bgt: dict | None = None) -> None:
     """Werkterrein-toets per boring (in place op de kruisingenlijst).
 
     Globaal, conform werkwijze: ruim voldoende ruimte → akkoord; twijfel →
     markeren als onzeker (afhankelijk van type boorstelling); geen ruimte →
     sleufloos alternatief toepassen dat binnen de richtlijnen past. Past
     niets, dan blijft het voorstel staan met een kritieke melding.
+
+    Gemeten op het werkelijke in-/uittredepunt (``boorspan``: uitloop van de
+    techniek, verschoven naar vrij terrein als ``bgt`` is meegegeven).
     """
+    vrij = boorvrij_toets(bgt, grid) if bgt else None
 
     def toets(techniek, c):
         eis = WERKTERREIN_EIS[techniek]
         uitloop = BOOR_UITLOOP.get(techniek, BOOR_UITLOOP_DEFAULT)
-        p_in = route.interpolate(max(0.0, c["chainage_van_m"] - uitloop))
-        p_uit = route.interpolate(min(route.length, c["chainage_tot_m"] + uitloop))
+        span = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], uitloop, vrij)
+        p_in, p_uit = route.interpolate(span["m_in"]), route.interpolate(span["m_uit"])
         m2_in, prive_in = _werkruimte_m2(grid, p_in, eis["zoekstraal_m"])
         m2_uit, prive_uit = _werkruimte_m2(grid, p_uit, eis["zoekstraal_m"])
         o_in = _ruimte_oordeel(m2_in, eis["intrede_m2"])
@@ -1312,6 +1573,9 @@ def beoordeel_werkterreinen(route: LineString, crossings: list, grid: Grid) -> N
                 c["noodzaak"] = (f"werkterrein te krap voor "
                                  f"{c['techniek_oorspronkelijk'].lower()}; "
                                  "lichtste passende alternatief toegepast")
+                # techniek gewijzigd (ook naar open): markering bijwerken —
+                # een afwijking van het advies blijft altijd een bijzonder punt
+                markeer_bijzonder_punt(c)
                 opmerkingen.append(
                     f"Onvoldoende werkruimte voor {c['techniek_oorspronkelijk']}; "
                     f"sleufloos alternatief toegepast.")
@@ -1336,13 +1600,16 @@ OPEN_UITLOOP = 2.0  # open kruising: alleen de directe aanloop haaks trekken
 
 
 def straighten_crossings(route: LineString, crossings: list,
-                         grid: Grid | None = None) -> LineString:
+                         grid: Grid | None = None, vrij=None) -> LineString:
     """Kruisingssegmenten vervangen door een rechte lijn (boring/persing is recht).
 
     Recht over de volledige boorlengte — van intrede- tot uittredepunt, met de
-    uitloop van de voorgestelde techniek — zodat de boring exact op het tracé
-    ligt. Als de rechte vervanging door een uitgesloten cel loopt
-    (bijvoorbeeld een gebouwhoek), blijft het oorspronkelijke pad staan.
+    uitloop van de voorgestelde techniek en verschoven naar vrij terrein
+    (``boorspan`` met ``vrij``) — zodat de boring exact op het tracé ligt.
+    Als de rechte vervanging door een uitgesloten cel loopt (bijvoorbeeld
+    een gebouwhoek), schuift het in-/uittredepunt naar buiten tot de rechte
+    lijn wél vrij ligt; lukt ook dat niet, dan blijft het oorspronkelijke
+    pad staan.
     """
     if not crossings:
         return route
@@ -1365,13 +1632,15 @@ def straighten_crossings(route: LineString, crossings: list,
     spans = []
     for c in crossings:
         if c["techniek"] == TECHNIEK_OPEN:
-            u = OPEN_UITLOOP
-        else:
-            # minimaal de nanodrill-uitloop: als de werkterrein-toets later
-            # naar een alternatief wisselt, blijft de boorlijn op het tracé
-            u = max(BOOR_UITLOOP.get(c["techniek"], BOOR_UITLOOP_DEFAULT),
-                    BOOR_UITLOOP[TECHNIEK_NANO])
-        spans.append((c["chainage_van_m"] - u, c["chainage_tot_m"] + u))
+            spans.append((c["chainage_van_m"] - OPEN_UITLOOP,
+                          c["chainage_tot_m"] + OPEN_UITLOOP))
+            continue
+        # minimaal de nanodrill-uitloop: als de werkterrein-toets later
+        # naar een alternatief wisselt, blijft de boorlijn op het tracé
+        u = max(BOOR_UITLOOP.get(c["techniek"], BOOR_UITLOOP_DEFAULT),
+                BOOR_UITLOOP[TECHNIEK_NANO])
+        span = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], u, vrij)
+        spans.append((span["m_in"], span["m_uit"]))
     spans.sort()
     merged = []
     for s in spans:
@@ -1416,39 +1685,95 @@ def straighten_crossings(route: LineString, crossings: list,
     return LineString(coords)
 
 
+def _schamp_zijde(route: LineString, part: LineString, grens) -> int | None:
+    """Aan welke kant van het tracé ligt de vrije ruimte bij een schamp-passage?
+
+    Bemonstert de passage (``part``: het deel van het tracé binnen het
+    obstakel) en kijkt per punt waar de dichtstbijzijnde obstakelrand ligt
+    ten opzichte van de looprichting. Retourneert +1 of −1 als dat consequent
+    dezelfde zijde is (een echte schamp: het tracé scheert langs één rand),
+    en None als de rand vóór/achter ligt (een kruising: naar buiten drukken
+    zou de kruising verbuigen) of de zijde wisselt (ligging midden op een
+    smal pad zonder berm ernaast: elk punt naar zijn eigen dichtstbijzijnde
+    rand drukken zou een zigzag geven)."""
+    n = max(3, int(part.length / 0.5) + 1)
+    stemmen = {1: 0, -1: 0, 0: 0}
+    for i in range(n):
+        p = part.interpolate(i * part.length / (n - 1))
+        q = nearest_points(grens, p)[0]
+        d = p.distance(q)
+        if d < 1e-6:
+            continue
+        m = route.project(p)
+        a = route.interpolate(max(0.0, m - 0.5))
+        b = route.interpolate(min(route.length, m + 0.5))
+        dx, dy = b.x - a.x, b.y - a.y
+        lengte = math.hypot(dx, dy)
+        if lengte < 1e-9:
+            continue
+        # sinus van de hoek tussen looprichting en richting naar de rand
+        sin = (dx * (q.y - p.y) - dy * (q.x - p.x)) / (lengte * d)
+        if abs(sin) < 0.5:
+            stemmen[0] += 1  # rand ligt vóór of achter (< 30° uit de as)
+        else:
+            stemmen[1 if sin > 0 else -1] += 1
+    totaal = sum(stemmen.values())
+    if not totaal:
+        return None
+    for zijde in (1, -1):
+        if stemmen[zijde] >= 0.8 * totaal and stemmen[0] <= 0.2 * totaal:
+            return zijde
+    return None
+
+
 def verwijder_schampen(route: LineString, grid: Grid | None,
                        rondes: int = 2) -> LineString:
-    """Sub-cel-nudge: schampen over rijbaan/water/spoor van het obstakel afdrukken.
+    """Sub-cel-nudge: schampen over verharding, water of spoor van het
+    obstakel afdrukken, de berm in.
 
-    Het raster werkt op celmiddens; een tracé dat in een smalle berm of op een
-    voetpad naast de rijbaan ligt kan daardoor met enkele decimeters over de
-    échte obstakelrand scheren. Hele-celverschuivingen in het gladstrijken
-    kunnen dat niet corrigeren (de goedkoopste hele cel ís de randcel). Hier
-    worden passages die nergens dieper dan SCHAMP_DIEPTE_M in het obstakel
-    komen — dus randeffecten, geen echte kruisingen — vector-exact haaks naar
-    buiten gedrukt tot SCHAMP_CLEARANCE_M vrije marge. Elk verschoven punt
-    moet begaanbaar blijven (geen ∞-cel, pand of ander obstakel), anders
+    Het raster werkt op celmiddens; een tracé dat in een smalle berm naast
+    een trottoir, fietspad of rijbaan ligt kan daardoor met enkele decimeters
+    over de échte verhardingsrand scheren. Hele-celverschuivingen in het
+    gladstrijken kunnen dat niet corrigeren (de goedkoopste hele cel ís de
+    randcel). Hier worden passages die nergens dieper dan SCHAMP_DIEPTE_M in
+    het obstakel komen — dus randeffecten, geen echte kruisingen — vector-
+    exact haaks naar buiten gedrukt tot SCHAMP_CLEARANCE_M vrije marge.
+
+    Alleen passages met een eenduidige vrije zijde (`_schamp_zijde`) worden
+    verschoven: een kruising blijft recht en een ligging midden op een smal
+    pad zonder berm ernaast blijft liggen. Elk verschoven punt moet
+    begaanbaar blijven (geen ∞-cel, pand of ander obstakel) en mag niet in
+    een duurdere ligging terechtkomen (van het trottoir het erf op), anders
     blijft het staan.
     """
     if grid is None or not grid.schamp:
         return route
 
-    def punt_ok(p: Point, eigen_geom) -> bool:
+    def punt_ok(p: Point, kand: Point, eigen_geom) -> bool:
         for prep_g, geom, _ in grid.schamp:
-            if geom is not eigen_geom and prep_g.intersects(p):
+            if geom is not eigen_geom and prep_g.intersects(kand):
                 return False
-        if grid.hard is not None and grid.hard.distance(p) < 0.1:
+        if grid.hard is not None and grid.hard.distance(kand) < 0.1:
             return False
-        r, c = grid.world_to_cell(p.x, p.y)
-        if np.isfinite(grid.cost[r, c]):
-            return True
+        r, c = grid.world_to_cell(kand.x, kand.y)
+        kost = float(grid.cost[r, c])
+        if np.isfinite(kost):
+            r0, c0 = grid.world_to_cell(p.x, p.y)
+            was = float(grid.cost[r0, c0])
+            return not np.isfinite(was) or kost <= was + 1e-6
         # een ∞-cel kan hier van de pand-veiligheidsmarge in het raster komen
         # (smal voetpad tussen rijbaan en gevel); vector-exact is het punt dan
         # wél vrij — de afstand tot de echte harde geometrie is al getoetst
         return grid.hard is not None
 
+    def zijde_van(p: Point, m: float, dx: float, dy: float) -> int:
+        a = route.interpolate(max(0.0, m - 0.5))
+        b = route.interpolate(min(route.length, m + 0.5))
+        rx, ry = b.x - a.x, b.y - a.y
+        return 1 if rx * dy - ry * dx > 0 else -1
+
     for _ in range(rondes):
-        # schamp-vensters langs het tracé bepalen (chainage, obstakel)
+        # schamp-vensters langs het tracé bepalen (chainage, obstakel, zijde)
         vensters = []
         for prep_g, geom, _ in grid.schamp:
             if not prep_g.intersects(route):
@@ -1463,21 +1788,24 @@ def verwijder_schampen(route: LineString, grid: Grid | None,
                              for i in range(n))
                 if diepte >= SCHAMP_DIEPTE_M:
                     continue  # echte kruising, blijft staan
+                zijde = _schamp_zijde(route, part, grens)
+                if zijde is None:
+                    continue  # kruising of ligging midden op het pad
                 m0 = route.project(Point(part.coords[0]))
                 m1 = route.project(Point(part.coords[-1]))
-                vensters.append((min(m0, m1) - 1.0, max(m0, m1) + 1.0, geom, grens))
+                vensters.append((min(m0, m1) - 1.0, max(m0, m1) + 1.0, geom, grens, zijde))
         if not vensters:
             break
         # tracé opnieuw opbouwen: bestaande hoekpunten plus verdichting binnen
         # de vensters, zodat er punten zíjn om te verschuiven
         mss = {0.0, route.length}
         mss.update(route.project(Point(c)) for c in route.coords)
-        for a, b, _, _ in vensters:
+        for a, b, _, _, _ in vensters:
             mss.update(np.arange(max(0.0, a), min(route.length, b), 0.75))
         coords = []
         for m in sorted(mss):
             p = route.interpolate(m)
-            for a, b, geom, grens in vensters:
+            for a, b, geom, grens, zijde in vensters:
                 if not (a <= m <= b):
                     continue
                 d_rand = grens.distance(p)
@@ -1489,10 +1817,12 @@ def verwijder_schampen(route: LineString, grid: Grid | None,
                 lengte = math.hypot(dx, dy)
                 if lengte < 1e-9:
                     continue  # exact op de rand: richting onbepaald
+                if zijde_van(p, m, dx, dy) != zijde:
+                    continue  # zou naar de verkeerde kant (de kruising in) drukken
                 schaal = (d_rand + SCHAMP_CLEARANCE_M) / lengte if binnen \
                     else (SCHAMP_CLEARANCE_M - d_rand) / lengte
                 kand = Point(p.x + dx * schaal, p.y + dy * schaal)
-                if punt_ok(kand, geom):
+                if punt_ok(p, kand, geom):
                     p = kand
             coords.append((p.x, p.y))
         route = LineString(coords)
@@ -1508,11 +1838,12 @@ def straighten_iteratief(route: LineString, bgt: dict, grid: Grid | None = None,
     beoogde in-/uittredepunt kan beginnen. De tweede ronde meet op het al
     rechtgetrokken tracé en legt de boorlengte exact recht.
     """
+    vrij = boorvrij_toets(bgt, grid)
     for _ in range(rondes):
         pre = detect_crossings(route, bgt)
         if not pre:
             break
-        route = straighten_crossings(route, pre, grid)
+        route = straighten_crossings(route, pre, grid, vrij)
     return verwijder_schampen(route, grid)
 
 

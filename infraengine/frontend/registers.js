@@ -95,7 +95,18 @@ const REG_DEF = {
   },
   kruisingen: {
     titel: "Kruisingen",
-    data: v => v.kruisingen,
+    // alleen bijzondere punten; standaard open ontgravingen (sloot buiten de
+    // legger, erftoegang zonder wegbeheerder) zijn sleufwerk en blijven
+    // verborgen tot de schakelaar aanstaat
+    data: v => (toonStandaardOpen ? v.kruisingen : v.kruisingen.filter(isBijzonderPunt)),
+    schakelaar: v => {
+      const n = v.kruisingen.filter(c => !isBijzonderPunt(c)).length;
+      return n ? {
+        label: `Ook de ${n} standaard open ontgraving(en) tonen (geen bijzonder punt: gewoon sleufwerk)`,
+        aan: toonStandaardOpen,
+        zet: aan => { toonStandaardOpen = aan; },
+      } : null;
+    },
     zoom: r => r.punt,
     kolommen: [
       { k: "nr", label: "Nr", num: true },
@@ -105,6 +116,9 @@ const REG_DEF = {
       { k: "kruislengte_m", label: "Langs tracé (m)", num: true },
       { k: "techniek", label: "Techniek", edit: { opties: REG_TECHNIEKEN },
         chip: r => (r.techniek || "").includes("HDD") ? "hdd" : "" },
+      { k: "bijzonder_reden", label: "Bijzonder punt",
+        toon: r => (isBijzonderPunt(r) ? "ja" : "nee") + (r.bijzonder_reden ? ` — ${r.bijzonder_reden}` : ""),
+        sorteer: r => (isBijzonderPunt(r) ? "ja" : "nee") },
       { k: "noodzaak", label: "Noodzaak", edit: true },
       { k: "detail", label: "Detail", edit: true },
       { k: "richtlijn", label: "Richtlijn" },
@@ -126,14 +140,19 @@ const REG_DEF = {
       { k: "werkpakket", label: "WP" },
       { k: "type", label: "Type", edit: { opties: REG_TECHNIEKEN } },
       { k: "obstakel", label: "Obstakel" },
+      { k: "kruisingen", label: "Kruisingen",
+        toon: r => (r.kruisingen || [r.kruising]).join(", ") },
       { k: "noodzaak", label: "Noodzaak", edit: true },
       { k: "lengte_m", label: "Lengte (m)", num: true },
+      { k: "circuits", label: "Circuits", num: true },
       { k: "intredepunt_rd", label: "Intrede (RD)", num: true,
         toon: r => r.intredepunt_rd.join(", ") },
       { k: "uittredepunt_rd", label: "Uittrede (RD)", num: true,
         toon: r => r.uittredepunt_rd.join(", ") },
       { k: "dekking_eis", label: "Dekking-eis", edit: true },
       { k: "mantelbuis", label: "Mantelbuis", edit: true },
+      { k: "mantelbuis_motivering", label: "Waarom dit minimum" },
+      { k: "samengevoegd", label: "Samengevoegd" },
       { k: "sonderingen", label: "Sonderingen (BRO)",
         toon: r => (r.sonderingen && r.sonderingen.length)
           ? r.sonderingen.map(s => `${s.nr} (${s.bro_id})`).join(", ")
@@ -450,6 +469,24 @@ function renderRegisterPagina() {
   const st = stateVan(regTab);
   regEl("register-zoek").value = st.zoek;
 
+  const sch = def.schakelaar ? def.schakelaar(v) : null;
+  if (sch) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    const lab = document.createElement("label");
+    const inp = document.createElement("input");
+    inp.type = "checkbox";
+    inp.checked = !!sch.aan;
+    inp.addEventListener("change", () => {
+      sch.zet(inp.checked);
+      renderRegisterTabs();
+      renderRegisterPagina();
+    });
+    lab.appendChild(inp);
+    lab.appendChild(document.createTextNode(" " + sch.label));
+    p.appendChild(lab);
+    inhoud.appendChild(p);
+  }
   const t = document.createElement("table");
   t.className = "register vol";
   const thead = document.createElement("thead");

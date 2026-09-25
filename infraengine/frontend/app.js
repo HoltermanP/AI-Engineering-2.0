@@ -900,6 +900,20 @@ function sonderingLinks(b) {
   return b.sonderingen_bro || "";
 }
 
+function mantelbuisTotalen(boringen) {
+  const agg = {};
+  (boringen || []).forEach(b => (b.mantelbuizen || []).forEach(mb => {
+    const sleutel = mb.materiaal === "staal"
+      ? `staal Ø${String(mb.diameter_mm).replace(".", ",")}×${String(mb.wand_mm).replace(".", ",")}`
+      : `HDPE Ø${mb.diameter_mm} SDR${mb.sdr}`;
+    const t = agg[sleutel] || (agg[sleutel] = { n: 0, m: 0 });
+    t.n += mb.aantal;
+    t.m += mb.aantal * (mb.lengte_m || b.lengte_m || 0);
+  }));
+  const delen = Object.entries(agg).map(([k, t]) => `${t.n}× ${k} (${t.m.toFixed(0)} m)`);
+  return delen.length ? delen.join(", ") : "geen";
+}
+
 function toonKaartPopup(b, k, coord) {
   const rd = p => `<span class="mono">${p.map(x => (+x).toFixed(1)).join(", ")}</span>`;
   let kop, inhoud;
@@ -907,18 +921,23 @@ function toonKaartPopup(b, k, coord) {
     const kr = resultaat
       ? (resultaat.varianten[actieveVariant].kruisingen || []).find(c => c.nr === b.kruising)
       : null;
+    const krNrs = (b.kruisingen && b.kruisingen.length) ? b.kruisingen.join(", ") : b.kruising;
     kop = `${b.nr} — ${b.type}`;
     const wtChip = b.werkterrein_oordeel && b.werkterrein_oordeel !== "n.v.t."
       ? `<span class="chip ${WT_CHIP[b.werkterrein_oordeel] || ""}">${b.werkterrein_oordeel}</span>` : "";
     inhoud =
-      popupRij("Kruising", `${b.kruising} — ${b.obstakel}`) +
+      popupRij("Kruising", `${krNrs} — ${b.obstakel}`) +
+      (b.samengevoegd ? popupRij("Samengevoegd", b.samengevoegd) : "") +
       popupRij("Noodzaak", b.noodzaak) +
       popupRij("Boorlengte", `${b.lengte_m} m` +
         (b.uitloop_m != null ? ` (uitloop ${b.uitloop_m} m)` : "")) +
       popupRij("Intrede (RD)", rd(b.intredepunt_rd)) +
       popupRij("Uittrede (RD)", rd(b.uittredepunt_rd)) +
+      popupRij("Plaatsing", b.plaatsing) +
       popupRij("Dekking-eis", b.dekking_eis) +
-      popupRij("Mantelbuis", b.mantelbuis) +
+      popupRij("Mantelbuis", `${b.mantelbuis}` +
+        (b.circuits > 1 ? ` <span class="chip">${b.circuits} circuits</span>` : "")) +
+      popupRij("Waarom dit minimum", b.mantelbuis_motivering) +
       popupRij("Maaiveld (AHN)", b.maaiveld_min_nap != null
         ? `${b.maaiveld_min_nap} – ${b.maaiveld_max_nap} m NAP` +
           (b.verval_m != null ? ` (verval ${b.verval_m} m)` : "") : "") +
@@ -1196,6 +1215,10 @@ function leesWeights() {
 let resultaat = null;
 let actieveVariant = 0;
 let actieveTab = "mca";
+// Open ontgravingen worden alleen bij bijzondere punten vermeld (backend:
+// engine.markeer_bijzonder_punt). Oudere resultaten zonder markering tonen alles.
+const isBijzonderPunt = c => c.bijzonder_punt !== false;
+let toonStandaardOpen = false;  // schakelaar: ook standaard open ontgravingen tonen
 
 function coordsVanPolygon(src) {
   const f = src.getFeatures().find(x => !x.get("auto"));
@@ -1477,9 +1500,10 @@ function toonResultaat() {
   });
   const kortTechniek = t => t.includes("HDD") ? "HDD" : t.includes("Persing") ? "PERS"
     : t.includes("Nano") ? "NANO" : t.includes("Raket") ? "RAKET" : "OPEN";
-  const metBoring = new Set((v.boringen || []).map(b => b.kruising));
+  const metBoring = new Set((v.boringen || []).flatMap(b => b.kruisingen || [b.kruising]));
   v.kruisingen.forEach(c => {
     if (metBoring.has(c.nr)) return;  // wordt als boorlijn intrede→uittrede getekend
+    if (!isBijzonderPunt(c)) return;  // standaard open ontgraving: geen punt op de kaart
     const f = new ol.Feature(new ol.geom.Point(c.punt));
     f.set("soort", c.soort);
     f.set("kort", kortTechniek(c.techniek));
@@ -1648,8 +1672,18 @@ document.getElementById("paneel-toggle").addEventListener("click", e => {
   e.target.textContent = p.classList.contains("dicht") ? "▴" : "▾";
 });
 
+/* Kaart naar een registeritem brengen: een RD-punt, een GeoJSON-geometrie
+   (deel van het tracé, boorlijn, …) of "trace" voor items die op het hele
+   tracé betrekking hebben — dan komt de actieve route volledig in beeld. */
 function zoomNaar(geomOfPunt) {
   srcHighlight.clear();
+  if (geomOfPunt === "trace") {
+    const route = actieveRouteFeature();
+    if (!route) return;
+    map.getView().fit(route.getGeometry().getExtent(),
+      { padding: [70, 70, 70, 70], duration: 400 });
+    return;
+  }
   let geom;
   if (Array.isArray(geomOfPunt)) geom = new ol.geom.Point(geomOfPunt);
   else geom = geojson.readGeometry(geomOfPunt);
@@ -1767,8 +1801,11 @@ function toonTab() {
         zoom: s.geometry,
       })));
   } else if (actieveTab === "kruisingen") {
+    const bijzonder = v.kruisingen.filter(isBijzonderPunt);
+    const nStandaard = v.kruisingen.length - bijzonder.length;
+    const rijen = toonStandaardOpen ? v.kruisingen : bijzonder;
     t = tabel(["Nr", "WP", "Soort", "Breedte (haaks)", "Techniekvoorstel", "Werkterrein", "Richtlijn", "Bevoegd gezag"],
-      v.kruisingen.map(c => ({
+      rijen.map(c => ({
         cells: [td(c.nr), td(c.werkpakket),
           td(c.soort + (c.soort === "rijbaan"
             ? `<br><small>${[c.wegfunctie, c.verharding || "verharding onbekend"].filter(Boolean).join(", ")}</small>`
@@ -1776,13 +1813,28 @@ function toonTab() {
           tdn(c.breedte_m + " m" + (c.kruislengte_m && c.kruislengte_m > c.breedte_m + 0.5
             ? `<br><small>${c.kruislengte_m} m langs tracé</small>` : "")),
           td(`<span class="chip ${c.techniek.includes("HDD") ? "hdd" : ""}">${c.techniek}</span>`
+             + (isBijzonderPunt(c) ? "" : ' <span class="chip">standaard sleufwerk</span>')
              + (c.techniek_oorspronkelijk ? `<br><s>${c.techniek_oorspronkelijk}</s>` : "")
+             + (c.boring ? ` <span class="chip">${c.boring}</span>` : "")
              + (c.noodzaak ? `<br><em>${c.noodzaak}</em>` : "")
-             + `<br>${c.detail}`),
+             + `<br>${c.detail}`
+             + (c.bijzonder_reden ? `<br><small>${c.bijzonder_reden}</small>` : "")),
           td(wtCel(c.werkterrein)),
           td(c.richtlijn), td(c.bevoegd_gezag)],
         zoom: c.punt,
       })));
+    if (nStandaard) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.innerHTML = `<label><input type="checkbox" id="toon-standaard-open"${toonStandaardOpen ? " checked" : ""}> ` +
+        `Ook de ${nStandaard} standaard open ontgraving(en) tonen (sloten buiten de legger, ` +
+        `erftoegangen zonder wegbeheerder: gewoon sleufwerk, geen bijzonder punt)</label>`;
+      p.querySelector("input").addEventListener("change", e => {
+        toonStandaardOpen = e.target.checked;
+        toonTab();
+      });
+      el.appendChild(p);
+    }
   } else if (actieveTab === "vergunningen") {
     t = tabel(["Nr", "WP", "Item", "Bevoegd gezag", "Trigger", "Doorloop", "Status"],
       v.vergunningen.map(g => ({
@@ -1795,9 +1847,12 @@ function toonTab() {
       v.boringen.map(b => ({
         cells: [td(b.nr), td(b.werkpakket),
           td(b.type + (b.type_oorspronkelijk ? `<br><s>${b.type_oorspronkelijk}</s>` : "")),
-          td(b.obstakel), td(b.noodzaak), tdn(b.lengte_m + " m"),
+          td(b.obstakel + (b.samengevoegd ? `<br><small>${b.samengevoegd}</small>` : "")),
+          td(b.noodzaak), tdn(b.lengte_m + " m"),
           tdn(b.intredepunt_rd.join(", ")), tdn(b.uittredepunt_rd.join(", ")),
-          td(b.dekking_eis), td(b.mantelbuis),
+          td(b.dekking_eis),
+          td(`<span title="${(b.mantelbuis_motivering || "").replace(/"/g, "&quot;")}">${b.mantelbuis}</span>` +
+             (b.circuits > 1 ? ` <span class="chip">${b.circuits} circuits</span>` : "")),
           td(sonderingLinks(b)),
           td(wtCel({ oordeel: b.werkterrein_oordeel, intrede_m2: b.werkterrein_intrede_m2,
             intrede_eis_m2: b.werkterrein_intrede_eis_m2, uittrede_m2: b.werkterrein_uittrede_m2,
@@ -1806,6 +1861,15 @@ function toonTab() {
       })));
     if (!v.boringen.length)
       el.innerHTML = '<p class="leeg">Geen boringen: alle kruisingen kunnen open of er zijn geen kruisingen.</p>';
+    else {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.innerHTML = `<strong>Mantelbuizen: ${mantelbuisTotalen(v.boringen)}.</strong> ` +
+        "Dit is het minimum: één buis per circuit per boring (drie fasen samen in één buis), " +
+        "bij persing en spoor één stalen mantelbuis met binnenbuizen, en aangrenzende of " +
+        "dubbel gepasseerde kruisingen in één boring.";
+      el.appendChild(p);
+    }
   } else if (actieveTab === "sonderingen") {
     t = tabel(["Nr", "WP", "BRO-ID", "Chainage", "Afstand tracé", "Einddiepte",
                "Maaiveld", "Klasse", "Datum", "Relevantie", "BRO-loket"],
@@ -1826,9 +1890,15 @@ function toonTab() {
     t = tabel(["Nr", "Onderzoek", "Aanleiding", "Conclusie", "Status",
                "AI-bureauonderzoek"],
       (v.onderzoeken || []).map(o => ({
-        cells: [td(o.nr), td(o.soort), td(o.aanleiding),
+        cells: [td(o.nr),
+          td(o.soort + `<br><small>${o.geometry ? "deeltracé" : "hele tracé"}</small>`),
+          td(o.aanleiding),
           td(o.conclusie), td(`<span class="chip">${o.status}</span>`),
           td(`<span class="bureau-cel" data-nr="${o.nr}">…</span>`)],
+        // klik: naar de tracédelen waar het onderzoek op ziet, of het hele
+        // tracé bij een tracébreed onderzoek (en bij oudere projecten zonder
+        // geometrie in het register)
+        zoom: o.geometry || "trace",
       })));
     setTimeout(laadBureauOpties, 0);  // knoppen/validiteit invullen zodra de tabel staat
     const zones = Object.entries(v.zones || {});
@@ -3191,7 +3261,10 @@ async function laadBureauOpties() {
     knop.className = "btn-bureau";
     knop.textContent = "▶ Uitvoeren (AI)";
     knop.title = "Bureauonderzoek door AI uitvoeren op de gekoppelde data";
-    knop.addEventListener("click", () => startBureau(o));
+    knop.addEventListener("click", e => {
+      e.stopPropagation();  // niet ook de rij-klik (zoom naar het tracédeel) afvuren
+      startBureau(o);
+    });
     const chip = document.createElement("span");
     chip.className = `chip ${BUREAU_CHIP[o.validiteit.status] || ""}`;
     chip.textContent = o.validiteit.label;

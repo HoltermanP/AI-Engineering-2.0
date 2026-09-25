@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 
+import mantelbuizen
 from engine import (
     CL_BERM, CL_ERF, CL_FIETSPAD, CL_NATUURGROEN, CL_ONBEKEND, CL_ONVERHARD,
     CL_PARKEER, CL_RIJBAAN, CL_SPOOR, CL_VOETPAD, CL_WATER,
@@ -68,6 +69,7 @@ EENHEIDSPRIJZEN = {
     "hdd_inrichten_st": 5500.00,
     "hdd_boren_m": 160.00,
     "mantelbuis_hdpe160_m": 30.00,
+    "mantelbuis_staal_hdd_m": 185.00,
     "persing_inrichten_st": 7500.00,
     "persing_m": 425.00,
     "nano_inrichten_st": 1250.00,
@@ -173,7 +175,17 @@ def build_raw_calculatie(route_lengte_m: float, segments: list, crossings: list,
             boor[b["type"]]["n"] += 1
             boor[b["type"]]["m"] += b["lengte_m"]
     m_boringen = sum(t["m"] for t in boor.values())
-    m_buis = boor[TECHNIEK_HDD]["m"] + boor[TECHNIEK_NANO]["m"] + boor[TECHNIEK_RAKET]["m"]
+    # mantelbuizen: het minimum per boring (één buis per circuit; bij persing
+    # en spoor één stalen mantelbuis met HDPE-binnenbuizen) uit het
+    # boringenregister — buismeters = aantal × boorlengte
+    m_buis = mantelbuizen.meters(boringen, mantelbuizen.HDPE)
+    m_staal_persing = mantelbuizen.meters(boringen, mantelbuizen.STAAL, TECHNIEK_PERSING)
+    m_staal_hdd = (mantelbuizen.meters(boringen, mantelbuizen.STAAL)
+                   - m_staal_persing)
+    n_buizen = sum(mb["aantal"] for b in boringen
+                   for mb in (b.get("mantelbuizen") or []))
+    m_kabel_buis = sum(b["lengte_m"] * max(1, int(b.get("circuits", 1)))
+                       for b in boringen if b["type"] in boor)
     n_zinker = sum(1 for c in crossings
                    if c["soort"] == "water" and c["techniek"] == TECHNIEK_OPEN)
     m_zinker = per_klasse.get(CL_WATER, 0.0)
@@ -239,12 +251,19 @@ def build_raw_calculatie(route_lengte_m: float, segments: list, crossings: list,
     post("250120", "Uitvoeren gestuurde boring (HDD), incl. boorvloeistof en "
          "ruimen", "m", boor[TECHNIEK_HDD]["m"], p["hdd_boren_m"],
          f"{boor[TECHNIEK_HDD]['n']} boring(en), lengte incl. uitloop")
-    post("250130", "Leveren en intrekken mantelbuis HDPE Ø160 SDR11", "m",
-         m_buis, p["mantelbuis_hdpe160_m"], "HDD-, nanodrill- en raketlengtes")
+    post("250130", "Leveren en intrekken mantelbuis HDPE Ø160 SDR11 "
+         "(incl. binnenbuizen in stalen mantelbuis)", "m",
+         m_buis, p["mantelbuis_hdpe160_m"],
+         f"{n_buizen} buis/buizen in {len(boringen)} boring(en): minimum "
+         "van één buis per circuit (register Boringen)")
+    post("250140", "Leveren en intrekken stalen mantelbuis in gestuurde "
+         "boring (spoorkruising, ProRail)", "m",
+         m_staal_hdd, p["mantelbuis_staal_hdd_m"])
     post("250210", "Persing stalen mantelbuis, incl. pers- en ontvangstput",
          "st", boor[TECHNIEK_PERSING]["n"], p["persing_inrichten_st"], dec=0)
     post("250220", "Persen stalen mantelbuis", "m",
-         boor[TECHNIEK_PERSING]["m"], p["persing_m"])
+         m_staal_persing or boor[TECHNIEK_PERSING]["m"], p["persing_m"],
+         "één stalen mantelbuis per persing, binnenbuizen onder 250130")
     post("250310", "Inrichten nanodrill / mini-HDD", "st",
          boor[TECHNIEK_NANO]["n"], p["nano_inrichten_st"], dec=0)
     post("250320", "Uitvoeren nanodrill / mini-HDD", "m",
@@ -267,7 +286,8 @@ def build_raw_calculatie(route_lengte_m: float, segments: list, crossings: list,
     post("260120", "Trekken en leggen MS-kabelcircuit in open sleuf", "m",
          m_sleuf + m_zinker, p["kabel_leggen_sleuf_m"])
     post("260130", "Intrekken MS-kabelcircuit in mantelbuis", "m",
-         m_boringen, p["kabel_intrekken_buis_m"])
+         m_kabel_buis, p["kabel_intrekken_buis_m"],
+         "boorlengte × aantal circuits per boring")
     post("260140", "Aanbrengen afdekband en waarschuwingslint", "m",
          m_sleuf, p["afdekband_m"])
     post("260150", "Aanbrengen kabelbeschermingsplaten (verharde liggingen)",

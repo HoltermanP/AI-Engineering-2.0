@@ -9,7 +9,7 @@ Laagindeling (kleuren volgens ACI):
   TRACE               rood      het berekende kabeltracé (doorgetrokken)
   TRACE_BORING        cyaan     boorlijnen intrede→uittrede (gestreept)
   BORING_PUNT         cyaan     intrede-/uittredepunten met label
-  KRUISINGEN          geel      kruisingspunten met nr/soort/techniek
+  KRUISINGEN          geel      bijzondere punten (kruisingen) met nr/soort/techniek
   MOFFEN              magenta   mofposities (cirkel + kruis)
   STATIONS            groen     MS-stations (vierkant + label)
   BOMEN_WORTELZONE    groen     wortelzones als cirkel met werkelijke straal
@@ -110,6 +110,8 @@ def maak_dxf(variant: dict, stations: list, bomen: list,
 
     # --- kruisingen ----------------------------------------------------------
     for c in variant.get("kruisingen", []):
+        if c.get("bijzonder_punt", True) is False:
+            continue  # standaard open ontgraving (sleufwerk): niet op de tekening
         punt = c["punt"]
         _kruis(msp, punt, 1.0, "KRUISINGEN")
         _tekst(msp, f"{c['nr']} {c['soort']} {c['breedte_m']:g} m — {c['techniek']}",

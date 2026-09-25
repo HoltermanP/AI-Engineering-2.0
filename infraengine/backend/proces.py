@@ -1525,14 +1525,17 @@ def _cap_materiaal(result, variant, project):
     lengte = v.get("lengte_m", 0.0)
     boringen = v.get("boringen", [])
     moffen = v.get("moffen", [])
-    mantel = sum(b.get("boorlengte_m", b.get("lengte_m", 0)) or 0
-                 for b in boringen)
+    import mantelbuizen
     import normen
     pct = float(normen.waarde("overlengte_pct"))
+    buizen = mantelbuizen.totalen(boringen)
+    mantel = (", ".join(f"{t['omschrijving']} ({t['lengte_m']:.0f} m)" for t in buizen)
+              if buizen else "geen (alle kruisingen open)")
     regels = [
         f"MS-kabel (3 fasen, incl. {pct:.0f}% overlengte): "
         f"{lengte * (1 + pct / 100):.0f} m",
-        f"mantelbuizen (boringen): {mantel:.0f} m",
+        f"mantelbuizen, minimum van één buis per circuit per boring "
+        f"({len(boringen)} boring(en)): {mantel}",
         f"moffen: {len(moffen)} stuks",
         f"markeringslint/dekplaten: {lengte:.0f} m",
     ]

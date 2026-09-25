@@ -126,6 +126,43 @@ REGELS: dict[str, dict] = {
         bron="NEN 7171-1 (kruisingen zo haaks mogelijk)",
         omschrijving="Minimale kruisingshoek met andere kabels en "
                      "leidingen; kleinere hoeken worden geflagd."),
+    # --- 3. mantelbuizen (sleufloze kruisingen) ----------------------------
+    "mantelbuis_circuits_per_buis": dict(
+        waarde=1, eenheid="circuits", ernst="waarschuwing",
+        bron="IEC 60287 / NEN-HD 60364-5-52 (thermische belasting gebundelde "
+             "circuits); Liander-praktijk: één MS-circuit per mantelbuis",
+        omschrijving="Maximaal aantal MS-circuits (3 fasen in trefoil) per "
+                     "mantelbuis. De drie fasen van één circuit gaan altijd "
+                     "samen in één buis; per circuit hoogstens één buis."),
+    "mantelbuis_speling_factor": dict(
+        waarde=0.85, eenheid="-", ernst="waarschuwing",
+        bron="NPR 7171-2 (intrekken kabels in buizen); kabelfabrikant",
+        omschrijving="Buitenmaat van de kabelbundel (of van het pakket "
+                     "binnenbuizen) mag ten hoogste deze fractie van de "
+                     "binnendiameter van de mantelbuis zijn."),
+    "mantelbuis_vulgraad_max": dict(
+        waarde=0.45, eenheid="-", ernst="waarschuwing",
+        bron="NPR 7171-2; praktijkregel intrekken (≤ 40–45 % doorsnede)",
+        omschrijving="Maximale vulgraad (kabeldoorsnede / vrije "
+                     "buisdoorsnede) van een mantelbuis."),
+    "mantelbuis_hdpe_sdr": dict(
+        waarde=11, eenheid="-", ernst="info",
+        bron="NEN-EN 12201 (PE-buizen); Liander-standaard HDPE SDR11",
+        omschrijving="Wanddikteklasse (SDR) van de HDPE-mantelbuis; bepaalt "
+                     "de binnendiameter per buitenmaat."),
+    "boring_samenvoegafstand_m": dict(
+        waarde=0.0, eenheid="m", ernst="info",
+        bron="Ontwerpuitgangspunt: zo min mogelijk boringen en mantelbuizen",
+        omschrijving="Extra afstand (boven de som van de in-/uitloop van "
+                     "beide boringen) waarbinnen twee opeenvolgende "
+                     "sleufloze kruisingen in één boring worden gepasseerd."),
+    "boring_dubbele_passage_m": dict(
+        waarde=5.0, eenheid="m", ernst="info",
+        bron="Ontwerpuitgangspunt: zo min mogelijk boringen en mantelbuizen",
+        omschrijving="Twee sleufloze kruisingen op verschillende chainage "
+                     "maar binnen deze afstand van elkaar (ringtracé dat "
+                     "dezelfde weg twee keer passeert) delen één boring met "
+                     "één buis per circuit."),
     # --- geometrische integriteit ------------------------------------------
     "zelf_intersectie_ernst": dict(
         waarde="kritiek", eenheid="-", ernst="kritiek",

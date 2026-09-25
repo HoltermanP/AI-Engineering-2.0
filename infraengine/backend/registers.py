@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import math
 
-from shapely.geometry import LineString, Point, mapping
+from shapely.geometry import LineString, MultiLineString, MultiPoint, Point, mapping, shape
 
 import brk
 import eigendom
+import mantelbuizen
 import ndff as ndff_mod
+import normen
 from engine import (
     CL_BERM, CL_ERF, CL_FIETSPAD, CL_NATUURGROEN, CL_ONBEKEND, CL_ONVERHARD,
     CL_PAND, CL_PARKEER, CL_RIJBAAN, CL_SPOOR, CL_VERBODEN, CL_VOETPAD, CL_WATER,
@@ -20,7 +22,8 @@ from engine import (
     ZN_BOOM, ZN_BUISLEIDING, ZN_GWB, ZN_KERING, ZN_KLIC, ZN_MONUMENT, ZN_NATURA,
     ZN_NGE, ZN_NNN, ZN_STILTE, ZONE_NAMES, BOOM_WORTELZONE_M,
     TECHNIEK_HDD, TECHNIEK_NANO, TECHNIEK_OPEN, TECHNIEK_PERSING, TECHNIEK_RAKET,
-    BOOR_UITLOOP, BOOR_UITLOOP_DEFAULT, _substring,
+    BOOR_UITLOOP, BOOR_UITLOOP_DEFAULT, BOOR_VRIJ_MAX_M, RAKET_MAX_BOORLENGTE_M,
+    RIJBAAN_PERSING_MAX_M, _substring,
 )
 
 # Indicatieve eenheidsprijzen (per organisatie instelbaar; FO §7 Kosten)
@@ -238,15 +241,167 @@ def build_vergunningen(segments: list, crossings: list, gemeente: str | None,
 # 6.2 Boringen, persingen en nanodrills
 # ---------------------------------------------------------------------------
 
+SLEUFLOZE_TECHNIEKEN = (TECHNIEK_HDD, TECHNIEK_PERSING, TECHNIEK_NANO,
+                        TECHNIEK_RAKET)
+# zwaarte van de sleufloze technieken: bij samenvoegen telt de zwaarste
+TECHNIEK_RANG = {TECHNIEK_RAKET: 1, TECHNIEK_NANO: 2, TECHNIEK_PERSING: 3,
+                 TECHNIEK_HDD: 4}
+SOORT_RANG = {"spoor": 3, "water": 2, "rijbaan": 1}
+
+
+def _uitloop(c: dict) -> float:
+    return BOOR_UITLOOP.get(c["techniek"], BOOR_UITLOOP_DEFAULT)
+
+
+def _techniek_na_samenvoegen(technieken: list, obstakel_m: float,
+                             boorlengte_m: float, circuits: int) -> str:
+    """Zwaarste techniek van de samengevoegde kruisingen, opgeschaald als de
+    gezamenlijke lengte of het aantal buizen die techniek te boven gaat."""
+    t = max(technieken, key=lambda x: TECHNIEK_RANG.get(x, 0))
+    if t in (TECHNIEK_PERSING, TECHNIEK_NANO, TECHNIEK_RAKET) \
+            and obstakel_m > RIJBAAN_PERSING_MAX_M:
+        return TECHNIEK_HDD
+    if t == TECHNIEK_RAKET and (boorlengte_m > RAKET_MAX_BOORLENGTE_M
+                                or circuits > 1):
+        return TECHNIEK_NANO  # raket trekt één buis in één schot
+    return t
+
+
+def groepeer_boringen(route: LineString, crossings: list) -> list:
+    """Sleufloze kruisingen groeperen tot zo min mogelijk boringen.
+
+    Twee regels, beide met als doel zo min mogelijk boringen en dus zo min
+    mogelijk mantelbuizen:
+
+    1. **Aangrenzend langs het tracé**: raken de boorlijnen (obstakel plus
+       in-/uitloop) van twee opeenvolgende sleufloze kruisingen elkaar, dan
+       worden ze in één boring gepasseerd (watergang direct naast de rijbaan:
+       één HDD in plaats van een persing én een HDD). De techniek is de
+       zwaarste van beide, opgeschaald als de gezamenlijke lengte dat vraagt.
+    2. **Dubbele passage**: een ringtracé dat dezelfde weg twee keer kruist
+       (verschillende chainage, zelfde plek) krijgt één boring met één buis
+       per circuit in plaats van twee boringen.
+
+    Retourneert groepen: dicts met `kruisingen` (lijst van kruisingen),
+    `chainage_van_m`/`chainage_tot_m` (van de boorlijn-obstakels), `techniek`,
+    `soort` (zwaarste), `circuits`, `samengevoegd` (motivering of "").
+    Elke betrokken kruising krijgt `boring_groep` (index) en, als de techniek
+    door het samenvoegen wijzigt, `techniek_oorspronkelijk`.
+    """
+    sleufloos = sorted((c for c in crossings if c["techniek"] in SLEUFLOZE_TECHNIEKEN),
+                       key=lambda c: c["chainage_van_m"])
+    extra = float(normen.waarde("boring_samenvoegafstand_m"))
+    groepen: list = []
+    for c in sleufloos:
+        g = groepen[-1] if groepen else None
+        if g is not None:
+            laatste = g["kruisingen"][-1]
+            gat = c["chainage_van_m"] - g["chainage_tot_m"]
+            if gat <= _uitloop(laatste) + _uitloop(c) + extra:
+                g["kruisingen"].append(c)
+                g["chainage_tot_m"] = max(g["chainage_tot_m"], c["chainage_tot_m"])
+                continue
+        groepen.append({"kruisingen": [c],
+                        "chainage_van_m": c["chainage_van_m"],
+                        "chainage_tot_m": c["chainage_tot_m"],
+                        "circuits": 1, "passages": []})
+
+    # dubbele passage: zelfde plek op een andere chainage → één boring
+    dubbel_m = float(normen.waarde("boring_dubbele_passage_m"))
+    samengevoegd: list = []
+    for g in groepen:
+        p = route.interpolate((g["chainage_van_m"] + g["chainage_tot_m"]) / 2)
+        doel = None
+        for h in samengevoegd:
+            q = route.interpolate((h["chainage_van_m"] + h["chainage_tot_m"]) / 2)
+            if p.distance(q) <= dubbel_m and \
+                    {c["soort"] for c in g["kruisingen"]} & {c["soort"] for c in h["kruisingen"]}:
+                doel = h
+                break
+        if doel is None:
+            samengevoegd.append(g)
+        else:
+            doel["circuits"] += 1
+            doel["passages"].append(g)
+
+    for i, g in enumerate(samengevoegd):
+        alle = list(g["kruisingen"]) + [c for pg in g["passages"] for c in pg["kruisingen"]]
+        obstakel_m = g["chainage_tot_m"] - g["chainage_van_m"]
+        technieken = [c["techniek"] for c in alle]
+        uitloop = max(_uitloop(c) for c in alle)
+        # één kruising: het techniekvoorstel van de engine blijft staan;
+        # alleen bij samenvoegen wordt op gezamenlijke lengte en aantal
+        # buizen opgeschaald
+        g["techniek"] = (technieken[0] if len(alle) == 1 else
+                         _techniek_na_samenvoegen(technieken, obstakel_m,
+                                                  obstakel_m + 2 * uitloop,
+                                                  g["circuits"]))
+        g["soort"] = max((c["soort"] for c in alle),
+                         key=lambda s: SOORT_RANG.get(s, 0))
+        g["alle_kruisingen"] = alle
+        redenen = []
+        if len(g["kruisingen"]) > 1:
+            redenen.append(
+                " + ".join(c["nr"] for c in g["kruisingen"])
+                + " in één boring: de in-/uitloopzones overlappen — één "
+                  "mantelbuis in plaats van " + str(len(g["kruisingen"])))
+        for pg in g["passages"]:
+            redenen.append(
+                " + ".join(c["nr"] for c in pg["kruisingen"])
+                + f" (tweede passage, chainage {pg['chainage_van_m']:.0f} m) "
+                  "deelt deze boring: één boring met een buis per circuit "
+                  "in plaats van een tweede boring")
+        g["samengevoegd"] = "; ".join(redenen)
+        for c in alle:
+            c["boring_groep"] = i
+            if c["techniek"] != g["techniek"]:
+                c.setdefault("techniek_oorspronkelijk", c["techniek"])
+                c["techniek"] = g["techniek"]
+                c["detail"] = (c.get("detail", "") + " — in één boring met "
+                               + ", ".join(k["nr"] for k in alle if k is not c)
+                               + " (minder mantelbuizen)").strip(" —")
+    return samengevoegd
+
+
 def build_boringen(route: LineString, crossings: list) -> list:
+    """Boringenregister met per boring het minimale aantal mantelbuizen.
+
+    De sleufloze kruisingen worden eerst gegroepeerd tot zo min mogelijk
+    boringen (``groepeer_boringen``); per boring bepaalt ``mantelbuizen.bepaal``
+    de kleinste passende buismaat en het minimum aantal buizen (één per
+    circuit; bij persing en spoor één stalen mantelbuis met binnenbuizen).
+    """
     items = []
-    for c in crossings:
-        if c["techniek"] not in (TECHNIEK_HDD, TECHNIEK_PERSING, TECHNIEK_NANO,
-                                 TECHNIEK_RAKET):
-            continue
-        uitloop = BOOR_UITLOOP.get(c["techniek"], BOOR_UITLOOP_DEFAULT)
-        m_in = max(0.0, c["chainage_van_m"] - uitloop)
-        m_uit = min(route.length, c["chainage_tot_m"] + uitloop)
+    for g in groepeer_boringen(route, crossings):
+        eerste = g["kruisingen"][0]
+        uitloop = max(_uitloop(c) for c in g["alle_kruisingen"])
+        uitloop = max(uitloop, BOOR_UITLOOP.get(g["techniek"], BOOR_UITLOOP_DEFAULT))
+        m_in = max(0.0, g["chainage_van_m"] - uitloop)
+        m_uit = min(route.length, g["chainage_tot_m"] + uitloop)
+        # exacte in-/uittredepunten uit engine.bepaal_boorpunten: uitloop van
+        # de (definitieve) techniek vanaf de obstakelrand, op vrij terrein
+        # (buiten wegdeel, water, talud en pand), als coördinaat teruggezocht
+        # op het definitieve tracé; intrede van de eerste kruising, uittrede
+        # van de laatste. Zonder die punten (oudere projecten): de uitloop
+        # vanaf de chainage.
+        bp = [c["boor_punten"][g["techniek"]] for c in g["kruisingen"]
+              if (c.get("boor_punten") or {}).get(g["techniek"])]
+        plaatsing = []
+        if bp:
+            m_in = min(route.project(Point(q["in_rd"])) for q in bp)
+            m_uit = max(route.project(Point(q["uit_rd"])) for q in bp)
+            for kant, q, k_v, k_ok in (("intredepunt", bp[0], "verschoven_in_m", "vrij_in"),
+                                       ("uittredepunt", bp[-1], "verschoven_uit_m", "vrij_uit")):
+                if not q.get(k_ok, True):
+                    plaatsing.append(
+                        f"{kant}: binnen {BOOR_VRIJ_MAX_M:g} m langs het tracé geen vrij "
+                        "terrein (wegdeel/water/talud/pand) — op de uitloopafstand "
+                        "gelegd, handmatig inpassen")
+                elif q.get(k_v):
+                    plaatsing.append(
+                        f"{kant} {q[k_v]:g} m verder van het obstakel gelegd: op de "
+                        "uitloopafstand lag het nog in een wegdeel, water, talud of "
+                        "tegen een pand")
         p_in, p_uit = route.interpolate(m_in), route.interpolate(m_uit)
         # boorlijn exact op het tracé; waar het rechttrekken lukte is dit de
         # rechte lijn intrede→uittrede, anders volgt hij de (gebogen) route
@@ -259,25 +414,35 @@ def build_boringen(route: LineString, crossings: list) -> list:
             "water": "≥ 1,0–1,5 m onder leggerbodem (keur; NEN 3651)",
             "rijbaan": "≥ 1,2 m onder wegdek (AVOI wegbeheerder)",
             "spoor": "conform ProRail-voorschrift, stalen mantelbuis",
-        }.get(c["soort"], "≥ 1,0 m")
-        wt = c.get("werkterrein") or {}
+        }.get(g["soort"], "≥ 1,0 m")
+        wt = eerste.get("werkterrein") or {}
+        lengte = round(m_uit - m_in, 1)
+        nr = f"BOR-{len(items) + 1:03d}"
+        buis = mantelbuizen.bepaal(g["techniek"], g["soort"], g["circuits"], lengte)
+        for c in g["alle_kruisingen"]:
+            c["boring"] = nr
         items.append({
-            **_basisitem(f"BOR-{len(items) + 1:03d}", "boring"),
-            "type": c["techniek"],
-            "type_oorspronkelijk": c.get("techniek_oorspronkelijk", ""),
-            "kruising": c["nr"],
-            "obstakel": f"{c['soort']} ({c['breedte_m']} m)",
-            "noodzaak": c.get("noodzaak", ""),
+            **_basisitem(nr, "boring"),
+            "type": g["techniek"],
+            "type_oorspronkelijk": (eerste.get("techniek_oorspronkelijk", "")
+                                    if len(g["alle_kruisingen"]) == 1 else ""),
+            "kruising": eerste["nr"],
+            "kruisingen": [c["nr"] for c in g["alle_kruisingen"]],
+            "obstakel": " + ".join(f"{c['soort']} ({c['breedte_m']} m)"
+                                   for c in g["kruisingen"]),
+            "noodzaak": "; ".join(dict.fromkeys(
+                c.get("noodzaak", "") for c in g["kruisingen"] if c.get("noodzaak"))),
+            "samengevoegd": g["samengevoegd"],
             "intredepunt_rd": (round(p_in.x, 2), round(p_in.y, 2)),
             "uittredepunt_rd": (round(p_uit.x, 2), round(p_uit.y, 2)),
             "uitloop_m": uitloop,
-            "lengte_m": round(m_uit - m_in, 1),
+            "lengte_m": lengte,
             "recht": recht,
             "afwijking_recht_m": round(afwijking, 2),
+            "plaatsing": "; ".join(plaatsing),
             "geometry": mapping(boorlijn),
             "dekking_eis": dekking,
-            "mantelbuis": "1× HDPE Ø160 SDR11 (voorstel)" if c["soort"] != "spoor"
-                          else "Stalen mantelbuis (voorstel)",
+            **buis,
             "bodemprofiel": "BRO-profiel nog op te halen (fase 2)",
             "berekeningen": "Sterkte / boorvloeistofdruk: nog niet uitgevoerd",
             "werkterrein_oordeel": wt.get("oordeel", "niet getoetst"),
@@ -435,17 +600,67 @@ def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0,
 # 6.4 Onderzoeken (FO): bodem, archeologie, natuur, grondonderzoek, NGE
 # ---------------------------------------------------------------------------
 
+BEREIK_TRACEBREED = "tracébreed"
+BEREIK_DEEL = "deeltracé"
+
+
+def _zone_geometrie(zone_geoms: dict | None, *bits) -> dict | None:
+    """GeoJSON (MultiLineString) van de tracédelen in een of meer zonelagen,
+    of None als daar geen lijngeometrie van bekend is."""
+    lijnen = []
+    for bit in bits:
+        for g in (zone_geoms or {}).get(bit) or []:
+            if g.is_empty:
+                continue
+            if g.geom_type == "MultiLineString":
+                lijnen.extend(g.geoms)
+            else:
+                lijnen.append(g)
+    return mapping(MultiLineString(lijnen)) if lijnen else None
+
+
+def _boringen_geometrie(boringen: list) -> dict | None:
+    """Boorlijnen (of anders de intredepunten) van een set boringen."""
+    lijnen, punten = [], []
+    for b in boringen:
+        geom = b.get("geometry")
+        try:
+            g = shape(geom) if geom else None
+        except Exception:
+            g = None
+        if g is not None and g.geom_type == "LineString" and not g.is_empty:
+            lijnen.append(g)
+        elif b.get("intredepunt_rd"):
+            punten.append(Point(b["intredepunt_rd"]))
+    if lijnen:
+        return mapping(MultiLineString(lijnen))
+    if punten:
+        return mapping(MultiPoint(punten))
+    return None
+
+
 def build_onderzoeken(zones_m: dict | None, boringen: list,
-                      ndff: dict | None = None) -> list:
+                      ndff: dict | None = None,
+                      zone_geoms: dict | None = None) -> list:
+    """Onderzoekenregister. Elk item krijgt een `bereik` (tracébreed of
+    deeltracé) en, bij een deeltracé, de `geometry` van de tracédelen waar
+    het onderzoek op ziet (uit `zone_geoms`, zie engine.zone_trajecten), zodat
+    de kaart daarnaar kan inzoomen; tracébrede onderzoeken hebben geen
+    geometrie en tonen het hele tracé."""
     zones_m = {**LEGE_ZONES, **(zones_m or {})}
     items = []
 
-    def add(soort, aanleiding, conclusie="nog uit te voeren"):
+    def add(soort, aanleiding, conclusie="nog uit te voeren", geometry=None):
         items.append({
             **_basisitem(f"OND-{len(items) + 1:03d}", "onderzoek"),
             "soort": soort, "aanleiding": aanleiding,
             "rapport": "", "conclusie": conclusie,
+            "bereik": BEREIK_DEEL if geometry else BEREIK_TRACEBREED,
+            "geometry": geometry,
         })
+
+    def zg(*bits):
+        return _zone_geometrie(zone_geoms, *bits)
 
     add("KLIC-oriëntatiemelding", "Ontwerpfase (WIBON); ligging bestaande netten")
     # natuur-quickscan: gebiedsbescherming (Natura 2000/NNN) en/of
@@ -461,31 +676,37 @@ def build_onderzoeken(zones_m: dict | None, boringen: list,
                       f"soorten (Ow) geregistreerd in {ndff['hokken']} km-hok(ken) "
                       f"van het gebied — {ndff_tekst}")
     if natuur:
-        add("Natuur-quickscan (flora en fauna)", "; ".join(natuur))
+        # alleen gebiedsbescherming is op het tracé te lokaliseren; NDFF-data
+        # geldt per km-hok en daarmee voor het hele tracé
+        add("Natuur-quickscan (flora en fauna)", "; ".join(natuur),
+            geometry=zg(ZN_NATURA, ZN_NNN)
+            if zones_m[ZN_NATURA] > 0 or zones_m[ZN_NNN] > 0 else None)
     if zones_m[ZN_BODEM] > 0:
         add("Milieuhygiënisch bodemonderzoek + saneringsplan-check",
             f"{zones_m[ZN_BODEM]:.0f} m tracé door verontreinigd of nazorggebied "
-            f"(BRO SLD); veiligheidsklasse CROW 400, raadpleeg het overheidsbesluit")
+            f"(BRO SLD); veiligheidsklasse CROW 400, raadpleeg het overheidsbesluit",
+            geometry=zg(ZN_BODEM))
     if zones_m[ZN_BODEM_ONDERZOEK] > 0:
         add("Milieuhygiënisch bodemonderzoek (vooronderzoek NEN 5725)",
             f"{zones_m[ZN_BODEM_ONDERZOEK]:.0f} m tracé over bekende "
             f"onderzoekslocatie (BRO SAD / historisch Wbb); rapporten opvragen, "
-            f"bepaalt veiligheidsklasse CROW 400")
+            f"bepaalt veiligheidsklasse CROW 400", geometry=zg(ZN_BODEM_ONDERZOEK))
     if (zones_m[ZN_BODEM] == 0 and zones_m[ZN_BODEM_ONDERZOEK] == 0
             and zones_m[ZN_BODEM_ELDERS] > 0):
         add("Bodeminformatie opvragen bij bevoegd gezag",
             f"{zones_m[ZN_BODEM_ELDERS]:.0f} m tracé in gebied waar het bevoegd "
             f"gezag bodemdata (nog) via een eigen loket publiceert; BRO SAD/SLD "
-            f"en het landelijke Bodemloket zijn hier mogelijk niet dekkend")
+            f"en het landelijke Bodemloket zijn hier mogelijk niet dekkend",
+            geometry=zg(ZN_BODEM_ELDERS))
     if zones_m[ZN_ARCHEO] > 0:
         add("Archeologisch bureauonderzoek / IVO",
-            f"{zones_m[ZN_ARCHEO]:.0f} m tracé over AMK-terrein")
+            f"{zones_m[ZN_ARCHEO]:.0f} m tracé over AMK-terrein", geometry=zg(ZN_ARCHEO))
     if zones_m[ZN_BOOM] > 0:
         add("Bomen Effect Analyse (BEA)",
             f"{zones_m[ZN_BOOM]:.0f} m tracé binnen de wortelzone van bomen "
             f"(kroonprojectie, minimaal r = {BOOM_WORTELZONE_M:.1f} m; bron BGT/"
             f"gemeentelijk register); Handboek Bomen — dekking wisselt per "
-            f"gemeente, veldcheck nodig")
+            f"gemeente, veldcheck nodig", geometry=zg(ZN_BOOM))
     hdd = [b for b in boringen if b["type"] == TECHNIEK_HDD]
     if hdd:
         bekend = sum(1 for b in hdd
@@ -495,22 +716,26 @@ def build_onderzoeken(zones_m: dict | None, boringen: list,
             aanleiding += (f" — bij {bekend} boring(en) zijn al sonderingen "
                            f"binnen ± 100 m bekend in de BRO (opvragen i.p.v. "
                            f"nieuw ramen)")
-        add("Grondonderzoek boringen (sonderingen, BRO-profielen)", aanleiding)
+        add("Grondonderzoek boringen (sonderingen, BRO-profielen)", aanleiding,
+            geometry=_boringen_geometrie(hdd))
     if zones_m[ZN_STILTE] > 0:
         add("Werkplan stiltegebied (geluidsarme uitvoering)",
-            f"{zones_m[ZN_STILTE]:.0f} m tracé in provinciaal stiltegebied")
+            f"{zones_m[ZN_STILTE]:.0f} m tracé in provinciaal stiltegebied",
+            geometry=zg(ZN_STILTE))
     if zones_m[ZN_MONUMENT] > 0:
         add("Afstemming monumentenzorg (RCE/gemeente)",
-            f"{zones_m[ZN_MONUMENT]:.0f} m tracé binnen een rijksmonument-contour")
+            f"{zones_m[ZN_MONUMENT]:.0f} m tracé binnen een rijksmonument-contour",
+            geometry=zg(ZN_MONUMENT))
     if zones_m[ZN_BUISLEIDING] > 0:
         add("Proefsleuven / liggingbepaling buisleiding (Bevb)",
             f"{zones_m[ZN_BUISLEIDING]:.0f} m tracé nabij een buisleiding "
-            f"gevaarlijke stoffen; exacte ligging en eisen exploitant")
+            f"gevaarlijke stoffen; exacte ligging en eisen exploitant",
+            geometry=zg(ZN_BUISLEIDING))
     if zones_m[ZN_NGE] > 0:
         add("NGE-vooronderzoek (niet gesprongen explosieven)",
             f"{zones_m[ZN_NGE]:.0f} m tracé in NGE-verdacht gebied "
             f"(gekoppelde bodembelastingkaart, NGE_REGIONAAL); "
-            f"CS-VROO / opsporing conform WSCS-OCE")
+            f"CS-VROO / opsporing conform WSCS-OCE", geometry=zg(ZN_NGE))
     else:
         add("NGE (niet gesprongen explosieven)",
             "Geen gekoppelde bodembelastingkaart voor dit gebied "
@@ -593,6 +818,10 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
                 "af van de rechte lijn intrede–uittrede (rechttrekken strandde op "
                 "een obstakel); in-/uittredepunt verschuiven of techniek "
                 "heroverwegen.", b["intredepunt_rd"])
+        if "geen vrij terrein" in (b.get("plaatsing") or ""):
+            add("waarschuwing", "In-/uittredepunt niet op vrij terrein",
+                "Werkwijze boringen: opstelling buiten verharding, water en talud",
+                f"{b['nr']} ({b['type']}): {b['plaatsing']}.", b["intredepunt_rd"])
 
     for c in crossings:
         if not c.get("techniek"):
@@ -796,6 +1025,8 @@ def ken_werkpakketten_toe(werkpakketten: list, route: LineString,
         kruising_wp[c["nr"]] = c["werkpakket"]
     for b in boringen:
         b["werkpakket"] = kruising_wp.get(b["kruising"], WP_TRACEBREED)
+        b["werkpakketten"] = sorted({kruising_wp[k] for k in b.get("kruisingen", [])
+                                     if k in kruising_wp})
     for m in moffen:
         m["werkpakket"] = _wp_van(werkpakketten, m["chainage_m"])
     for z in zro:

@@ -125,7 +125,7 @@ def _segment_vrij(grid, p0: tuple, p1: tuple) -> bool:
 
 
 def verruim_bochten(coords: list, r_eis: float, knik_gr: float,
-                    grid=None) -> list:
+                    grid=None, vast: set | None = None) -> list:
     """Bochten die de buigradius-eis niet halen vóór de toetsing verruimen.
 
     Schuift een te scherp knikpunt in kleine stappen naar het midden van de
@@ -144,8 +144,13 @@ def verruim_bochten(coords: list, r_eis: float, knik_gr: float,
     elkaar tegenwerken. Twee aanpalende scherpe knikken op een kort
     tussensegment (een echte haarspeld) blijven zo ongemoeid en komen
     ongewijzigd in de toetsing terecht — verruimen is een preventie bovenop
-    de bestaande vangnet-toets, geen vervanging ervan."""
+    de bestaande vangnet-toets, geen vervanging ervan.
+
+    Punten in ``vast`` (in-/uittredepunten en de hoekpunten van boorlijnen)
+    blijven staan: de knik bij een intredepunt is een echte knik — het tracé
+    buigt daar in de rechte boorlijn — en mag niet worden afgesneden."""
     coords = list(coords)
+    vast = vast or set()
     stappen = 20
 
     def is_bocht(i: int) -> bool:
@@ -154,7 +159,7 @@ def verruim_bochten(coords: list, r_eis: float, knik_gr: float,
                 and _inpasbare_radius(a, b, c) < r_eis)
 
     for i in range(1, len(coords) - 1):
-        if not is_bocht(i):
+        if coords[i] in vast or not is_bocht(i):
             continue
         if (i - 1 >= 1 and is_bocht(i - 1)) or (
                 i + 1 <= len(coords) - 2 and is_bocht(i + 1)):
@@ -191,7 +196,7 @@ def referentieranden(bgt: dict | None, percelen: list | None = None):
 # ---------------------------------------------------------------------------
 
 def normaliseer_route(route: LineString, referentie: list | None = None,
-                      grid=None) -> LineString:
+                      grid=None, vast=None) -> LineString:
     """Afronden, ontdubbelen, korte knik-segmenten samenvoegen, snappen en
     te scherpe bochten verruimen.
 
@@ -199,15 +204,22 @@ def normaliseer_route(route: LineString, referentie: list | None = None,
     nauwkeurigheidseisen vooraf respecteren. Begin- en eindpunt (stations)
     blijven op hun plaats. ``grid`` (optioneel, het kostenraster van deze
     berekening) laat de buigradius-verruiming toetsen tegen harde
-    uitsluitingen — zonder ``grid`` gebeurt de verruiming ongetoetst."""
+    uitsluitingen — zonder ``grid`` gebeurt de verruiming ongetoetst.
+
+    ``vast``: coördinaten (x, y) die niet mogen verschuiven of vervallen —
+    de in-/uittredepunten en hoekpunten van rechtgetrokken boorlijnen
+    (``engine.bepaal_boorpunten``). Ze worden wél afgerond, net als de rest."""
     coords = [(_rond(x), _rond(y)) for x, y in route.coords]
+    vast_r = {(_rond(x), _rond(y)) for x, y in (vast or ())}
 
     # snappen: punt binnen de snaptolerantie van een referentierand → exact
-    # op de rand (behalve de stations op begin en eind)
+    # op de rand (behalve de stations op begin en eind en de boorpunten)
     if referentie:
         tol = float(normen.waarde("snap_tolerantie_m"))
         boom = STRtree(referentie)
         for i in range(1, len(coords) - 1):
+            if coords[i] in vast_r:
+                continue
             p = Point(coords[i])
             idx = boom.nearest(p)
             rand = referentie[int(idx)]
@@ -231,7 +243,7 @@ def normaliseer_route(route: LineString, referentie: list | None = None,
             l_vorig = math.hypot(coords[i][0] - coords[i - 1][0],
                                  coords[i][1] - coords[i - 1][1])
             hoek = _hoek_verandering(coords[i - 1], coords[i], coords[i + 1])
-            if l_vorig < min_seg and hoek >= knik_gr:
+            if l_vorig < min_seg and hoek >= knik_gr and coords[i] not in vast_r:
                 del coords[i]
                 gewijzigd = True
             else:
@@ -241,7 +253,7 @@ def normaliseer_route(route: LineString, referentie: list | None = None,
 
     if len(coords) >= 3:
         coords = verruim_bochten(coords, normen.buigradius_eis_m(), knik_gr,
-                                 grid)
+                                 grid, vast_r)
 
     if len(coords) < 2:
         return route

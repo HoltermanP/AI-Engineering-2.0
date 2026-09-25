@@ -327,6 +327,8 @@ def werkpakketkaart(result: dict, variant_idx: int, wp_idx: int,
     for c in v.get("kruisingen", []):
         if c.get("werkpakket") != wp["nr"]:
             continue
+        if c.get("bijzonder_punt", True) is False:
+            continue  # standaard open ontgraving: geen bijzonder punt op de tekening
         try:
             p = route.interpolate((c["chainage_van_m"] + c["chainage_tot_m"]) / 2)
             label(p.x, p.y, c["nr"], VARIANT_KLEUREN[4])

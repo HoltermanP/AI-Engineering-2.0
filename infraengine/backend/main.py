@@ -47,7 +47,8 @@ from engine import (
     CLASS_NAMES, EngineError, Grid, ZONE_NAMES, beoordeel_werkterreinen,
     build_painter, build_segments,
     detect_crossings, propose_moffen, route_chunk, shortest_path,
-    straighten_iteratief, zone_lengtes, _free_station, _techniek_voor_kruising,
+    straighten_iteratief, zone_lengtes, zone_trajecten, _free_station,
+    _techniek_voor_kruising,
     DEFAULT_WEIGHTS,
 )
 from registers import (
@@ -522,6 +523,17 @@ def _hecht_kruisingen(kruisingen: list, route: LineString) -> list:
                 and c["chainage_van_m"] - v["chainage_tot_m"] < 5.0):
             v["chainage_tot_m"] = max(v["chainage_tot_m"], c["chainage_tot_m"])
             v["kruislengte_m"] = round(v["chainage_tot_m"] - v["chainage_van_m"], 1)
+            if c.get("tot_rd"):
+                v["tot_rd"] = c["tot_rd"]
+            # uittredezijde van de boorpunten komt uit de tweede helft
+            if v.get("boor_punten") and c.get("boor_punten"):
+                for t, bp in v["boor_punten"].items():
+                    if t in c["boor_punten"]:
+                        for k in ("uit_rd", "verschoven_uit_m", "vrij_uit"):
+                            bp[k] = c["boor_punten"][t][k]
+                v["boor_uit_rd"] = c.get("boor_uit_rd", v.get("boor_uit_rd"))
+            else:
+                v.pop("boor_punten", None)
             # haakse breedte: elk half gedetecteerd deel mat al door het hele
             # obstakel; de grootste meting is de beste schatting
             v["breedte_m"] = max(v["breedte_m"], c["breedte_m"])
@@ -541,10 +553,27 @@ def _hecht_kruisingen(kruisingen: list, route: LineString) -> list:
                 v["bevoegd_gezag"] = gezag
             v.pop("werkterrein", None)
             v.pop("techniek_oorspronkelijk", None)
+            # samengevoegde breedte kan open → sleufloos maken; de markering
+            # van de verrijking (legger/NWB) blijft anders staan
+            if v["techniek"] != engine.TECHNIEK_OPEN:
+                engine.markeer_bijzonder_punt(v)
             mid = route.interpolate((v["chainage_van_m"] + v["chainage_tot_m"]) / 2)
             v["punt"] = (round(mid.x, 2), round(mid.y, 2))
         else:
             samengevoegd.append(c)
+    # chainages opnieuw meten op het samengestelde, genormaliseerde tracé:
+    # de obstakelranden liggen als coördinaat vast, maar de tracélengte vóór
+    # een kruising kan door samenvoegen en normaliseren zijn veranderd — op
+    # de oude chainage zou de boring naast het obstakel komen te liggen
+    for c in samengevoegd:
+        if c.get("van_rd") and c.get("tot_rd"):
+            m0 = route.project(Point(c["van_rd"]))
+            m1 = route.project(Point(c["tot_rd"]))
+            c["chainage_van_m"] = round(min(m0, m1), 1)
+            c["chainage_tot_m"] = round(max(m0, m1), 1)
+            c["kruislengte_m"] = round(abs(m1 - m0), 1)
+            mid = route.interpolate((m0 + m1) / 2)
+            c["punt"] = (round(mid.x, 2), round(mid.y, 2))
     samengevoegd.sort(key=lambda c: c["chainage_van_m"])
     for i, c in enumerate(samengevoegd, 1):
         c["nr"] = f"KR-{i:03d}"
@@ -581,7 +610,9 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     chunks = _corridor_chunks(waypoints)
     profielen = dict(VARIANT_PROFIELEN) if req.variants else {"Voorkeursvariant": {}}
     staat = {naam: {"coords": [], "lengte": 0.0, "kruisingen": [], "segmenten": [],
-                    "zones": {bit: 0.0 for bit in ZONE_NAMES}, "fout": None}
+                    "vast": set(),
+                    "zones": {bit: 0.0 for bit in ZONE_NAMES},
+                    "zone_geoms": {bit: [] for bit in ZONE_NAMES}, "fout": None}
              for naam in profielen}
     gemeenten: list = []
     bomen_alle: list = []
@@ -706,20 +737,30 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 try:
                     bgt_deel = datas[breedte]["bgt"]
                     deel = LineString(coords)
-                    deel = straighten_iteratief(deel, bgt_deel, grid)
                     # normenkader: afronden/ontdubbelen/knikken/snappen en
                     # buigradius verruimen per deeltraject (referentieranden
-                    # uit de deel-BGT, grid voor de uitsluitingstoets)
+                    # uit de deel-BGT, grid voor de uitsluitingstoets) —
+                    # vóór het rechttrekken: snappen en bochten verruimen
+                    # zouden de in-/uittredepunten van de boorlijn anders
+                    # weer van hun plaats schuiven
                     deel = maatvoering.normaliseer_route(
                         deel, maatvoering.referentieranden(bgt_deel), grid)
+                    deel = straighten_iteratief(deel, bgt_deel, grid)
                     kruisingen = detect_crossings(deel, bgt_deel)
                     engine.verrijk_kruisingen(kruisingen,
                                               datas[breedte]["legger_water"],
                                               datas[breedte]["nwb"],
                                               pdok.waterschap_naam)
-                    beoordeel_werkterreinen(deel, kruisingen, grid)
+                    beoordeel_werkterreinen(deel, kruisingen, grid, bgt_deel)
+                    # in-/uittredepunten als coördinaat vastleggen (uitloop
+                    # vanaf de obstakelrand, op vrij terrein) en de dragende
+                    # hoekpunten beschermen tegen de normalisatie van het
+                    # samengestelde tracé
+                    st["vast"].update(engine.bepaal_boorpunten(
+                        deel, kruisingen, bgt_deel, grid))
                     segmenten = build_segments(deel, grid)
                     zl = zone_lengtes(deel, grid)
+                    zt = zone_trajecten(deel, grid)
                 except EngineError as e:
                     st["fout"] = f"Deeltraject {i + 1}/{len(chunks)}: {e}"
                     continue
@@ -734,6 +775,8 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 st["segmenten"].extend(segmenten)
                 for bit, m in zl.items():
                     st["zones"][bit] += m
+                for bit, lijnen in zt.items():
+                    st["zone_geoms"][bit].extend(lijnen)
                 cs = list(deel.coords)
                 st["coords"].extend(cs if not st["coords"] else cs[1:])
                 st["lengte"] += deel.length
@@ -759,17 +802,21 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         # genormaliseerd, maar de knik ín het naadpunt overspant twee
         # deeltrajecten en is dus nog niet getoetst); geen grid op dit
         # tracé-brede niveau, dus ongetoetst tegen uitsluitingen
-        route = maatvoering.normaliseer_route(route)
+        route = maatvoering.normaliseer_route(route, vast=st["vast"])
         kruisingen = _hecht_kruisingen(st["kruisingen"], route)
         segmenten = _hecht_segmenten(st["segmenten"])
         zones_m = {bit: round(m, 1) for bit, m in st["zones"].items()}
-        moffen = propose_moffen(route, kruisingen, segmenten, req.haspel_m)
-        vergunningen = build_vergunningen(segmenten, kruisingen, gemeente, zones_m)
+        # boringen vóór de vergunningen: het samenvoegen van aangrenzende
+        # sleufloze kruisingen (zo min mogelijk mantelbuizen) kan de techniek
+        # van een kruising wijzigen, en daarmee de vergunning
         boringen = build_boringen(route, kruisingen)
         _verrijk_boringen(route, boringen)
+        moffen = propose_moffen(route, kruisingen, segmenten, req.haspel_m)
+        vergunningen = build_vergunningen(segmenten, kruisingen, gemeente, zones_m)
         son_register = _sonderingen_register(route, boringen, son_fouten)
         hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
-        onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam)
+        onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam,
+                                        zone_geoms=st["zone_geoms"])
         zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
         checks = build_checks(route, segmenten, kruisingen, boringen, zones_m,
                               bomen_rivm_fractie=(max(bomen_rivm_fracties)
@@ -928,17 +975,20 @@ def _verrijk_route(route: LineString, grid: Grid, bgt: dict, percelen: list,
     crossings = detect_crossings(route, bgt)
     engine.verrijk_kruisingen(crossings, data["legger_water"],
                               data["nwb"], pdok.waterschap_naam)
-    beoordeel_werkterreinen(route, crossings, grid)
+    beoordeel_werkterreinen(route, crossings, grid, bgt)
+    engine.bepaal_boorpunten(route, crossings, bgt, grid)
     segments = build_segments(route, grid)
     zones_m = zone_lengtes(route, grid)
+    zone_geoms = zone_trajecten(route, grid)
+    boringen = build_boringen(route, crossings)  # vóór vergunningen (techniek kan wijzigen)
+    _verrijk_boringen(route, boringen)
     moffen = propose_moffen(route, crossings, segments, haspel_m)
     vergunningen = build_vergunningen(segments, crossings, gemeente, zones_m)
-    boringen = build_boringen(route, crossings)
-    _verrijk_boringen(route, boringen)
     son_register = _sonderingen_register(route, boringen, data["laag_fouten"])
     hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
     ndff_sam = data.get("ndff_samenvatting")
-    onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam)
+    onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam,
+                                    zone_geoms=zone_geoms)
     zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
     checks = build_checks(route, segments, crossings, boringen, zones_m,
                           bomen_rivm_fractie=data.get("bomen_rivm_fractie"),
@@ -1049,11 +1099,12 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
             for wp in waypoints:
                 _free_station(grid, wp)
             route = LineString(shortest_path(grid, waypoints))
-            route = straighten_iteratief(route, bgt, grid)
             # afronden op 0,01 m RD, ontdubbelen, korte knik-segmenten
             # samenvoegen, snappen op BGT-/erfranden en buigradius verruimen,
-            # zodat het gegenereerde tracé de eisen vooraf respecteert
+            # zodat het gegenereerde tracé de eisen vooraf respecteert — vóór
+            # het rechttrekken, zodat de boorlijnen daarna exact blijven liggen
             route = maatvoering.normaliseer_route(route, referentie, grid)
+            route = straighten_iteratief(route, bgt, grid)
             varianten.append(_verrijk_route(
                 route, grid, bgt, percelen, gemeente, data, boom_zones,
                 eigendom_sig, referentie, naam, weights, req.stations,
@@ -1391,6 +1442,9 @@ def register_update(u: RegisterUpdate):
         if not isinstance(w, str) or len(w) > 500:
             raise HTTPException(400, f"Ongeldige waarde voor '{k}' (tekst, max 500 tekens).")
         rij[k] = w.strip()
+    if u.register == "kruisingen" and "techniek" in u.wijzigingen:
+        # handmatig sleufloos ↔ open: bijzonder-punt-markering mee laten lopen
+        engine.markeer_bijzonder_punt(rij)
     return rij
 
 
@@ -1408,7 +1462,8 @@ def export_geojson(variant: int = 0):
                       "properties": {"laag": "kruising", **{k: c.get(k) for k in
                                      ("nr", "soort", "breedte_m", "kruislengte_m",
                                       "techniek", "bevoegd_gezag", "noodzaak",
-                                      "legger_categorie", "wegnaam")},
+                                      "legger_categorie", "wegnaam",
+                                      "bijzonder_punt", "bijzonder_reden")},
                                      "werkpakket": c.get("werkpakket", "")},
                       "geometry": {"type": "Point", "coordinates": list(c["punt"])}})
     for b in v.get("boringen", []):
@@ -1544,11 +1599,14 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
             s["lengte_m"]] for s in v["segmenten"]])
     sheet("Kruisingen",
           ["Nr", "Werkpakket", "Soort", "Breedte haaks (m)", "Langs tracé (m)",
-           "Techniek", "Noodzaak", "Legger-categorie", "Wegfunctie (BGT)",
+           "Techniek", "Bijzonder punt", "Waarom (niet) vermeld",
+           "Noodzaak", "Legger-categorie", "Wegfunctie (BGT)",
            "Verharding (BGT)", "Wegnaam (NWB)",
            "Detail", "Richtlijn", "Bevoegd gezag"],
           [[c["nr"], c.get("werkpakket", ""), c["soort"], c["breedte_m"],
             c.get("kruislengte_m", ""), c["techniek"],
+            "ja" if engine.is_bijzonder_punt(c) else "nee (standaard sleufwerk)",
+            c.get("bijzonder_reden", ""),
             c.get("noodzaak", ""), c.get("legger_categorie", ""),
             c.get("wegfunctie", ""), c.get("verharding", ""),
             c.get("wegnaam", ""),
@@ -1564,7 +1622,8 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
     sheet("Boringen",
           ["Nr", "Werkpakket", "Type", "Kruising", "Obstakel", "Noodzaak",
            "Lengte (m)", "Intrede (RD)",
-           "Uittrede (RD)", "Dekking-eis", "Mantelbuis",
+           "Uittrede (RD)", "Dekking-eis", "Circuits", "Mantelbuis",
+           "Mantelbuis-motivering", "Samengevoegd",
            "Maaiveld (m NAP)", "Verval (m)", "Sonderingen (BRO)",
            "Bestaande netten",
            "Werkterrein", "Werkruimte intrede (m2)", "Werkruimte uittrede (m2)",
@@ -1572,10 +1631,12 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
           [[b["nr"], b.get("werkpakket", ""),
             b["type"] + (f" (i.p.v. {b['type_oorspronkelijk']})"
                          if b.get("type_oorspronkelijk") else ""),
-            b["kruising"], b["obstakel"], b.get("noodzaak", ""), b["lengte_m"],
+            ", ".join(b.get("kruisingen") or [b["kruising"]]), b["obstakel"],
+            b.get("noodzaak", ""), b["lengte_m"],
             f"{b['intredepunt_rd'][0]}, {b['intredepunt_rd'][1]}",
             f"{b['uittredepunt_rd'][0]}, {b['uittredepunt_rd'][1]}",
-            b["dekking_eis"], b["mantelbuis"],
+            b["dekking_eis"], b.get("circuits", 1), b["mantelbuis"],
+            b.get("mantelbuis_motivering", ""), b.get("samengevoegd", ""),
             ("" if b.get("maaiveld_min_nap") is None else
              f"{b['maaiveld_min_nap']} – {b['maaiveld_max_nap']}"),
             b.get("verval_m", ""),

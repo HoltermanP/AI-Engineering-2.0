@@ -95,7 +95,11 @@ _WP_PARAGRAAF = (
     "<nr>'; (2) een toelichting in 3 tot 5 korte alinea's, elk met een "
     "vetgedrukte openingszin als kopje: **Tracé en ligging** (ligging per "
     "meters uit `ligging_m`, wegen en zijde), **Kruisingen en boringen** "
-    "(kruisingen met techniek, boringen met nummer, type en lengte, moffen), "
+    "(alleen de bijzondere punten uit `kruisingen` met techniek en reden, "
+    "boringen met nummer, type en lengte, moffen; standaard open "
+    "ontgravingen van sloten en erftoegangen zijn gewoon sleufwerk en worden "
+    "niet opgesomd — hoogstens het aantal uit `open_ontgravingen_standaard_n` "
+    "in één bijzin), "
     "**Omgeving en vergunningen** (vergunningen, ZRO-percelen/eigenaren, "
     "toetsingsbevindingen van dit werkpakket) en **Planning** (subfasen met "
     "weken uit `planning`); sluit af met **Restpunten:** voor dit "
@@ -249,8 +253,12 @@ NOTA_FASEN = {
             "invulregels S-/W-bladen.\n"
             "`## 3. Ontwerp` — uitvoeringsgereed: `### 3.1 HDD-boringen "
             "detailoverzicht` — tabel van alle boringen (Nr | Techniek | "
-            "Lengte m | Intredepunt RD | Uittredepunt RD | Status) uit het "
-            "boorregister; daarna per werkpakket: "
+            "Lengte m | Intredepunt RD | Uittredepunt RD | Circuits | "
+            "Mantelbuis | Status) uit het boorregister — het aantal "
+            "mantelbuizen is het minimum (één buis per circuit; bij persing "
+            "en spoor één stalen mantelbuis met binnenbuizen; aangrenzende "
+            "kruisingen in één boring), licht dat toe met "
+            "`mantelbuis_motivering` en `samengevoegd`; daarna per werkpakket: "
             + _WP_PARAGRAAF.replace("<h>.<n>", "3.<n>")
             + "Beschrijf hierbij de uitvoeringswijze "
             "(sleufwerk per ligging, boringen definitief, moffen op "
@@ -356,6 +364,12 @@ def _zro_compact(rijen: list, n: int = 12) -> dict:
             "overige_niet_getoond": max(0, len(rijen) - n)}
 
 
+def _is_bijzonder(c: dict) -> bool:
+    """Alleen bijzondere punten worden in de nota vermeld (engine.
+    markeer_bijzonder_punt); oudere resultaten zonder markering tellen mee."""
+    return c.get("bijzonder_punt", True) is not False
+
+
 def _per_werkpakket(v: dict, segmenten: list, kruisingen: list,
                     zro_rijen: list) -> list:
     """Alle registers gegroepeerd per werkpakket — voedt de paragraaf met
@@ -365,6 +379,7 @@ def _per_werkpakket(v: dict, segmenten: list, kruisingen: list,
             [r for r in rijen if r.get("werkpakket") == wp_nr], extra_weg)
 
     zro_wp = {z["nr"]: z.get("werkpakket") for z in v.get("zro", [])}
+    bijzonder = [c for c in kruisingen if _is_bijzonder(c)]
     uit = []
     for wp in v.get("werkpakketten", []):
         nr = wp["nr"]
@@ -378,7 +393,12 @@ def _per_werkpakket(v: dict, segmenten: list, kruisingen: list,
             "chainage_van_m": wp["chainage_van_m"],
             "chainage_tot_m": wp["chainage_tot_m"],
             "ligging_m": ligging,
-            "kruisingen": van(kruisingen, nr),
+            "kruisingen": van(bijzonder, nr),
+            # open ontgravingen die géén bijzonder punt zijn (sloot buiten de
+            # legger, erftoegang zonder wegbeheerder): standaard sleufwerk
+            "open_ontgravingen_standaard_n": sum(
+                1 for c in kruisingen
+                if c.get("werkpakket") == nr and not _is_bijzonder(c)),
             "boringen": van(v.get("boringen", []), nr),
             "moffen": van(v.get("moffen", []), nr),
             "zro": _zro_compact([z for z in zro_rijen
@@ -404,8 +424,13 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
             ligging_totalen.get(s["ligging"], 0) + s["lengte_m"], 1)
 
     kruisingen = _zonder_geometrie(v.get("kruisingen", []))
+    # alleen bijzondere punten worden vermeld; standaard open ontgravingen
+    # (sloot buiten de legger, erftoegang zonder wegbeheerder) tellen als
+    # sleufwerk en komen alleen als aantal terug
+    bijzondere_punten = [c for c in kruisingen if _is_bijzonder(c)]
+    open_standaard_n = len(kruisingen) - len(bijzondere_punten)
     kruising_totalen: dict = {}
-    for c in kruisingen:
+    for c in bijzondere_punten:
         sleutel = f"{c['soort']} — {c['techniek']}"
         kruising_totalen[sleutel] = kruising_totalen.get(sleutel, 0) + 1
 
@@ -455,7 +480,10 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
         "ligging_totalen_m": ligging_totalen,
         "segmenten": _cap(segmenten, 80, "segmenten"),
         "kruising_totalen": kruising_totalen,
-        "kruisingen": _cap(kruisingen, 120, "kruisingen"),
+        "kruisingen": _cap(bijzondere_punten, 120, "kruisingen"),
+        # open ontgravingen die geen bijzonder punt zijn: alleen als aantal,
+        # niet opsommen (standaard sleufwerk)
+        "open_ontgravingen_standaard_n": open_standaard_n,
         "boringen": _cap(_zonder_geometrie(v.get("boringen", [])), 80, "boringen"),
         "bestaande_sonderingen_bro": _cap(
             _zonder_geometrie(v.get("sonderingen", [])), 60, "sonderingen"),
