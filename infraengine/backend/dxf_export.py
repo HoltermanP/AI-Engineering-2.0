@@ -24,6 +24,8 @@ import io
 import time
 
 import ezdxf
+
+from engine import is_bijzonder_punt
 from ezdxf.enums import TextEntityAlignment
 
 TEKST_H = 1.0        # teksthoogte in m (2 mm op papier bij 1:500)
@@ -110,7 +112,7 @@ def maak_dxf(variant: dict, stations: list, bomen: list,
 
     # --- kruisingen ----------------------------------------------------------
     for c in variant.get("kruisingen", []):
-        if c.get("bijzonder_punt", True) is False:
+        if not is_bijzonder_punt(c):
             continue  # standaard open ontgraving (sleufwerk): niet op de tekening
         punt = c["punt"]
         _kruis(msp, punt, 1.0, "KRUISINGEN")

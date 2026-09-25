@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import shapely
 from PIL import Image, ImageDraw
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, mapping
 from shapely.ops import nearest_points, unary_union
@@ -221,15 +222,51 @@ class Grid:
             if len(px) >= 3:
                 draw.polygon(px, fill=0)
 
-    def rasterize(self, geoms: list, buffer: float = 0.0) -> np.ndarray:
-        """Booleaans masker (nrows × ncols) van een lijst shapely-geometrieën."""
-        img = Image.new("L", (self.ncols, self.nrows), 0)
-        draw = ImageDraw.Draw(img)
+    def _paint_exact(self, mask: np.ndarray, g) -> None:
+        """Cel aan het vlak toekennen als het celmidden erin (of erop) ligt."""
+        x0, y0, x1, y1 = g.bounds
+        c0 = max(0, int((x0 - self.xmin) / self.cell))
+        c1 = min(self.ncols - 1, int((x1 - self.xmin) / self.cell))
+        r0 = max(0, int((self.ymax - y1) / self.cell))
+        r1 = min(self.nrows - 1, int((self.ymax - y0) / self.cell))
+        if c1 < c0 or r1 < r0:
+            return
+        xs = self.xmin + (np.arange(c0, c1 + 1) + 0.5) * self.cell
+        ys = self.ymax - (np.arange(r0, r1 + 1) + 0.5) * self.cell
+        gx, gy = np.meshgrid(xs, ys)
+        # grens-inclusief (intersects, niet contains): ligt een celmidden exact
+        # op de grens van twee vlakken, dan claimen beide de cel en wint de
+        # laatst geschilderde — anders bleef de cel bij niemand ("onbekend")
+        shapely.prepare(g)
+        binnen = shapely.intersects_xy(g, gx.ravel(), gy.ravel()).reshape(gx.shape)
+        mask[r0:r1 + 1, c0:c1 + 1] |= binnen
+
+    def rasterize(self, geoms: list, buffer: float = 0.0, exact: bool = False) -> np.ndarray:
+        """Booleaans masker (nrows × ncols) van een lijst shapely-geometrieën.
+
+        Standaard (PIL-vulling) krijgt een cel het vlak zodra het vlak de cel
+        raakt: de vulling is tot een halve cel "te dik" en wie het laatst
+        schildert wint de randcellen. Dat is gewenst voor obstakels en zones
+        (liever een cel te veel water of pand dan te weinig). Met ``exact``
+        krijgt een cel het vlak alleen als het celmidden erin ligt: geschikt
+        voor de liggingsklassen (terrein, verharding, berm), waar een smalle
+        berm anders door het aangrenzende trottoir wordt weggeschilderd of
+        omgekeerd het raster berm meldt waar al erf ligt. Elk routepunt
+        (celmidden) ligt dan gegarandeerd in de klasse die het raster meldt.
+        """
+        mask = np.zeros((self.nrows, self.ncols), dtype=bool)
+        img = draw = None
         for g in geoms:
             if buffer:
                 g = g.buffer(buffer)
             if g.is_empty:
                 continue
+            if exact and isinstance(g, (Polygon, MultiPolygon)):
+                self._paint_exact(mask, g)
+                continue
+            if img is None:
+                img = Image.new("L", (self.ncols, self.nrows), 0)
+                draw = ImageDraw.Draw(img)
             if isinstance(g, Polygon):
                 self._draw_polygon(draw, g, 1)
             elif isinstance(g, MultiPolygon):
@@ -244,7 +281,9 @@ class Grid:
                         for x, y in line.coords
                     ]
                     draw.line(px, fill=1, width=w)
-        return np.array(img, dtype=bool)
+        if img is not None:
+            mask |= np.array(img, dtype=bool)
+        return mask
 
     def paint(self, mask: np.ndarray, code: int, cost: float):
         self.klass[mask] = code
@@ -313,15 +352,16 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
     """Maskers opbouwen in schilderorde: terrein → verharding → berm/groen →
     obstakels → zones.
 
-    Schilderorde bij de randcellen: de rasterisatie kent een cel aan een vlak
-    toe zodra het vlak het celmidden dekt, maar op de grens is de vulling
-    "te dik" (tot een halve cel). Wie het laatst schildert wint dus de
-    randcellen. Daarom komt de goedkoopste ligging het laatst: de berm en
-    groenstrook ná de wegdelen, en binnen de wegdelen het voetpad ná de
-    rijbaan. Een smalle berm (1–1,5 m) naast een trottoir blijft zo in het
-    raster bestaan in plaats van door de verharding te worden weggeschilderd;
-    de exacte ligging tegen de verhardingsrand regelt daarna de vector-exacte
-    schamp-correctie (`verwijder_schampen`), die voor alle verharding geldt.
+    De liggingsklassen (terrein, wegdelen, berm) worden vector-exact op het
+    celmidden bemonsterd (`Grid.rasterize(exact=True)`): een smalle berm van
+    één cel breed blijft dan bestaan en elk routepunt ligt in de klasse die
+    het raster meldt. Waar BGT-vlakken elkaar tóch overlappen (hoogteligging,
+    datafouten) wint de laatst geschilderde, en dat is de goedkoopste
+    ligging: berm en groenstrook ná de wegdelen, voetpad ná rijbaan.
+    Obstakels en zones houden de "dikke" vulling (liever een cel te veel
+    water of pand dan te weinig). De exacte ligging tegen de
+    verhardingsrand regelt daarna de vector-exacte schamp-correctie
+    (`verwijder_schampen`), die voor alle verharding geldt.
     """
     painter = Painter(bbox, cell)
     grid = Grid(bbox, cell)  # alleen voor rasterize-hulpfuncties
@@ -329,16 +369,19 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
     def geoms(coll, pred=None):
         return [g for g, p in bgt.get(coll, []) if pred is None or pred(p)]
 
+    def ligging(gs):  # liggingsklassen: exact op het celmidden
+        return grid.rasterize(gs, exact=True)
+
     # 1. terrein — begroeid gesplitst: agrarisch (privaat-proxy), natuurlijk
     #    groen (kwetsbaar; binnen Natura 2000 uitgesloten); urbaan groen
     #    (groenvoorziening) is voorkeursligging en volgt ná de wegdelen (3)
     begroeid = bgt.get("begroeidterreindeel", [])
     groen_urbaan = [g for g, p in begroeid
                     if (p.get("fysiek_voorkomen") or "") in BGT_URBAAN_GROEN]
-    painter.add(grid.rasterize([g for g, p in begroeid
+    painter.add(ligging([g for g, p in begroeid
                                 if (p.get("fysiek_voorkomen") or "") in BGT_AGRARISCH]),
                 CL_ERF, "erf_prive")
-    painter.add(grid.rasterize([g for g, p in begroeid
+    painter.add(ligging([g for g, p in begroeid
                                 if (p.get("fysiek_voorkomen") or "") not in
                                 (BGT_URBAAN_GROEN | BGT_AGRARISCH)]),
                 CL_NATUURGROEN, "natuur_groen")
@@ -350,14 +393,14 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
                             if p.get("fysiek_voorkomen") == "open verharding"]
     terrein_dicht_verhard = [g for g, p in onbegroeid
                              if p.get("fysiek_voorkomen") == "gesloten verharding"]
-    painter.add(grid.rasterize([g for g, p in onbegroeid
+    painter.add(ligging([g for g, p in onbegroeid
                                 if p.get("fysiek_voorkomen") not in
                                 ("erf", "open verharding", "gesloten verharding")]),
                 CL_ONVERHARD, "overig_onverhard")
-    painter.add(grid.rasterize([g for g, p in onbegroeid if p.get("fysiek_voorkomen") == "erf"]),
+    painter.add(ligging([g for g, p in onbegroeid if p.get("fysiek_voorkomen") == "erf"]),
                 CL_ERF, "erf_prive")
-    painter.add(grid.rasterize(terrein_dicht_verhard), CL_ONVERHARD, "overig_onverhard*gesloten")
-    painter.add(grid.rasterize(terrein_open_verhard), CL_ONVERHARD, "overig_onverhard")
+    painter.add(ligging(terrein_dicht_verhard), CL_ONVERHARD, "overig_onverhard*gesloten")
+    painter.add(ligging(terrein_open_verhard), CL_ONVERHARD, "overig_onverhard")
 
     # 2. wegdelen per functie, duurste eerst (rijbaan) en goedkoopste laatst
     #    (voetpad), zodat op de grens de lichtste ligging de randcel houdt;
@@ -375,8 +418,8 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
             if cl != code:
                 continue
             (dicht_g if p.get("fysiek_voorkomen") == "gesloten verharding" else open_g).append(g)
-        painter.add(grid.rasterize(dicht_g), code, f"{key}*gesloten")
-        painter.add(grid.rasterize(open_g), code, key)
+        painter.add(ligging(dicht_g), code, f"{key}*gesloten")
+        painter.add(ligging(open_g), code, key)
         # rijbaan: één vlak, beprijsd als open rijbaan (de schamp-toeslag is
         # een randcorrectie, geen asfaltprijs); overige klassen per gewicht
         if code == CL_RIJBAAN:
@@ -390,9 +433,9 @@ def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
     # 3. berm en groenstrook (voorkeursligging) ná de wegdelen: houdt de
     #    randcellen tegen de verharding; ondersteunend wegdeel zonder
     #    bermfunctie (verkeerseiland e.d.) iets zwaarder
-    painter.add(grid.rasterize(geoms("ondersteunendwegdeel", lambda p: p.get("functie") != "berm")),
+    painter.add(ligging(geoms("ondersteunendwegdeel", lambda p: p.get("functie") != "berm")),
                 CL_BERM, "berm_groen", 1.3)
-    painter.add(grid.rasterize(geoms("ondersteunendwegdeel", lambda p: p.get("functie") == "berm")
+    painter.add(ligging(geoms("ondersteunendwegdeel", lambda p: p.get("functie") == "berm")
                                + groen_urbaan),
                 CL_BERM, "berm_groen")
 
@@ -1243,8 +1286,7 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
             }
             if _sleufloos_verplicht(kenmerken):
                 c["sleufloos_verplicht"] = True
-            # zonder legger/NWB (verrijk_kruisingen) is elke kruising bijzonder
-            markeer_bijzonder_punt(c, legger_beschikbaar=False, nwb_beschikbaar=False)
+            markeer_bijzonder_punt(c)
             crossings.append(c)
     crossings.sort(key=lambda c: c["chainage_van_m"])
     for i, c in enumerate(crossings, 1):
@@ -1340,30 +1382,32 @@ def verrijk_kruisingen(crossings: list, legger_water: list | None = None,
             if straat:
                 c["wegnaam"] = straat
     for c in crossings:
-        markeer_bijzonder_punt(c, legger_beschikbaar=bool(legger_water),
-                               nwb_beschikbaar=bool(nwb))
+        markeer_bijzonder_punt(c)
 
 
 # ---------------------------------------------------------------------------
 # Bijzondere punten: welke kruisingen worden vermeld
 # ---------------------------------------------------------------------------
-# Een open ontgraving is het standaard sleufwerk en hoort niet als kruising
-# in register, nota en tekening. Vermeld wordt alleen een bijzonder punt:
-# elke sleufloze passage, en een open ontgraving waar een beheerder in het
-# spel is — een leggerwatergang van het waterschap (afdamming, melding
-# waterschapsverordening) of een openbare weg met wegbeheerder in het NWB
-# (verkeersmaatregelen, instemming wegbeheerder). Een sloot buiten de legger
-# of een erftoegang/pad zonder wegbeheerder is gewoon sleufwerk. Ontbreekt
-# de bron (legger of NWB niet geladen), dan blijft de kruising uit voorzorg
-# vermeld: liever één te veel dan een echte weg verzwijgen.
+# Uitgangspunt: alles is open ontgraving, tenzij. Een open kruising van een
+# sloot of een weg is het standaard sleufwerk en hoort niet als kruising in
+# register, nota, tekening en vergunningenlijst — ook niet als de sloot in
+# de legger staat of de weg een wegbeheerder heeft (de melding bij het
+# waterschap en de verkeersmaatregelen volgen dan als één verzamelpost).
+# Vermeld wordt alleen het "tenzij": elke sleufloze passage, en een open
+# ontgraving waar sleufloos verplicht of geadviseerd was (afwijking van het
+# techniekadvies: die keuze moet gemotiveerd en zichtbaar zijn).
 BIJZONDER_SLEUFLOOS = "sleufloze passage"
 BIJZONDER_AFWIJKING = ("open ontgraving in afwijking van het techniekadvies "
                        "of waar sleufloos verplicht is")
+BIJZONDER_NEE = "standaard sleufwerk: open ontgraving"
 
 
-def markeer_bijzonder_punt(c: dict, legger_beschikbaar: bool = True,
-                           nwb_beschikbaar: bool = True) -> None:
-    """`bijzonder_punt` (bool) en `bijzonder_reden` op een kruising zetten."""
+def markeer_bijzonder_punt(c: dict, **_negeer) -> None:
+    """`bijzonder_punt` (bool) en `bijzonder_reden` op een kruising zetten.
+
+    Extra sleutelwoordargumenten (oudere aanroepen gaven de beschikbaarheid
+    van legger en NWB mee) worden genegeerd: de bron bepaalt niet meer of
+    een open kruising vermeld wordt."""
     def zet(bijzonder: bool, reden: str) -> None:
         c["bijzonder_punt"] = bijzonder
         c["bijzonder_reden"] = reden
@@ -1373,31 +1417,16 @@ def markeer_bijzonder_punt(c: dict, legger_beschikbaar: bool = True,
     if (c.get("techniek_oorspronkelijk") or c.get("sleufloos_verplicht")
             or c.get("legger_verbiedt_open")):
         return zet(True, BIJZONDER_AFWIJKING)
-    if c["soort"] == "water":
-        cat = c.get("legger_categorie")
-        if cat:
-            return zet(True, f"leggerwatergang {cat}: afdamming en melding "
-                             "bij het waterschap")
-        if not legger_beschikbaar:
-            return zet(True, "legger niet geladen: beheer watergang onbekend")
-        return zet(False, "sloot buiten de legger van het waterschap: "
-                          "standaard sleufwerk")
-    if c["soort"] == "rijbaan":
-        srt = c.get("wegbeheerder_srt")
-        if srt:
-            beheerder = NWB_BEHEERDER.get(srt, "wegbeheerder").lower()
-            return zet(True, f"openbare weg ({beheerder}): verkeersmaatregelen "
-                             "en instemming wegbeheerder")
-        if not nwb_beschikbaar:
-            return zet(True, "NWB niet geladen: wegbeheerder onbekend")
-        return zet(False, "geen wegbeheerder in het NWB (erftoegang, pad): "
-                          "standaard sleufwerk")
-    return zet(True, "open kruising van een bijzonder object")
+    return zet(False, BIJZONDER_NEE)
 
 
 def is_bijzonder_punt(c: dict) -> bool:
-    """Kruisingen zonder markering (oudere projecten) tellen als bijzonder."""
-    return c.get("bijzonder_punt", True) is not False
+    """Kruisingen zonder markering (oudere projecten) volgen dezelfde regel:
+    open ontgraving is geen bijzonder punt, sleufloos wel."""
+    b = c.get("bijzonder_punt")
+    if b is None:
+        return c.get("techniek") != TECHNIEK_OPEN
+    return bool(b)
 
 
 # ---------------------------------------------------------------------------
@@ -1748,6 +1777,7 @@ def verwijder_schampen(route: LineString, grid: Grid | None,
     """
     if grid is None or not grid.schamp:
         return route
+    verdicht = False
 
     def punt_ok(p: Point, kand: Point, eigen_geom) -> bool:
         for prep_g, geom, _ in grid.schamp:
@@ -1796,6 +1826,7 @@ def verwijder_schampen(route: LineString, grid: Grid | None,
                 vensters.append((min(m0, m1) - 1.0, max(m0, m1) + 1.0, geom, grens, zijde))
         if not vensters:
             break
+        verdicht = True
         # tracé opnieuw opbouwen: bestaande hoekpunten plus verdichting binnen
         # de vensters, zodat er punten zíjn om te verschuiven
         mss = {0.0, route.length}
@@ -1826,6 +1857,12 @@ def verwijder_schampen(route: LineString, grid: Grid | None,
                     p = kand
             coords.append((p.x, p.y))
         route = LineString(coords)
+    if verdicht:
+        # verdichtingspunten die na het verschuiven (vrijwel) op één lijn
+        # liggen weer weglaten: een tracé langs een rechte verhardingsrand
+        # hoort twee hoekpunten te hebben, niet één per 0,75 m; de
+        # tolerantie blijft ruim binnen de vrije marge
+        route = route.simplify(SCHAMP_CLEARANCE_M / 4, preserve_topology=False)
     return route
 
 

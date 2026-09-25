@@ -28,6 +28,7 @@ import json
 import os
 from datetime import date
 
+import engine
 import nota as nota_mod
 from nota import FOUT_MARK, MODEL, NotaError, _cap, _zonder_geometrie
 
@@ -341,8 +342,13 @@ def _context(result: dict, variant_idx: int, onderzoek: dict, profiel: dict,
         "zones": v.get("zones", {}),
         "segmenten_ligging": {"totalen_m": ligging_totalen,
                               "segmenten": _cap(segmenten, 60, "segmenten")},
-        "kruisingen": _cap(_zonder_geometrie(v.get("kruisingen", [])), 80,
-                           "kruisingen"),
+        # alles is open, tenzij: alleen bijzondere punten (sleufloos of
+        # afwijking), open ontgravingen alleen als aantal
+        "kruisingen": _cap(_zonder_geometrie(
+            [c for c in v.get("kruisingen", []) if engine.is_bijzonder_punt(c)]),
+            80, "kruisingen"),
+        "open_ontgravingen_standaard_n": sum(
+            1 for c in v.get("kruisingen", []) if not engine.is_bijzonder_punt(c)),
         "boringen": _cap(_zonder_geometrie(v.get("boringen", [])), 60,
                          "boringen"),
         "sonderingen": _cap(_zonder_geometrie(v.get("sonderingen", [])), 60,

@@ -26,13 +26,16 @@ X, Y = 155000.13, 463000.27   # niet-ronde oorsprong: randen vallen niet op celr
 LENGTE = 120.0
 
 
-def _bgt(berm_breedte: float, met_berm: bool = True) -> dict:
+def _bgt(berm_breedte: float, met_berm: bool = True, off: float = 0.0) -> dict:
     """Stroken in y-richting (van zuid naar noord): rijbaan 6 m, trottoir
-    1,8 m, berm ``berm_breedte``, daarboven erf."""
-    rijbaan = box(X - 20, Y + 0.0, X + LENGTE + 20, Y + 6.0)
-    trottoir = box(X - 20, Y + 6.0, X + LENGTE + 20, Y + 7.8)
-    berm = box(X - 20, Y + 7.8, X + LENGTE + 20, Y + 7.8 + berm_breedte)
-    erf = box(X - 20, Y + 7.8 + berm_breedte, X + LENGTE + 20, Y + 30)
+    1,8 m, berm ``berm_breedte``, daarboven erf. ``off`` verschuift de hele
+    straat ten opzichte van het raster (de fase van de randen in de cellen
+    bepaalt welke cellen de smalle berm krijgt)."""
+    y0 = Y + off
+    rijbaan = box(X - 20, y0 + 0.0, X + LENGTE + 20, y0 + 6.0)
+    trottoir = box(X - 20, y0 + 6.0, X + LENGTE + 20, y0 + 7.8)
+    berm = box(X - 20, y0 + 7.8, X + LENGTE + 20, y0 + 7.8 + berm_breedte)
+    erf = box(X - 20, y0 + 7.8 + berm_breedte, X + LENGTE + 20, y0 + 30)
     bgt = {
         "wegdeel": [(rijbaan, {"functie": "rijbaan, lokale weg",
                                "fysiek_voorkomen": "gesloten verharding"}),
@@ -63,9 +66,9 @@ def _verharding(bgt: dict):
 
 
 class BermLiggingTest(unittest.TestCase):
-    def _toets_in_berm(self, berm_breedte: float, cell: float):
-        bgt = _bgt(berm_breedte)
-        route, grid = _route(bgt, cell, 7.8 + berm_breedte / 2)
+    def _toets_in_berm(self, berm_breedte: float, cell: float, off: float = 0.0):
+        bgt = _bgt(berm_breedte, off=off)
+        route, grid = _route(bgt, cell, off + 7.8 + berm_breedte / 2)
         verhard = _verharding(bgt)
         over = route.intersection(verhard).length
         self.assertLess(over, 0.05,
@@ -90,6 +93,15 @@ class BermLiggingTest(unittest.TestCase):
 
     def test_ruime_berm(self):
         self._toets_in_berm(2.5, 1.0)
+
+    def test_smalle_berm_grofste_raster_alle_fasen(self):
+        # 1,0 m berm bij cellen van 1,0 m, straat in verschillende fasen ten
+        # opzichte van het raster: vóór de omgekeerde schilderorde werd de
+        # berm bij sommige fasen volledig door het trottoir weggeschilderd en
+        # lag het hele tracé (120 m) op het trottoir
+        for off in (0.0, 0.17, 0.33, 0.5, 0.66, 0.83):
+            with self.subTest(off=off):
+                self._toets_in_berm(1.0, 1.0, off)
 
     def test_afstand_tot_verhardingsrand(self):
         bgt = _bgt(1.5)
@@ -137,3 +149,35 @@ class ZonderBermTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RasterizeExactTest(unittest.TestCase):
+    """Liggingsklassen exact op het celmidden: een strook van één cel breed
+    krijgt precies de cellen waarvan het midden erin ligt, in elke fase ten
+    opzichte van het raster; de PIL-vulling is tot een halve cel te dik."""
+
+    def test_strook_van_een_cel_breed(self):
+        from engine import Grid
+        g = Grid((X, Y, X + 20, Y + 20), cell=1.0)
+        for off in (0.0, 0.2, 0.5, 0.8):
+            strook = box(X, Y + 10 + off, X + 20, Y + 11 + off)
+            exact = g.rasterize([strook], exact=True)
+            dik = g.rasterize([strook])
+            kol = exact[:, 5]
+            with self.subTest(off=off):
+                # één cel; bij een grens exact op het celmidden (off 0,5)
+                # claimen beide randcellen de strook (grens-inclusief)
+                self.assertIn(int(kol.sum()), (1, 2))
+                for r in range(g.nrows):
+                    _x, y = g.cell_to_world(r, 5)
+                    self.assertEqual(bool(kol[r]), Y + 10 + off <= y <= Y + 11 + off)
+                self.assertGreaterEqual(int(dik[:, 5].sum()), int(kol.sum()))
+
+    def test_lijnen_en_buffer_blijven_werken(self):
+        from engine import Grid
+        g = Grid((X, Y, X + 20, Y + 20), cell=0.5)
+        spoor = LineString([(X, Y + 10), (X + 20, Y + 10)])
+        m = g.rasterize([spoor], buffer=2.5, exact=True)  # buffer → vlak → exact
+        self.assertGreater(int(m.sum()), 0)
+        m2 = g.rasterize([spoor])  # kale lijn: PIL-pad
+        self.assertGreater(int(m2.sum()), 0)

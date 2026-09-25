@@ -26,6 +26,8 @@ import math
 
 from shapely.geometry import LineString, shape
 
+from engine import is_bijzonder_punt
+
 from zro import LUFO_WMS, _font, _wms_getmap
 
 # beeldmaat (px) — past op de tekstbreedte van de Word-pagina (± 16 cm)
@@ -327,7 +329,7 @@ def werkpakketkaart(result: dict, variant_idx: int, wp_idx: int,
     for c in v.get("kruisingen", []):
         if c.get("werkpakket") != wp["nr"]:
             continue
-        if c.get("bijzonder_punt", True) is False:
+        if not is_bijzonder_punt(c):
             continue  # standaard open ontgraving: geen bijzonder punt op de tekening
         try:
             p = route.interpolate((c["chainage_van_m"] + c["chainage_tot_m"]) / 2)

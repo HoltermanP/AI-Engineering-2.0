@@ -95,14 +95,14 @@ const REG_DEF = {
   },
   kruisingen: {
     titel: "Kruisingen",
-    // alleen bijzondere punten; standaard open ontgravingen (sloot buiten de
-    // legger, erftoegang zonder wegbeheerder) zijn sleufwerk en blijven
+    // alles is open, tenzij: alleen bijzondere punten (sleufloos of
+    // afwijking van het advies); open ontgravingen zijn sleufwerk en blijven
     // verborgen tot de schakelaar aanstaat
     data: v => (toonStandaardOpen ? v.kruisingen : v.kruisingen.filter(isBijzonderPunt)),
     schakelaar: v => {
       const n = v.kruisingen.filter(c => !isBijzonderPunt(c)).length;
       return n ? {
-        label: `Ook de ${n} standaard open ontgraving(en) tonen (geen bijzonder punt: gewoon sleufwerk)`,
+        label: `Ook de ${n} open ontgraving(en) tonen (standaard sleufwerk, geen bijzonder punt)`,
         aan: toonStandaardOpen,
         zet: aan => { toonStandaardOpen = aan; },
       } : null;

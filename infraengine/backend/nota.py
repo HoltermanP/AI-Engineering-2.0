@@ -365,9 +365,11 @@ def _zro_compact(rijen: list, n: int = 12) -> dict:
 
 
 def _is_bijzonder(c: dict) -> bool:
-    """Alleen bijzondere punten worden in de nota vermeld (engine.
-    markeer_bijzonder_punt); oudere resultaten zonder markering tellen mee."""
-    return c.get("bijzonder_punt", True) is not False
+    """Alleen bijzondere punten worden in de nota vermeld: alles is open
+    ontgraving (standaard sleufwerk, niet vermeld), tenzij sleufloos of een
+    afwijking van het advies (engine.is_bijzonder_punt)."""
+    from engine import is_bijzonder_punt
+    return is_bijzonder_punt(c)
 
 
 def _per_werkpakket(v: dict, segmenten: list, kruisingen: list,
@@ -394,8 +396,8 @@ def _per_werkpakket(v: dict, segmenten: list, kruisingen: list,
             "chainage_tot_m": wp["chainage_tot_m"],
             "ligging_m": ligging,
             "kruisingen": van(bijzonder, nr),
-            # open ontgravingen die géén bijzonder punt zijn (sloot buiten de
-            # legger, erftoegang zonder wegbeheerder): standaard sleufwerk
+            # open ontgravingen (geen bijzonder punt): standaard sleufwerk,
+            # alleen als aantal
             "open_ontgravingen_standaard_n": sum(
                 1 for c in kruisingen
                 if c.get("werkpakket") == nr and not _is_bijzonder(c)),
@@ -424,9 +426,8 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
             ligging_totalen.get(s["ligging"], 0) + s["lengte_m"], 1)
 
     kruisingen = _zonder_geometrie(v.get("kruisingen", []))
-    # alleen bijzondere punten worden vermeld; standaard open ontgravingen
-    # (sloot buiten de legger, erftoegang zonder wegbeheerder) tellen als
-    # sleufwerk en komen alleen als aantal terug
+    # alleen bijzondere punten worden vermeld (alles is open, tenzij):
+    # open ontgravingen zijn sleufwerk en komen alleen als aantal terug
     bijzondere_punten = [c for c in kruisingen if _is_bijzonder(c)]
     open_standaard_n = len(kruisingen) - len(bijzondere_punten)
     kruising_totalen: dict = {}

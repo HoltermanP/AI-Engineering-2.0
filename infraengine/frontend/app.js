@@ -1215,9 +1215,12 @@ function leesWeights() {
 let resultaat = null;
 let actieveVariant = 0;
 let actieveTab = "mca";
-// Open ontgravingen worden alleen bij bijzondere punten vermeld (backend:
-// engine.markeer_bijzonder_punt). Oudere resultaten zonder markering tonen alles.
-const isBijzonderPunt = c => c.bijzonder_punt !== false;
+// Alles is open ontgraving, tenzij: een open kruising is standaard sleufwerk
+// en wordt niet vermeld; sleufloos en afwijkingen van het advies wel (backend:
+// engine.markeer_bijzonder_punt). Oudere resultaten zonder markering volgen
+// dezelfde regel op de techniek.
+const isBijzonderPunt = c => c.bijzonder_punt == null
+  ? c.techniek !== "Open sleuf" : c.bijzonder_punt !== false;
 let toonStandaardOpen = false;  // schakelaar: ook standaard open ontgravingen tonen
 
 function coordsVanPolygon(src) {
@@ -1827,8 +1830,8 @@ function toonTab() {
       const p = document.createElement("p");
       p.className = "hint";
       p.innerHTML = `<label><input type="checkbox" id="toon-standaard-open"${toonStandaardOpen ? " checked" : ""}> ` +
-        `Ook de ${nStandaard} standaard open ontgraving(en) tonen (sloten buiten de legger, ` +
-        `erftoegangen zonder wegbeheerder: gewoon sleufwerk, geen bijzonder punt)</label>`;
+        `Ook de ${nStandaard} open ontgraving(en) tonen (standaard sleufwerk door sloten en ` +
+        `wegen: geen bijzonder punt)</label>`;
       p.querySelector("input").addEventListener("change", e => {
         toonStandaardOpen = e.target.checked;
         toonTab();

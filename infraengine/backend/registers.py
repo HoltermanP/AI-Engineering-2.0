@@ -22,6 +22,7 @@ from engine import (
     ZN_BOOM, ZN_BUISLEIDING, ZN_GWB, ZN_KERING, ZN_KLIC, ZN_MONUMENT, ZN_NATURA,
     ZN_NGE, ZN_NNN, ZN_STILTE, ZONE_NAMES, BOOM_WORTELZONE_M,
     TECHNIEK_HDD, TECHNIEK_NANO, TECHNIEK_OPEN, TECHNIEK_PERSING, TECHNIEK_RAKET,
+    is_bijzonder_punt,
     BOOR_UITLOOP, BOOR_UITLOOP_DEFAULT, BOOR_VRIJ_MAX_M, RAKET_MAX_BOORLENGTE_M,
     RIJBAAN_PERSING_MAX_M, _substring,
 )
@@ -90,7 +91,14 @@ def build_vergunningen(segments: list, crossings: list, gemeente: str | None,
             "doorlooptijd_wk": DOORLOOPTIJD_WK["AVOI"],
         })
 
+    # alles is open, tenzij: een open kruising van een sloot of weg is
+    # standaard sleufwerk en krijgt geen eigen regel; de melding bij het
+    # waterschap en de verkeersmaatregelen volgen als één verzamelpost
+    open_water = [c for c in crossings if c["soort"] == "water" and not is_bijzonder_punt(c)]
+    open_weg = [c for c in crossings if c["soort"] == "rijbaan" and not is_bijzonder_punt(c)]
     for c in crossings:
+        if not is_bijzonder_punt(c):
+            continue
         if c["soort"] == "water":
             zwaar = c["techniek"] == TECHNIEK_HDD
             items.append({
@@ -120,6 +128,27 @@ def build_vergunningen(segments: list, crossings: list, gemeente: str | None,
                 "doorlooptijd_wk": DOORLOOPTIJD_WK["Verkeer"],
                 "kruising": c["nr"],
             })
+
+    if open_water:
+        items.append({
+            **_basisitem(f"VRG-{len(items) + 1:03d}", "vergunning"),
+            "item": "Melding waterschapsverordening — open sleuf door sloten (verzamelpost)",
+            "bevoegd_gezag": "Waterschap",
+            "trigger": f"{len(open_water)} open kruising(en) van een watergang met "
+                       "afdamming (standaard sleufwerk): "
+                       + ", ".join(c["nr"] for c in open_water),
+            "doorlooptijd_wk": DOORLOOPTIJD_WK["Waterschap"],
+        })
+    if open_weg:
+        items.append({
+            **_basisitem(f"VRG-{len(items) + 1:03d}", "vergunning"),
+            "item": "Tijdelijke verkeersmaatregelen — open sleuf door wegen (verzamelpost)",
+            "bevoegd_gezag": "Wegbeheerder",
+            "trigger": f"{len(open_weg)} open kruising(en) van een rijbaan (standaard "
+                       "sleufwerk, halve rijbaan met fasering; CROW 96b): "
+                       + ", ".join(c["nr"] for c in open_weg),
+            "doorlooptijd_wk": DOORLOOPTIJD_WK["Verkeer"],
+        })
 
     boringen = [c for c in crossings if c["techniek"] in (TECHNIEK_HDD, TECHNIEK_PERSING)]
     if boringen:

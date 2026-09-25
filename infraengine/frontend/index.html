@@ -33,6 +33,7 @@
       <h2>1 · Verkennen</h2>
       <button id="btn-compute" class="primair" disabled
         title="Berekent het tracé langs de geplaatste MS-stations (opties en wegingsprofiel hieronder)">▶ Tracé bepalen</button>
+      <label><input type="checkbox" id="opt-ring" title="Ook het tracé van het laatste station terug naar het eerste station bepalen, zodat de stations een gesloten ring vormen. Vraagt minimaal drie stations; de sluitende verbinding wordt een eigen werkpakket (Station N – Station 1). Via-punten op de terugweg sturen die verbinding bij."> Ring sluiten (laatste station → eerste station)</label>
       <div id="status" class="mono"></div>
       <div class="toolgrid">
         <button class="tool" data-mode="pan" title="Navigeren">⇱ Navigeren</button>
@@ -94,7 +95,6 @@
     <section>
       <h2>3 · Rekenopties</h2>
       <label><input type="checkbox" id="opt-varianten"> Drie extra varianten + MCA (standaard uit: alleen de voorkeursvariant)</label>
-      <label><input type="checkbox" id="opt-ring" title="Ook het tracé van het laatste station terug naar het eerste station bepalen, zodat de stations een gesloten ring vormen. Vraagt minimaal drie stations; de sluitende verbinding wordt een eigen werkpakket (Station N – Station 1). Via-punten op de terugweg sturen die verbinding bij."> Ring sluiten (laatste station → eerste station)</label>
       <label class="inline">Haspellengte <input id="opt-haspel" type="number" value="500" min="100" step="50" class="mono"> m</label>
       <p class="hint">Tot 70 km en meerdere stations. Boven ± 2,5 km hemelsbreed rekent de
         app per deeltraject in een corridor van ± 160 m rond de rechte lijn tussen de

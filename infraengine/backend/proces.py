@@ -1417,10 +1417,13 @@ def _v(result: dict, variant: int) -> dict:
 
 
 def _cap_trace(result, variant, project):
+    import engine
     v = _v(result, variant)
     n_wp = len(v.get("werkpakketten", []))
+    n_bp = sum(1 for c in v.get("kruisingen", []) if engine.is_bijzonder_punt(c))
     return {"samenvatting": f"Tracé {v['naam']}: {v['lengte_m']:.0f} m, "
-                            f"{len(v.get('kruisingen', []))} kruisingen, "
+                            f"{n_bp} bijzondere punten (kruisingen sleufloos of "
+                            f"in afwijking; open ontgravingen zijn standaard sleufwerk), "
                             f"{len(v.get('boringen', []))} boringen, "
                             f"{n_wp} werkpakketten.",
             "artefacten": [
@@ -1659,16 +1662,20 @@ def _cap_sonderingen(result, variant, project):
 
 
 def _cap_kl_derden(result, variant, project):
+    import engine
     import klic as klic_mod
     v = _v(result, variant)
     kr = v.get("kruisingen", [])
+    n_bp = sum(1 for c in kr if engine.is_bijzonder_punt(c))
     stat = klic_mod.status()
     klic_txt = (f"KLIC gekoppeld ({stat['features']} objecten)"
                 if stat.get("features") else
                 "KLIC niet gekoppeld — overzicht kabels/leidingen derden "
                 "blijft onvolledig tot de levering is geïmporteerd")
-    return {"samenvatting": f"Kruisingen met infrastructuur: {len(kr)} "
-                            f"(watergangen, wegen, spoor). {klic_txt}.",
+    return {"samenvatting": f"Bijzondere punten: {n_bp} (sleufloze kruisingen van "
+                            f"watergangen, wegen en spoor, of open in afwijking van het "
+                            f"advies); daarnaast {len(kr) - n_bp} open ontgraving(en) als "
+                            f"standaard sleufwerk. {klic_txt}.",
             "artefacten": [("Kruisingsregister (Excel)", "xlsx",
                             f"/api/export/xlsx?variant={variant}")]}
 

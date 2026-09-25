@@ -553,10 +553,8 @@ def _hecht_kruisingen(kruisingen: list, route: LineString) -> list:
                 v["bevoegd_gezag"] = gezag
             v.pop("werkterrein", None)
             v.pop("techniek_oorspronkelijk", None)
-            # samengevoegde breedte kan open → sleufloos maken; de markering
-            # van de verrijking (legger/NWB) blijft anders staan
-            if v["techniek"] != engine.TECHNIEK_OPEN:
-                engine.markeer_bijzonder_punt(v)
+            # samengevoegde breedte kan open → sleufloos maken: markering bijwerken
+            engine.markeer_bijzonder_punt(v)
             mid = route.interpolate((v["chainage_van_m"] + v["chainage_tot_m"]) / 2)
             v["punt"] = (round(mid.x, 2), round(mid.y, 2))
         else:
