@@ -836,13 +836,24 @@ DOC_SYSTEM = (
     "aantallen, lengtes, locaties en registratienummers uit de data. "
     "Verzin niets: waar data ontbreekt schrijf je een duidelijk gemarkeerde "
     "invulplek [IN TE VULLEN: …] of benoem je de aanname expliciet.\n\n"
-    "OPMAAK — begrensde Markdown, niets anders: begin met `# <titel>`, dan "
-    "`## Samenvatting` en genummerde hoofdstukken `## 1. <titel>` met waar "
-    "zinvol `### 1.1 <titel>`. Opsommingen met `- `, kernoordelen **vet**, "
-    "tabellen met kopregel en `|---|`, maximaal 6 kolommen. Geen "
-    "code-blokken, links, afbeeldingen of HTML. Dit is een CONCEPT dat door "
-    "de verantwoordelijke wordt getoetst; sluit af met een hoofdstuk "
-    "'Openstaande punten en benodigde menselijke toetsing'."
+    "OPMAAK — begrensde Markdown, niets anders: opsommingen met `- `, "
+    "kernoordelen **vet**, tabellen met kopregel en `|---|`, maximaal 6 "
+    "kolommen. Geen code-blokken, links, afbeeldingen of HTML. Dit is een "
+    "CONCEPT dat door de verantwoordelijke wordt getoetst.\n"
+)
+# opbouw zonder format (AI bepaalt de indeling) en mét geüpload format
+DOC_SYSTEM_STRUCTUUR = (
+    "STRUCTUUR: begin met `# <titel>`, dan `## Samenvatting` en genummerde "
+    "hoofdstukken `## 1. <titel>` met waar zinvol `### 1.1 <titel>`; sluit "
+    "af met een hoofdstuk 'Openstaande punten en benodigde menselijke "
+    "toetsing'."
+)
+DOC_SYSTEM_STRUCTUUR_FORMAT = (
+    "STRUCTUUR: de opdracht bevat een FORMAT van de organisatie (leeg "
+    "sjabloon of voorbeeld); stel het document in exact die opbouw op. "
+    "Openstaande punten en benodigde menselijke toetsing neem je op bij het "
+    "onderdeel van het format dat daarvoor bedoeld is, anders als korte "
+    "slotparagraaf."
 )
 
 
@@ -1803,8 +1814,11 @@ def stream_doc(project: str, stap_id: str, result: dict | None,
     if result is None:
         raise ProcesError("Geen berekend tracé; reken eerst door zodat de "
                           "AI projectdata heeft.")
-    spec = AI_DOC[cap.split(":", 1)[1]]
+    doc_key = cap.split(":", 1)[1]
+    spec = AI_DOC[doc_key]
     anthropic = _anthropic()
+    import formats
+    fm = formats.blokken(f"proces:{doc_key}")
     context = nota_mod.bouw_context(result, variant, project)
     context["risicoregister"] = laad_state(project).get("risico", [])[:60]
     prompt = (f"Stel het volgende concept-beheersdocument op: "
@@ -1819,9 +1833,12 @@ def stream_doc(project: str, stap_id: str, result: dict | None,
         client = anthropic.Anthropic()
         try:
             with client.messages.stream(
-                model=MODEL, max_tokens=MAX_TOKENS_DOC, system=DOC_SYSTEM,
+                model=MODEL, max_tokens=MAX_TOKENS_DOC,
+                system=DOC_SYSTEM + (DOC_SYSTEM_STRUCTUUR_FORMAT if fm
+                                     else DOC_SYSTEM_STRUCTUUR),
                 thinking={"type": "adaptive"},
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user",
+                           "content": (fm or []) + [{"type": "text", "text": prompt}]}],
             ) as stream:
                 for tekst in stream.text_stream:
                     yield tekst
@@ -2161,14 +2178,24 @@ INTAKE_SYSTEM = (
     "middenspanningstracé en stelt het intakeverslag op waarmee het "
     "bouwteam start. Schrijf in het Nederlands, zakelijk, in begrensde "
     "Markdown (zoals: `# titel`, `## kop`, lijsten met `- `, tabellen met "
-    "`|---|`). Behandel: (1) samenvatting van de opdracht, (2) scope en "
+    "`|---|`). Verzin niets dat niet in het document staat; markeer "
+    "aannames expliciet. "
+)
+INTAKE_STRUCTUUR = (
+    "Behandel: (1) samenvatting van de opdracht, (2) scope en "
     "beoogde verbinding(en) — stations/locaties, lengtes, aantallen "
     "circuits voor zover genoemd, (3) budget en planning uit het IV, "
     "(4) randvoorwaarden en uitgangspunten, (5) ontbrekende informatie en "
     "vragen aan de opdrachtgever, (6) advies voor de eerste "
     "tracéverkenning in InfraEngine (welk gebied intekenen, welke "
-    "stations plaatsen, aandachtspunten). Verzin niets dat niet in het "
-    "document staat; markeer aannames expliciet."
+    "stations plaatsen, aandachtspunten)."
+)
+INTAKE_STRUCTUUR_FORMAT = (
+    "De opdracht bevat een FORMAT van de organisatie voor het "
+    "intakeverslag (leeg sjabloon of voorbeeld): stel het verslag in exact "
+    "die opbouw op; het advies voor de eerste tracéverkenning in "
+    "InfraEngine neem je op bij het onderdeel van het format dat daarvoor "
+    "bedoeld is, anders als korte slotparagraaf."
 )
 
 
@@ -2224,14 +2251,18 @@ def _iv_blokken(project: str) -> list[dict]:
 def stream_intake(project: str):
     anthropic = _anthropic()
     blokken = _iv_blokken(project)
+    import formats
+    fm = formats.blokken("proces:intake")
 
     def _stream():
         client = anthropic.Anthropic()
         try:
             with client.messages.stream(
-                model=MODEL, max_tokens=MAX_TOKENS_DOC, system=INTAKE_SYSTEM,
+                model=MODEL, max_tokens=MAX_TOKENS_DOC,
+                system=INTAKE_SYSTEM + (INTAKE_STRUCTUUR_FORMAT if fm
+                                        else INTAKE_STRUCTUUR),
                 thinking={"type": "adaptive"},
-                messages=[{"role": "user", "content": blokken + [
+                messages=[{"role": "user", "content": blokken + (fm or []) + [
                     {"type": "text",
                      "text": f"Projectnaam: {project}. Stel het "
                              "intakeverslag op."}]}],

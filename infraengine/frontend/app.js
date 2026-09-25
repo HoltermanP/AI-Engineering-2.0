@@ -2299,6 +2299,112 @@ zd("zd-upload").addEventListener("change", () => {
   lezer.readAsDataURL(file);
 });
 
+/* ---------------------------------------------- beheer: documentformats (▦) */
+/* Per documentsoort (nota VO/DO/UO, bureauonderzoek, procesdocument) een
+   eigen format uploaden: leeg sjabloon of voorbeeld. De backend geeft het
+   format als bijlage mee aan de AI, die het document dan in die opbouw
+   opstelt; zonder format bepaalt de AI de opbouw zelf. */
+const fmOverlay = document.getElementById("fm-overlay");
+const fmLijstEl = document.getElementById("fm-lijst");
+let fmData = null;
+let fmUploadKey = null;
+
+function fmEsc(t) {
+  return String(t ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function fmVerzoek(url, opties) {
+  const r = await fetch(url, opties);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+  fmData = await r.json();
+  renderFormats();
+}
+
+function renderFormats() {
+  const groepen = (fmData && fmData.groepen) || [];
+  document.getElementById("fm-status").textContent =
+    fmData ? `${fmData.aantal} format(s) geüpload` : "";
+  fmLijstEl.innerHTML = groepen.map(g => `<h4>${fmEsc(g.groep)}</h4>` + g.items.map(it => {
+    const f = it.format;
+    const stand = f
+      ? `<b>format actief</b> · ${fmEsc(f.bestandsnaam)} · ${fmEsc((f.geupload || "").replace("T", " "))}`
+      : `geen format — AI bepaalt de opbouw (${fmEsc(it.hint)})`;
+    return `<div class="fm-item${f ? " met" : ""}" data-key="${fmEsc(it.key)}">
+      <span class="fm-titel">${fmEsc(it.titel)}</span>
+      <span class="fm-stand">${stand}</span>
+      <button data-actie="upload" title="Leeg sjabloon of voorbeeld uploaden (PDF, Word, tekst, Markdown)">${f ? "↻ Vervangen" : "+ Format uploaden"}</button>
+      ${f ? `<button data-actie="verwijder" class="fm-verwijder" title="Format verwijderen; de AI bepaalt de opbouw dan weer zelf">✕</button>` : ""}
+    </div>`;
+  }).join("")).join("");
+}
+
+fmLijstEl.addEventListener("click", async e => {
+  const knop = e.target.closest("[data-actie]");
+  if (!knop) return;
+  const key = knop.closest(".fm-item").dataset.key;
+  if (knop.dataset.actie === "upload") {
+    fmUploadKey = key;
+    document.getElementById("fm-upload").click();
+    return;
+  }
+  if (knop.dataset.actie === "verwijder") {
+    if (!confirm("Format verwijderen? De AI bepaalt de opbouw van dit document dan weer zelf.")) return;
+    try {
+      await fmVerzoek("api/formats/verwijder", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      });
+    } catch (err) {
+      alert("Verwijderen mislukt: " + err.message);
+    }
+  }
+});
+
+document.getElementById("fm-upload").addEventListener("change", () => {
+  const veld = document.getElementById("fm-upload");
+  const file = veld.files[0];
+  const key = fmUploadKey;
+  if (!file || !key) return;
+  const item = fmLijstEl.querySelector(`.fm-item[data-key="${CSS.escape(key)}"]`);
+  const knop = item && item.querySelector('[data-actie="upload"]');
+  const lezer = new FileReader();
+  lezer.onload = async () => {
+    if (knop) { knop.disabled = true; knop.textContent = "… uploaden"; }
+    try {
+      await fmVerzoek("api/formats/upload", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, bestandsnaam: file.name, data_base64: lezer.result }),
+      });
+    } catch (err) {
+      alert("Uploaden mislukt: " + err.message);
+      renderFormats();
+    } finally {
+      veld.value = "";
+      fmUploadKey = null;
+    }
+  };
+  lezer.readAsDataURL(file);
+});
+
+async function laadFormats() {
+  try {
+    await fmVerzoek("api/formats");
+  } catch (e) {
+    fmLijstEl.innerHTML = `<p class="leeg">Formats laden mislukt: ${fmEsc(e.message)}</p>`;
+  }
+}
+
+document.getElementById("btn-formats").addEventListener("click", () => {
+  fmOverlay.classList.remove("dicht");
+  laadFormats();
+});
+document.getElementById("fm-sluit").addEventListener("click", () =>
+  fmOverlay.classList.add("dicht"));
+fmOverlay.addEventListener("click", e => {
+  if (e.target === fmOverlay) fmOverlay.classList.add("dicht");
+});
+
 /* ------------------------------------------------- beheer: richtlijnen (⚖) */
 /* Richtlijndocumenten uploaden; de backend laat de AI ze vertalen naar
    rekenparameters (wegingsprofiel, kruisingsbeslistabel, boor-uitloop,

@@ -265,6 +265,10 @@ SYSTEM = (
     "aantallen, lengtes en registratienummers uit de data. Verzin niets: "
     "waar data ontbreekt benoem je dat expliciet en maak je duidelijk wat "
     "in het veld of bij een bureau belegd moet worden.\n\n"
+)
+
+# vaste opbouw; vervalt als voor deze onderzoekssoort een format is geüpload
+SYSTEM_STRUCTUUR = (
     "STRUCTUUR — schrijf het rapport in deze opbouw:\n"
     "- `# <titel van het rapport>` (één regel).\n"
     "- `## Samenvatting` (1-2 alinea's met de hoofdconclusie).\n"
@@ -278,10 +282,20 @@ SYSTEM = (
     "- `## 5. Status en validiteit` — neem de aangeleverde validiteitstekst "
     "inhoudelijk over: wat is de juridische status van dit rapport en wat "
     "moet door wie formeel worden uitgevoerd.\n\n"
+)
+SYSTEM_STRUCTUUR_FORMAT = (
+    "STRUCTUUR — de opdracht bevat een FORMAT van de organisatie (leeg "
+    "sjabloon of voorbeeld): schrijf het rapport in exact die opbouw. Neem "
+    "de aangeleverde validiteitstekst inhoudelijk op bij het onderdeel van "
+    "het format dat over status, geldigheid of vervolg gaat.\n\n"
+)
+SYSTEM_OPMAAK = (
     "OPMAAK — begrensde Markdown: koppen met `#`/`##`/`###`, opsommingen "
     "met `- `, kernoordelen **vet**, Markdown-tabellen (max 6 kolommen). "
     "Geen code-blokken, links, afbeeldingen, voetnoten of HTML."
 )
+SYSTEM = SYSTEM + SYSTEM_STRUCTUUR + SYSTEM_OPMAAK
+SYSTEM_MET_FORMAT = SYSTEM.replace(SYSTEM_STRUCTUUR, SYSTEM_STRUCTUUR_FORMAT)
 
 
 def profiel_voor(soort: str) -> dict | None:
@@ -418,6 +432,8 @@ def stream_bureau(result: dict, variant_idx: int, nr: str, projectnaam: str):
             "omgeving of in infraengine/.env en herstart de server.")
 
     context = _context(result, variant_idx, onderzoek, profiel, projectnaam)
+    import formats
+    fm = formats.blokken("bureau:" + formats._slug(profiel["match"]))
     prompt = (
         f"Voer het volgende bureauonderzoek uit en schrijf het rapport: "
         f"{onderzoek['soort']} ({onderzoek['nr']}).\n\n"
@@ -434,9 +450,10 @@ def stream_bureau(result: dict, variant_idx: int, nr: str, projectnaam: str):
             with client.messages.stream(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
-                system=SYSTEM,
+                system=SYSTEM_MET_FORMAT if fm else SYSTEM,
                 thinking={"type": "adaptive"},
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user",
+                           "content": (fm or []) + [{"type": "text", "text": prompt}]}],
             ) as stream:
                 for tekst in stream.text_stream:
                     yield tekst

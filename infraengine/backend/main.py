@@ -38,6 +38,7 @@ import ndff as ndff_mod
 import nota as nota_mod
 import pdok
 import proces as proces_mod
+import formats as fm_mod
 import richtlijnen as rl_mod
 import sonderingen as son_mod
 import trace_import as trace_import_mod
@@ -1964,6 +1965,48 @@ def richtlijnen_verwijder(rid: str):
     except rl_mod.RichtlijnError as e:
         raise HTTPException(404, str(e))
     return rl_mod.overzicht()
+
+
+# ---------------------------------------------------------------------------
+# Beheer: documentformats (leeg sjabloon of voorbeeld per AI-document)
+# ---------------------------------------------------------------------------
+
+class FormatUpload(BaseModel):
+    key: str
+    bestandsnaam: str
+    data_base64: str
+
+
+class FormatActie(BaseModel):
+    key: str
+
+
+@app.get("/api/formats")
+def formats_overzicht():
+    return fm_mod.overzicht()
+
+
+@app.post("/api/formats/upload")
+def formats_upload(req: FormatUpload):
+    data = req.data_base64.split(",", 1)[-1]
+    try:
+        inhoud = base64.b64decode(data)
+    except Exception:
+        raise HTTPException(400, "Bestand is geen geldige base64-inhoud.")
+    try:
+        fm_mod.bewaar(req.key, req.bestandsnaam, inhoud)
+    except fm_mod.FormatError as e:
+        raise HTTPException(400, str(e))
+    return fm_mod.overzicht()
+
+
+@app.post("/api/formats/verwijder")
+def formats_verwijder(req: FormatActie):
+    try:
+        fm_mod.verwijder(req.key)
+    except fm_mod.FormatError as e:
+        raise HTTPException(404, str(e))
+    return fm_mod.overzicht()
 
 
 # ---------------------------------------------------------------------------

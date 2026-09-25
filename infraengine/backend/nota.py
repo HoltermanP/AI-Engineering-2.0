@@ -126,6 +126,32 @@ _FMT_STAART = (
     "[verificatieplan] of [IN TE VULLEN: link raming]."
 )
 
+# Opdracht als de gebruiker een eigen format heeft geüpload (formats.py):
+# de opbouw komt dan uit het format; alleen de afbeeldingsmarkers en de
+# invulregels (echte nummers en aantallen) blijven van toepassing.
+_FMT_MET_FORMAT = (
+    "Stel de {fase}-ontwikkelnota op in de opbouw van het aangeleverde "
+    "FORMAT (zie het formatdocument en de FORMAT-instructie hierboven); de "
+    "standaardindeling van het bouwteam vervalt daarmee. Begin met de "
+    "titelregel `# …` zoals het format die heeft (met de projectnaam).\n"
+    "AFBEELDINGEN: waar het format een overzichtstekening of kaart vraagt "
+    "schrijf je op een eigen regel `[AFBEELDING: overzichtstekening]`; bij "
+    "een tekening of toelichting per werkpakket `[AFBEELDING: werkpakket "
+    "<nr>]` (bijv. `[AFBEELDING: werkpakket WP-01]`, met het echte "
+    "werkpakketnummer uit `per_werkpakket`); bij een planning "
+    "`[AFBEELDING: planning-ontwerp]`; bij een variantenoverzicht per "
+    "variant `[AFBEELDING: variant <variantnaam>]`. De applicatie vervangt "
+    "die markers door de gerenderde kaart of Gantt; verzin geen andere "
+    "markers.\n"
+    "Invulregels: gebruik overal de echte aantallen, lengtes, nummers "
+    "(WP-, HDD-/BOR-, VRG-, OND-, ZRO-, RIS-) en bedragen uit de "
+    "projectdata; mijlpalen en weken uitsluitend uit `ontwerpplanning`; "
+    "bijzondere punten uit `kruisingen` (standaard open ontgravingen zijn "
+    "sleufwerk en worden niet opgesomd). Documentverwijzingen die de "
+    "applicatie niet kent schrijf je als generieke verwijzing tussen rechte "
+    "haken, bijvoorbeeld [verificatieplan] of [IN TE VULLEN: link raming]."
+)
+
 NOTA_FASEN = {
     "VO": {
         "titel": "VO Ontwikkelnota",
@@ -684,14 +710,20 @@ def stream_nota(result: dict, fase: str, variant_idx: int, projectnaam: str):
             "omgeving of in infraengine/.env en herstart de server.")
 
     context = bouw_context(result, variant_idx, projectnaam)
+    # geüpload format voor deze fase? dan vervangt dat de vaste
+    # hoofdstukindeling; anders de standaardopbouw van het bouwteam
+    import formats
+    fm = formats.blokken(f"nota:{fase}")
+    opdracht = _FMT_MET_FORMAT.format(fase=fase) if fm else NOTA_FASEN[fase]["doel"]
     prompt = (
         f"Schrijf een ontwerpnota voor de fase {fase} "
         f"({FASE_NAMEN[fase]}).\n\n"
-        f"Opdracht: {NOTA_FASEN[fase]['doel']}\n\n"
+        f"Opdracht: {opdracht}\n\n"
         "Projectdata (JSON, automatisch gegenereerd door het "
         "InfraEngine-ontwerpplatform):\n" +
         json.dumps(context, ensure_ascii=False)
     )
+    content = (fm or []) + [{"type": "text", "text": prompt}]
 
     def _stream():
         client = anthropic.Anthropic()
@@ -701,7 +733,7 @@ def stream_nota(result: dict, fase: str, variant_idx: int, projectnaam: str):
                 max_tokens=MAX_TOKENS,
                 system=SYSTEM,
                 thinking={"type": "adaptive"},
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": content}],
             ) as stream:
                 for tekst in stream.text_stream:
                     yield tekst

@@ -474,33 +474,49 @@ table.nota-meta td:first-child{color:var(--ink-3);width:130px}
   overflow:hidden;text-overflow:ellipsis}
 
 /* ---------------------------------------------- beheer: richtlijnen (⚖) */
-#rl-overlay{position:fixed;inset:0;z-index:60;background:rgba(12,20,36,.45);
+#rl-overlay,#fm-overlay{position:fixed;inset:0;z-index:60;background:rgba(12,20,36,.45);
   backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
   display:flex;align-items:center;justify-content:center;padding:26px}
-#rl-overlay.dicht{display:none}
-#rl-venster{display:flex;flex-direction:column;width:min(880px,100%);max-height:100%;
+#rl-overlay.dicht,#fm-overlay.dicht{display:none}
+#rl-venster,#fm-venster{display:flex;flex-direction:column;width:min(880px,100%);max-height:100%;
   background:var(--surface);border:1px solid var(--rule);border-radius:var(--r-l);
   box-shadow:var(--schaduw-l);overflow:hidden}
-#rl-kop{display:flex;align-items:center;gap:12px;padding:11px 18px;
+#rl-kop,#fm-kop{display:flex;align-items:center;gap:12px;padding:11px 18px;
   border-bottom:1px solid var(--rule-2);background:var(--surface-2)}
-#rl-kop h3{font-family:var(--disp);font-size:15px;font-weight:600;margin:0;
+#rl-kop h3,#fm-kop h3{font-family:var(--disp);font-size:15px;font-weight:600;margin:0;
   display:flex;align-items:center;gap:8px}
-#rl-kop h3::before{content:"";width:7px;height:7px;border-radius:99px;
+#rl-kop h3::before,#fm-kop h3::before{content:"";width:7px;height:7px;border-radius:99px;
   background:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
-#rl-status{font-size:11.5px;color:var(--warn)}
-#rl-kop button{border:1px solid var(--rule);background:var(--surface);padding:6px 15px;
+#rl-status,#fm-status{font-size:11.5px;color:var(--warn)}
+#rl-kop button,#fm-kop button{border:1px solid var(--rule);background:var(--surface);padding:6px 15px;
   cursor:pointer;font-family:var(--sans);font-size:13px;font-weight:600;
   border-radius:999px;color:var(--ink-2)}
-#rl-kop button:hover:not(:disabled){border-color:#C6CEDC;color:var(--ink)}
+#rl-kop button:hover:not(:disabled),#fm-kop button:hover:not(:disabled){border-color:#C6CEDC;color:var(--ink)}
 #rl-kop #rl-upload-knop:not(:disabled){
   background:linear-gradient(180deg,var(--ms-licht),var(--ms-donker));
   border-color:var(--ms-donker);color:#fff;
   box-shadow:0 4px 14px -3px rgba(214,54,46,.5),inset 0 1px 0 rgba(255,255,255,.25)}
 #rl-kop #rl-upload-knop:not(:disabled):hover{filter:brightness(1.07)}
 #rl-kop button:disabled{color:var(--ink-3);cursor:progress}
-#rl-inhoud{flex:1;overflow-y:auto;padding:14px 18px 20px}
-#rl-inhoud>.hint{margin:0 0 12px;line-height:1.5}
-#rl-lijst .leeg{color:var(--ink-3);text-align:center;padding:26px 0}
+#rl-inhoud,#fm-inhoud{flex:1;overflow-y:auto;padding:14px 18px 20px}
+#rl-inhoud>.hint,#fm-inhoud>.hint{margin:0 0 12px;line-height:1.5}
+#fm-lijst h4{font-family:var(--disp);font-size:12px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--ink-3);margin:16px 0 6px}
+#fm-lijst h4:first-child{margin-top:2px}
+.fm-item{display:flex;align-items:center;gap:10px;padding:8px 12px;
+  border:1px solid var(--rule);border-radius:var(--r-m);background:var(--surface-2);
+  margin-bottom:6px;font-size:12.5px}
+.fm-item.met{border-color:var(--teal);background:var(--teal-soft)}
+.fm-item .fm-titel{font-weight:600;color:var(--ink);min-width:220px}
+.fm-item .fm-stand{color:var(--ink-3);font-size:11.5px;flex:1}
+.fm-item .fm-stand b{color:var(--teal);font-weight:600}
+.fm-item button{border:1px solid var(--rule);background:var(--surface);
+  padding:3.5px 10px;cursor:pointer;font-family:var(--sans);font-size:12px;
+  border-radius:999px;color:var(--ink-2)}
+.fm-item button:hover:not(:disabled){border-color:#C6CEDC;color:var(--ink)}
+.fm-item button:disabled{color:var(--ink-3);cursor:progress}
+.fm-item .fm-verwijder:hover{color:var(--crit);border-color:var(--crit);background:var(--crit-soft)}
+#rl-lijst .leeg,#fm-lijst .leeg{color:var(--ink-3);text-align:center;padding:26px 0}
 .rl-item{border:1px solid var(--rule);border-radius:var(--r-m);background:var(--surface-2);
   padding:11px 14px;margin-bottom:12px}
 .rl-item header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}

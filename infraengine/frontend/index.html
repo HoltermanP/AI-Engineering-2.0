@@ -17,6 +17,7 @@
   <span id="gemeente-info" class="mono"></span>
   <span class="spacer"></span>
   <button id="btn-richtlijnen" title="Beheer: richtlijndocumenten (ontwerphandboek, AVOI, keur) uploaden; de AI vertaalt ze naar rekenparameters voor de tracébepaling">⚖ Richtlijnen</button>
+  <button id="btn-formats" title="Beheer: per documentsoort (nota's, bureauonderzoeken, procesdocumenten) een eigen format uploaden — leeg sjabloon of voorbeeld; de AI stelt het document dan in dat format op">▦ Formats</button>
   <button id="btn-registers" title="Alle registers op één pagina: bewerken, filteren, sorteren">▤ Registers</button>
   <button id="btn-proces" title="Procesondersteuning: intake (IV) → VO → DO → UO met tollgates, AI-stappen en goedkeuringen">◫ Proces</button>
   <button id="btn-new" title="Nieuw leeg project starten">+ Nieuw</button>
@@ -271,6 +272,27 @@
     </header>
     <div id="nota-sheetwrap">
       <article id="nota-sheet"></article>
+    </div>
+  </div>
+</div>
+
+<div id="fm-overlay" class="dicht" aria-label="Beheer documentformats">
+  <div id="fm-venster">
+    <header id="fm-kop">
+      <h3>Beheer · Documentformats</h3>
+      <span id="fm-status" class="mono"></span>
+      <span class="spacer"></span>
+      <input id="fm-upload" type="file" hidden accept=".pdf,.docx,.txt,.md">
+      <button id="fm-sluit" title="Sluiten">✕</button>
+    </header>
+    <div id="fm-inhoud">
+      <p class="hint">Upload per documentsoort een <strong>format</strong>: een leeg sjabloon of een
+        ingevuld voorbeeld van een eerder document (PDF, Word, tekst of Markdown). Is er een
+        format, dan stelt de AI dat document op in exact die opbouw (hoofdstukken, paragrafen,
+        volgorde, tabellen); van een ingevuld voorbeeld neemt zij alleen de opbouw en de toon
+        over, niet de inhoud. <strong>Zonder format bepaalt de AI de opbouw zelf.</strong>
+        Eén format per documentsoort; een nieuwe upload vervangt het vorige.</p>
+      <div id="fm-lijst"></div>
     </div>
   </div>
 </div>
