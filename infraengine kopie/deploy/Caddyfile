@@ -1,0 +1,15 @@
+# Vervang infraengine.example.nl door je eigen (sub)domein; het DNS-record
+# moet naar de server wijzen. Caddy regelt het HTTPS-certificaat automatisch.
+#
+# De app heeft zelf géén authenticatie of gebruikersscheiding — de basic-auth
+# hieronder is de enige slagboom, dus laat die niet weg. Hash genereren:
+#   docker run --rm caddy:2 caddy hash-password --plaintext 'jouw-wachtwoord'
+infraengine.example.nl {
+	basic_auth {
+		infraengine VERVANG_DOOR_HASH
+	}
+	# lange rekenverzoeken (minuten) en de streamende nota lopen hier
+	# gewoon doorheen: Caddy kent geen standaard-leestimeout en streamt
+	# antwoorden door zodra ze binnenkomen
+	reverse_proxy infraengine:8000
+}

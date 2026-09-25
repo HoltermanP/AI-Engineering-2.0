@@ -1,0 +1,14 @@
+KLIC-import (voorbereid koppelvlak — nog geen KLIC-toegang)
+
+Leg hier GeoJSON-bestanden uit een KLIC-levering neer (per thema
+geëxporteerd naar RD New / EPSG:28992), bijvoorbeeld via QGIS vanuit de
+KLIC-zip (GML/IMKL). Bestandsnamen zijn vrij; .json en .geojson worden
+gelezen.
+
+Effect zodra er bestanden liggen:
+- de netten wegen mee in het kostenoppervlak (wegingssleutel
+  "klic_netdichtheid", instelbaar in het wegingsprofiel);
+- kruisingen en boringen melden bestaande netten binnen 5 m in plaats van
+  "onbekend — KLIC niet gekoppeld".
+
+Zonder bestanden verandert er niets aan de berekening.

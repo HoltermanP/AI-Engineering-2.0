@@ -1,0 +1,32 @@
+{
+ "status": "overeenkomst opgesteld",
+ "eigenaar_naam": "Patrick Holterman",
+ "eigenaar_adres": "Nieuwe Deventerweg, 86",
+ "eigenaar_postcode_plaats": "8014 AJ",
+ "eigenaar_email": "patrickholterman@himbv.nl",
+ "eigenaar_telefoon": "",
+ "netbeheerder": "Enexis",
+ "aard_recht": "opstalrecht",
+ "vergoeding_eenmalig_eur": 1818.45,
+ "vergoeding_jaarlijks_eur": null,
+ "vergoeding_grondslag": "richtlijnsystematiek LTO Nederland / gezamenlijke netbeheerders (indicatieve startwaarden)",
+ "notaris": "",
+ "opmerkingen": "",
+ "bijlagen": [
+  {
+   "bestand": "ZRO-tekening_ZRO-003.pdf",
+   "soort": "tekening",
+   "datum": "11-09-2026"
+  },
+  {
+   "bestand": "ZRO-overeenkomst_ZRO-003.docx",
+   "soort": "overeenkomst",
+   "datum": "11-09-2026"
+  },
+  {
+   "bestand": "ZRO-tekening_ZRO-003_2.pdf",
+   "soort": "tekening",
+   "datum": "11-09-2026"
+  }
+ ]
+}

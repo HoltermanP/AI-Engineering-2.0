@@ -1,0 +1,26 @@
+{
+ "status": "overeenkomst opgesteld",
+ "eigenaar_naam": "Patrick Holterman",
+ "eigenaar_adres": "Nieuwe Deventerweg",
+ "eigenaar_postcode_plaats": "8014AJ",
+ "eigenaar_email": "patrickholterman@icloud.com",
+ "eigenaar_telefoon": "",
+ "netbeheerder": "Enexis",
+ "aard_recht": "opstalrecht",
+ "vergoeding_eenmalig_eur": 10000,
+ "vergoeding_jaarlijks_eur": 500,
+ "notaris": "N. Otariaat",
+ "opmerkingen": "",
+ "bijlagen": [
+  {
+   "bestand": "ZRO-tekening_ZRO-003.pdf",
+   "soort": "tekening",
+   "datum": "11-09-2026"
+  },
+  {
+   "bestand": "ZRO-overeenkomst_ZRO-003.docx",
+   "soort": "overeenkomst",
+   "datum": "11-09-2026"
+  }
+ ]
+}

@@ -1,0 +1,32 @@
+# InfraEngine achter Caddy (HTTPS + basic-auth).
+#
+#   1. zet ANTHROPIC_API_KEY (en optioneel GOOGLE_MAPS_API_KEY) in .env
+#   2. vul deploy/Caddyfile in: domein + wachtwoord-hash
+#   3. docker compose up -d --build
+#
+# data/ staat als bind-mount naast de code: projecten en ZRO-dossiers
+# overleven een rebuild en zijn direct als bestanden te back-uppen.
+services:
+  infraengine:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

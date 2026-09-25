@@ -6,15 +6,12 @@ exporteren. Serveert ook de frontend (map ../frontend) op /.
 from __future__ import annotations
 
 import base64
-import dataclasses
 import io
 import json
-import gc
 import math
 import os
 import re
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -27,20 +24,13 @@ from shapely.ops import unary_union
 
 import ahn
 import brk
-import eigendom as eigendom_mod
 import engine
 import grondwater
-import kaart as kaart_mod
-import planning_kaart
 import klic
-import maatvoering
-import ndff as ndff_mod
 import nota as nota_mod
 import pdok
-import proces as proces_mod
 import richtlijnen as rl_mod
 import sonderingen as son_mod
-import trace_import as trace_import_mod
 import zro as zro_mod
 from calculatie import build_raw_calculatie
 from engine import (
@@ -52,9 +42,8 @@ from engine import (
 )
 from registers import (
     VARIANT_PROFIELEN, build_boringen, build_checks, build_kosten,
-    build_mca_row, build_onderzoeken, build_sonderingen,
-    build_uitvoeringsplanning, build_vergunningen, build_werkpakketten,
-    build_zro, ken_werkpakketten_toe,
+    build_mca_row, build_onderzoeken, build_planning, build_sonderingen,
+    build_vergunningen, build_werkpakketten, build_zro, ken_werkpakketten_toe,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -134,18 +123,6 @@ if BASIC_AUTH_WACHTWOORD:
 LAST_RESULT: dict | None = None  # voor exports (single-user prototype)
 
 
-# Frontend-bestanden altijd laten hervalideren (ETag blijft werken): zonder
-# Cache-Control bewaart de browser een oude app.js naast een nieuwe
-# index.html en lijken nieuwe knoppen het niet te doen.
-@app.middleware("http")
-async def _geen_verouderde_statics(request, call_next):
-    response = await call_next(request)
-    pad = request.url.path
-    if pad == "/" or pad.endswith((".js", ".css", ".html")):
-        response.headers["Cache-Control"] = "no-cache"
-    return response
-
-
 @app.get("/healthz")
 def healthz():
     """Onbeveiligde health check (Render e.d.); geeft geen data prijs."""
@@ -165,33 +142,15 @@ def _voortgang(stap: str) -> None:
     PROGRESS["stap"] = stap
 
 
-# Trace-import (DXF/PDF): een upload wordt eerst geïnspecteerd (kandidaat-
-# lagen tonen) en pas na laagkeuze omgezet in een route — twee verzoeken over
-# hetzelfde bestand zonder het opnieuw te uploaden. Net als LAST_RESULT/
-# PROGRESS een single-process cache, geen echte opslag.
-IMPORT_CACHE: dict[str, dict] = {}
-IMPORT_CACHE_TTL_S = 1800.0
-
-
-def _import_cache_opschonen() -> None:
-    verval = time.time() - IMPORT_CACHE_TTL_S
-    for token in [t for t, v in IMPORT_CACHE.items() if v["ts"] < verval]:
-        IMPORT_CACHE.pop(token, None)
-
-
 class ComputeRequest(BaseModel):
     area: list = Field(default_factory=list,
                        description="Projectgebied: [[x,y],...] in RD; leeg = afleiden uit stations")
     stations: list = Field(..., description="MS-stations in volgorde: [[x,y],...]")
     via: list = Field(default_factory=list, description="Verplichte passeerpunten")
-    ring: bool = Field(default=False,
-                       description="Ring sluiten: ook het tracé van het laatste station "
-                                   "terug naar het eerste station bepalen")
     forbidden: list = Field(default_factory=list, description="Verboden zones: [[[x,y],...]]")
     weights: dict = Field(default_factory=dict, description="Wegingsprofiel-overrides")
     variants: bool = Field(default=False, description="Ook de drie varianten rekenen")
     haspel_m: float = Field(default=500.0)
-    projectnaam: str = Field(default="", description="Voor de proces-triggers")
 
 
 def _or_masks(*masks):
@@ -202,17 +161,6 @@ def _or_masks(*masks):
             continue
         result = m if result is None else (result | m)
     return result
-
-
-def _stationsreeks(req: "ComputeRequest") -> list:
-    """Stations in strengvolgorde; bij een gesloten ring komt het eerste
-    station er aan het eind nog een keer bij, zodat ook de verbinding van het
-    laatste station terug naar het eerste wordt berekend. De stations zelf
-    (symbolen, labels, exports) blijven de oorspronkelijke reeks."""
-    reeks = [tuple(s) for s in req.stations]
-    if req.ring:
-        reeks.append(reeks[0])
-    return reeks
 
 
 def _insert_via(stations: list, via: list) -> list:
@@ -237,42 +185,6 @@ def _insert_via(stations: list, via: list) -> list:
     return waypoints
 
 
-def _geheugen_instellen() -> None:
-    """glibc-malloc afstellen (alleen Linux; elders een no-op). De
-    berekeningen draaien in werkerthreads en alloceren grote numpy-/PIL-
-    buffers: met de standaardinstellingen krijgt elke thread een eigen arena
-    en blijven vrijgegeven buffers op de heap staan, waardoor de RSS nooit
-    zakt en herberekeningen oplopen tot de 2 GB-grens van Render. Twee
-    arena's, en grote buffers (> 1 MB) via mmap zodat ze bij free() direct
-    naar het OS teruggaan. Equivalent van MALLOC_ARENA_MAX/…_THRESHOLD_ in de
-    omgeving, maar zonder dat de Dockerfile/Render-config dat hoeft te zetten."""
-    try:
-        import ctypes
-        libc = ctypes.CDLL("libc.so.6")
-        libc.mallopt(-8, 2)              # M_ARENA_MAX
-        libc.mallopt(-3, 1 << 20)        # M_MMAP_THRESHOLD
-        libc.mallopt(-1, 1 << 20)        # M_TRIM_THRESHOLD
-    except Exception:
-        pass
-
-
-_geheugen_instellen()
-
-
-def _geheugen_vrijgeven() -> None:
-    """Na een berekening: cyclisch afval opruimen en (op Linux/glibc) vrije
-    heap-pagina's aan het OS teruggeven. Zonder dit blijft de RSS van het
-    proces op de piek van de zwaarste berekening staan — en tikt elke
-    herberekening (bijv. tracé verslepen) daar bovenop, tot Render het proces
-    wegens geheugengebrek herstart (502)."""
-    gc.collect()
-    try:
-        import ctypes
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception:
-        pass  # geen glibc (macOS/Windows): niets te trimmen
-
-
 def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -> dict:
     """Alle datalagen voor één werkgebied (bbox), parallel opgehaald.
 
@@ -291,7 +203,7 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
 
     dims = Grid(bbox, cell)  # alleen voor rasterafmetingen van de WMS-maskers
     cx, cy = gemeente_punt or ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=10) as ex:
         mask = lambda url, laag: ex.submit(pdok.fetch_wms_mask, url, laag,
                                            bbox, dims.ncols, dims.nrows)
         f_bgt = ex.submit(pdok.fetch_bgt, bbox)
@@ -318,9 +230,6 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         f_nge = ex.submit(pdok.regionale_nge_masks, bbox, dims.ncols, dims.nrows)
         f_buis = ex.submit(pdok.regionale_buisleiding_masks, bbox,
                            dims.ncols, dims.nrows)
-        # NDFF beschermde soorten per km-hok (informatief; voedt de
-        # natuur-quickscan en de toetsing, weegt niet mee in het raster)
-        f_ndff = ex.submit(ndff_mod.voor_bbox, bbox)
 
         bgt = veilig("bgt", f_bgt, {})
         percelen = veilig("dkk-percelen", f_perc, [])
@@ -342,10 +251,6 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         sld1, sld2 = f_sld1.result(), f_sld2.result()
         sad, wbb, dek = f_sad.result(), f_wbb.result(), f_dek.result()
         stilte_mask = f_stilte.result()
-        ndff_data = veilig("NDFF beschermde soorten", f_ndff,
-                           {"hokken": {}, "hok_meta": {}, "fout": "geen antwoord"})
-    if ndff_data.get("fout"):
-        fouten.append(f"NDFF beschermde soorten: {ndff_data['fout']}")
 
     # bestaande netten uit een eventuele KLIC-import (lokaal bestand; leeg
     # zolang er geen KLIC-toegang is — voorbereid koppelvlak)
@@ -402,10 +307,6 @@ def _fetch_lagen(bbox: tuple, cell: float, gemeente_punt: tuple | None = None) -
         "buisleiding_bronnen": list(buis_bronnen),
         "nwb": nwb, "legger_water": legger_water, "keringen": keringen,
         "klic_geoms": klic_geoms,
-        # per hok (voor ontdubbeling over corridor-deeltrajecten) én de
-        # samenvatting per categorie voor registers/toetsing/nota
-        "ndff": ndff_data,
-        "ndff_samenvatting": ndff_mod.samenvatting(ndff_data.get("hokken") or {}),
         "laag_fouten": fouten,
     }
 
@@ -525,20 +426,7 @@ def _hecht_kruisingen(kruisingen: list, route: LineString) -> list:
             # haakse breedte: elk half gedetecteerd deel mat al door het hele
             # obstakel; de grootste meting is de beste schatting
             v["breedte_m"] = max(v["breedte_m"], c["breedte_m"])
-            if v["soort"] == "rijbaan":
-                # wegkenmerken van beide helften samennemen: de zwaarste telt
-                v["verharding"] = engine._zwaarste(
-                    [v.get("verharding"), c.get("verharding")], engine.VERHARDING_RANG)
-                v["wegfunctie"] = engine._zwaarste(
-                    [v.get("wegfunctie"), c.get("wegfunctie")], engine.WEGFUNCTIE_RANG)
-                if c.get("sleufloos_verplicht"):
-                    v["sleufloos_verplicht"] = True
-            # beheerder uit het NWB is al gezet: techniekvoorstel opnieuw,
-            # maar het bevoegd gezag van de verrijking niet overschrijven
-            gezag = v.get("bevoegd_gezag") if v.get("wegbeheerder_bron") == "NWB" else None
-            v.update(_techniek_voor_kruising(v["soort"], v["breedte_m"], v))
-            if gezag:
-                v["bevoegd_gezag"] = gezag
+            v.update(_techniek_voor_kruising(v["soort"], v["breedte_m"]))
             v.pop("werkterrein", None)
             v.pop("techniek_oorspronkelijk", None)
             mid = route.interpolate((v["chainage_van_m"] + v["chainage_tot_m"]) / 2)
@@ -588,8 +476,6 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     bomen_gezien: set = set()
     bomen_rivm_fracties: list = []
     percelen_alle: dict = {}
-    eigendom_alle: dict = {}  # eigendomssignalen (BGT), ontdubbeld over chunks
-    ndff_hokken: dict = {}    # NDFF-soortdata per km-hok, ontdubbeld over chunks
     laag_fouten: dict = {}
     bgt_fouten: dict = {}
     bron_namen = {"bodem": [], "bomen": [], "nge": [], "buisleiding": []}
@@ -616,8 +502,6 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 p.get("kadastraleGemeenteWaarde"), p.get("sectie"),
                 p.get("perceelnummer"))
             percelen_alle.setdefault(sleutel, (g, p))
-        for sleutel, g, cat in eigendom_mod.verzamel_signalen(data["bgt"]):
-            eigendom_alle.setdefault(sleutel, (g, cat))
         for g, r in data["boom_zones"]:
             sleutel = (round(g.x / 2), round(g.y / 2))
             if sleutel not in bomen_gezien:
@@ -625,9 +509,6 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 bomen_alle.append((g, r))
         if data.get("bomen_rivm_fractie") is not None:
             bomen_rivm_fracties.append(data["bomen_rivm_fractie"])
-        for hid, d in ((data.get("ndff") or {}).get("hokken") or {}).items():
-            if not d.get("fout") or hid not in ndff_hokken:
-                ndff_hokken[hid] = d
 
     verbreed: list = []  # [{deeltraject, breedte_m}] voor de melding aan de gebruiker
 
@@ -707,11 +588,6 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                     bgt_deel = datas[breedte]["bgt"]
                     deel = LineString(coords)
                     deel = straighten_iteratief(deel, bgt_deel, grid)
-                    # normenkader: afronden/ontdubbelen/knikken/snappen en
-                    # buigradius verruimen per deeltraject (referentieranden
-                    # uit de deel-BGT, grid voor de uitsluitingstoets)
-                    deel = maatvoering.normaliseer_route(
-                        deel, maatvoering.referentieranden(bgt_deel), grid)
                     kruisingen = detect_crossings(deel, bgt_deel)
                     engine.verrijk_kruisingen(kruisingen,
                                               datas[breedte]["legger_water"],
@@ -737,29 +613,19 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                 cs = list(deel.coords)
                 st["coords"].extend(cs if not st["coords"] else cs[1:])
                 st["lengte"] += deel.length
-                del grid, deel, bgt_deel
-                _geheugen_vrijgeven()
             del painters, datas, data
 
     _voortgang("registers en toetsing samenstellen")
     gemeente = " / ".join(gemeenten) if gemeenten else None
     percelen = list(percelen_alle.values())
-    eigendom_sig = eigendom_mod.maak_signalen(eigendom_alle.values())
     varianten, fouten = [], []
     son_fouten: list = []  # BRO-sondeerdienst-fouten (gedeeld over varianten)
-    ndff_sam = ndff_mod.samenvatting(ndff_hokken)
     for naam in profielen:
         st = staat[naam]
         if st["fout"]:
             fouten.append({"variant": naam, "fout": st["fout"]})
             continue
         route = LineString(st["coords"])
-        # naadpunten tussen deeltrajecten ontdubbelen/gladstrijken en de
-        # buigradius bij het naadpunt zelf verruimen (elk deeltraject was al
-        # genormaliseerd, maar de knik ín het naadpunt overspant twee
-        # deeltrajecten en is dus nog niet getoetst); geen grid op dit
-        # tracé-brede niveau, dus ongetoetst tegen uitsluitingen
-        route = maatvoering.normaliseer_route(route)
         kruisingen = _hecht_kruisingen(st["kruisingen"], route)
         segmenten = _hecht_segmenten(st["segmenten"])
         zones_m = {bit: round(m, 1) for bit, m in st["zones"].items()}
@@ -769,28 +635,21 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         _verrijk_boringen(route, boringen)
         son_register = _sonderingen_register(route, boringen, son_fouten)
         hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
-        onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam)
-        zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
+        onderzoeken = build_onderzoeken(zones_m, boringen)
+        zro = build_zro(route, percelen)
         checks = build_checks(route, segmenten, kruisingen, boringen, zones_m,
                               bomen_rivm_fractie=(max(bomen_rivm_fracties)
-                                                  if bomen_rivm_fracties else None),
-                              ndff=ndff_sam)
-        # maatvoeringstoets over het volledige aaneengehechte tracé; de
-        # snap-toets is per deeltraject al bij de generatie toegepast
-        mv_checks, mv_overzicht = maatvoering.toets(
-            route, segmenten, [(g.x, g.y, r) for g, r in bomen_alle],
-            maatvoering.klic_nabij(route))
-        checks.extend(mv_checks)
-        werkpakketten = build_werkpakketten(route, req.stations, ring=req.ring)
+                                                  if bomen_rivm_fracties else None))
+        werkpakketten = build_werkpakketten(route, req.stations)
         ken_werkpakketten_toe(werkpakketten, route, segmenten, kruisingen,
                               boringen, moffen, zro, vergunningen,
                               onderzoeken, checks, son_register)
-        planning = build_uitvoeringsplanning(werkpakketten, boringen, moffen)
+        planning = build_planning(werkpakketten, vergunningen, onderzoeken,
+                                  boringen, zro)
         kosten = build_kosten(segmenten, kruisingen, zro, moffen, onderzoeken)
         calculatie = build_raw_calculatie(route.length, segmenten, kruisingen,
                                           boringen, zro, moffen, onderzoeken,
-                                          zones_m, kosten,
-                                          len(req.stations) + (1 if req.ring else 0))
+                                          zones_m, kosten, len(req.stations))
         kosten["aannemingssom_excl_btw"] = calculatie["aannemingssom_excl_btw"]
         mca = build_mca_row(naam, route, segmenten, kruisingen, zro, vergunningen, kosten)
         varianten.append({
@@ -810,7 +669,6 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             "onderzoeken": onderzoeken,
             "zro": zro,
             "toetsing": checks,
-            "maatvoering": mv_overzicht,
             "werkpakketten": werkpakketten,
             "planning": planning,
             "kosten": kosten,
@@ -859,11 +717,9 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         "bomen_bronnen": bron_namen["bomen"],
         "bomen_rivm_fractie": (round(max(bomen_rivm_fracties), 3)
                                if bomen_rivm_fracties else None),
-        "ndff": ndff_sam,
         "varianten": varianten,
         "variant_fouten": fouten,
         "stations": req.stations,
-        "ring": req.ring,
     }
 
 
@@ -873,16 +729,13 @@ def compute(req: ComputeRequest):
     t0 = time.time()
     if len(req.stations) < 2:
         raise HTTPException(400, "Plaats minimaal twee MS-stations.")
-    if req.ring and len(req.stations) < 3:
-        raise HTTPException(400, "Ring sluiten vraagt minimaal drie MS-stations; met twee "
-                                 "stations loopt de terugweg over hetzelfde tracé.")
 
     # actieve richtlijnen (beheerscherm ⚖) toepassen: engine-drempels worden
     # gereset en overschreven; wegingsprofiel-overrides gaan onder req.weights
     rl_over = rl_mod.pas_toe()
     RL_WEIGHTS = rl_over["weights"]
 
-    waypoints = _insert_via(_stationsreeks(req), req.via)
+    waypoints = _insert_via(req.stations, req.via)
     hemelsbreed = sum(math.hypot(b[0] - a[0], b[1] - a[1])
                       for a, b in zip(waypoints[:-1], waypoints[1:]))
     if hemelsbreed > MAX_TRACE_KM * 1000:
@@ -899,94 +752,9 @@ def compute(req: ComputeRequest):
             result = _compute_gebied(req, waypoints, t0)
         result["richtlijnen_toegepast"] = rl_over["actief"]
         LAST_RESULT = result
-        # proces-trigger: data-gedreven processtappen van de actieve fase
-        # automatisch bijwerken (registers, WBS, raming, planning, …)
-        if req.projectnaam:
-            try:
-                bijgewerkt = proces_mod.event_trace_berekend(
-                    req.projectnaam, result)
-                if bijgewerkt:
-                    result["proces_bijgewerkt"] = bijgewerkt
-            except Exception:
-                pass  # procesadministratie mag een berekening nooit blokkeren
         return result
     finally:
         PROGRESS["actief"] = False
-        _geheugen_vrijgeven()
-
-
-def _verrijk_route(route: LineString, grid: Grid, bgt: dict, percelen: list,
-                   gemeente: str | None, data: dict, boom_zones: list,
-                   eigendom_sig: dict, referentie, naam: str, weights: dict,
-                   stations: list, haspel_m: float, ring: bool = False) -> dict:
-    """Eén variant-dict (kruisingen/segmenten/registers/kosten/…) voor een
-    reeds vaststaande route — gedeeld door de Dijkstra-berekening
-    (_compute_gebied) en de tracé-import vanuit DXF/PDF. `referentie` en
-    `eigendom_sig` worden door de aanroeper aangeleverd omdat de import geen
-    normaliseer_route/snapping op de route zelf toepast, maar de toetsing
-    (maatvoering.toets) wel dezelfde referentieranden gebruikt."""
-    crossings = detect_crossings(route, bgt)
-    engine.verrijk_kruisingen(crossings, data["legger_water"],
-                              data["nwb"], pdok.waterschap_naam)
-    beoordeel_werkterreinen(route, crossings, grid)
-    segments = build_segments(route, grid)
-    zones_m = zone_lengtes(route, grid)
-    moffen = propose_moffen(route, crossings, segments, haspel_m)
-    vergunningen = build_vergunningen(segments, crossings, gemeente, zones_m)
-    boringen = build_boringen(route, crossings)
-    _verrijk_boringen(route, boringen)
-    son_register = _sonderingen_register(route, boringen, data["laag_fouten"])
-    hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
-    ndff_sam = data.get("ndff_samenvatting")
-    onderzoeken = build_onderzoeken(zones_m, boringen, ndff=ndff_sam)
-    zro = build_zro(route, percelen, eigendom_signalen=eigendom_sig)
-    checks = build_checks(route, segments, crossings, boringen, zones_m,
-                          bomen_rivm_fractie=data.get("bomen_rivm_fractie"),
-                          ndff=ndff_sam)
-    # maatvoeringstoets (normen.py): buigradius, K&L-afstanden en
-    # -kruisingshoeken, bomen, gevelafstand, snapping — bevindingen sluiten
-    # aan op de bestaande toetsing (ernst/punt) met exacte metrering en
-    # gemeten waarde
-    mv_checks, mv_overzicht = maatvoering.toets(
-        route, segments, [(g.x, g.y, r) for g, r in boom_zones],
-        maatvoering.klic_nabij(route), bgt, referentie)
-    checks.extend(mv_checks)
-    werkpakketten = build_werkpakketten(route, stations, ring=ring)
-    ken_werkpakketten_toe(werkpakketten, route, segments, crossings,
-                          boringen, moffen, zro, vergunningen,
-                          onderzoeken, checks, son_register)
-    planning = build_uitvoeringsplanning(werkpakketten, boringen, moffen)
-    kosten = build_kosten(segments, crossings, zro, moffen, onderzoeken)
-    calculatie = build_raw_calculatie(route.length, segments, crossings,
-                                      boringen, zro, moffen, onderzoeken,
-                                      zones_m, kosten,
-                                      len(stations) + (1 if ring else 0))
-    kosten["aannemingssom_excl_btw"] = calculatie["aannemingssom_excl_btw"]
-    mca = build_mca_row(naam, route, segments, crossings, zro, vergunningen, kosten)
-    return {
-        "naam": naam,
-        "wegingsprofiel": weights,
-        "route": mapping(route),
-        "lengte_m": round(route.length, 1),
-        "kruisingen": crossings,
-        "segmenten": segments,
-        "zones": {ZONE_NAMES[bit]: m for bit, m in zones_m.items() if m > 0},
-        "hoogteprofiel": hoogteprofiel,
-        "hoogte": hoogte_info,
-        "moffen": moffen,
-        "vergunningen": vergunningen,
-        "boringen": boringen,
-        "sonderingen": son_register,
-        "onderzoeken": onderzoeken,
-        "zro": zro,
-        "toetsing": checks,
-        "maatvoering": mv_overzicht,
-        "werkpakketten": werkpakketten,
-        "planning": planning,
-        "kosten": kosten,
-        "calculatie": calculatie,
-        "mca": mca,
-    }
 
 
 def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
@@ -1015,12 +783,8 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
     xmin, ymin, xmax, ymax = gebied.bounds
     bbox = (xmin - BBOX_BUFFER_M, ymin - BBOX_BUFFER_M, xmax + BBOX_BUFFER_M, ymax + BBOX_BUFFER_M)
     # 0,5 m waar het kan; grotere gebieden 0,75 m — bij 1 m verliest het raster
-    # smalle stoepen en bermen (± 1,5 m) en schampt het tracé over de rijbaan.
-    # Bij de grootste toegestane gebieden (buurt MAX_GEBIED_KM2) alsnog naar
-    # 1 m: het rastergeheugen (kosten-/klasse-/zonelaag + de interne rasters
-    # van MCP_Geometric) schaalt kwadratisch mee met km², en liep bij een
-    # gebied rond de 3 km² op tot een out-of-memory crash van het proces.
-    cell = 0.5 if km2 <= 1.5 else 0.75 if km2 <= 2.5 else 1.0
+    # smalle stoepen en bermen (± 1,5 m) en schampt het tracé over de rijbaan
+    cell = 0.5 if km2 <= 1.5 else 0.75
 
     # --- datalagen (open bronnen), parallel ---
     _voortgang("datalagen ophalen bij PDOK")
@@ -1033,12 +797,8 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
     t_data = time.time()
 
     painter = build_painter(bbox, bgt, req.forbidden, cell, data["zone_data"])
-    eigendom_sig = eigendom_mod.signalen_uit_bgt(bgt)
 
     profielen = dict(VARIANT_PROFIELEN) if req.variants else {"Voorkeursvariant": {}}
-    # normenkader (normen.py): referentieranden voor afronden/snappen van de
-    # berekende route én voor de maatvoeringstoets, per profiel gelijk
-    referentie = maatvoering.referentieranden(bgt, percelen)
     varianten = []
     fouten = []
     for naam, overrides in profielen.items():
@@ -1050,14 +810,57 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
                 _free_station(grid, wp)
             route = LineString(shortest_path(grid, waypoints))
             route = straighten_iteratief(route, bgt, grid)
-            # afronden op 0,01 m RD, ontdubbelen, korte knik-segmenten
-            # samenvoegen, snappen op BGT-/erfranden en buigradius verruimen,
-            # zodat het gegenereerde tracé de eisen vooraf respecteert
-            route = maatvoering.normaliseer_route(route, referentie, grid)
-            varianten.append(_verrijk_route(
-                route, grid, bgt, percelen, gemeente, data, boom_zones,
-                eigendom_sig, referentie, naam, weights, req.stations,
-                req.haspel_m, req.ring))
+            crossings = detect_crossings(route, bgt)
+            engine.verrijk_kruisingen(crossings, data["legger_water"],
+                                      data["nwb"], pdok.waterschap_naam)
+            beoordeel_werkterreinen(route, crossings, grid)
+            segments = build_segments(route, grid)
+            zones_m = zone_lengtes(route, grid)
+            moffen = propose_moffen(route, crossings, segments, req.haspel_m)
+            vergunningen = build_vergunningen(segments, crossings, gemeente, zones_m)
+            boringen = build_boringen(route, crossings)
+            _verrijk_boringen(route, boringen)
+            son_register = _sonderingen_register(route, boringen, laag_fouten)
+            hoogteprofiel, hoogte_info = _trace_hoogteprofiel(route)
+            onderzoeken = build_onderzoeken(zones_m, boringen)
+            zro = build_zro(route, percelen)
+            checks = build_checks(route, segments, crossings, boringen, zones_m,
+                                  bomen_rivm_fractie=data.get("bomen_rivm_fractie"))
+            werkpakketten = build_werkpakketten(route, req.stations)
+            ken_werkpakketten_toe(werkpakketten, route, segments, crossings,
+                                  boringen, moffen, zro, vergunningen,
+                                  onderzoeken, checks, son_register)
+            planning = build_planning(werkpakketten, vergunningen, onderzoeken,
+                                      boringen, zro)
+            kosten = build_kosten(segments, crossings, zro, moffen, onderzoeken)
+            calculatie = build_raw_calculatie(route.length, segments, crossings,
+                                              boringen, zro, moffen, onderzoeken,
+                                              zones_m, kosten, len(req.stations))
+            kosten["aannemingssom_excl_btw"] = calculatie["aannemingssom_excl_btw"]
+            mca = build_mca_row(naam, route, segments, crossings, zro, vergunningen, kosten)
+            varianten.append({
+                "naam": naam,
+                "wegingsprofiel": weights,
+                "route": mapping(route),
+                "lengte_m": round(route.length, 1),
+                "kruisingen": crossings,
+                "segmenten": segments,
+                "zones": {ZONE_NAMES[bit]: m for bit, m in zones_m.items() if m > 0},
+                "hoogteprofiel": hoogteprofiel,
+                "hoogte": hoogte_info,
+                "moffen": moffen,
+                "vergunningen": vergunningen,
+                "boringen": boringen,
+                "sonderingen": son_register,
+                "onderzoeken": onderzoeken,
+                "zro": zro,
+                "toetsing": checks,
+                "werkpakketten": werkpakketten,
+                "planning": planning,
+                "kosten": kosten,
+                "calculatie": calculatie,
+                "mca": mca,
+            })
         except EngineError as e:
             fouten.append({"variant": naam, "fout": str(e)})
 
@@ -1082,157 +885,10 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
         "bomen": [[round(g.x, 2), round(g.y, 2), round(r, 1)] for g, r in boom_zones],
         "bomen_bronnen": data["bomen_bronnen"],
         "bomen_rivm_fractie": data.get("bomen_rivm_fractie"),
-        "ndff": data.get("ndff_samenvatting"),
         "varianten": varianten,
         "variant_fouten": fouten,
         "stations": req.stations,
-        "ring": req.ring,
     }
-
-
-# ---------------------------------------------------------------------------
-# Trace-import: een bestaand tracé uploaden (DXF/PDF) i.p.v. intekenen
-# ---------------------------------------------------------------------------
-
-class TraceImportInspect(BaseModel):
-    bestandsnaam: str
-    data_base64: str
-
-
-class TraceImportConfirm(BaseModel):
-    token: str
-    lagen: list[str] = Field(..., description="Gekozen laagnamen die het tracé vormen")
-    projectnaam: str = Field(default="", description="Voor de proces-triggers")
-    haspel_m: float = Field(default=500.0)
-
-
-@app.post("/api/trace/import/inspect")
-def trace_import_inspect(req: TraceImportInspect):
-    """Upload lezen en de kandidaat-lagen (ondergrond/kadaster/tracé/…)
-    teruggeven, zodat de gebruiker kan aanwijzen welke laag het tracé is.
-    Bewaart de ruwe bytes server-side onder een token, zodat het bestand niet
-    een tweede keer geüpload hoeft te worden bij het bevestigen van de keuze."""
-    _import_cache_opschonen()
-    ruw = req.data_base64.split(",", 1)[-1]  # eventueel data-URL-prefix strippen
-    try:
-        data = base64.b64decode(ruw)
-    except Exception:
-        raise HTTPException(400, "Bestand is geen geldige base64-inhoud.")
-    try:
-        bestandstype, kandidaten = trace_import_mod.inspecteer(req.bestandsnaam, data)
-    except trace_import_mod.TraceImportError as e:
-        raise HTTPException(400, str(e))
-    token = uuid.uuid4().hex
-    IMPORT_CACHE[token] = {"data": data, "type": bestandstype,
-                           "bestandsnaam": req.bestandsnaam, "ts": time.time()}
-    return {"token": token, "type": bestandstype,
-            "bestandsnaam": req.bestandsnaam,
-            "lagen": [dataclasses.asdict(c) for c in kandidaten]}
-
-
-@app.post("/api/trace/import/confirm")
-def trace_import_confirm(req: TraceImportConfirm):
-    """Route uit de gekozen laag/lagen opbouwen en door dezelfde verrijking
-    (_verrijk_route) halen als een berekend tracé — kruisingen, segmenten,
-    registers, kosten — zodat het geïmporteerde tracé identiek verder te
-    bewerken/verrijken is. Bewust géén straighten_iteratief/normaliseer_route:
-    dat zou de aangeleverde CAD-lijn verleggen; afwijkingen van de norm komen
-    in plaats daarvan als toetsingsbevinding naar voren."""
-    global LAST_RESULT
-    t0 = time.time()
-    cached = IMPORT_CACHE.get(req.token)
-    if not cached:
-        raise HTTPException(404, "Upload verlopen of onbekend; upload het bestand opnieuw.")
-    if not req.lagen:
-        raise HTTPException(400, "Kies minimaal één laag die het tracé voorstelt.")
-
-    PROGRESS.update({"actief": True, "stap": "bestand verwerken", "t0": t0})
-    try:
-        _voortgang("route uit bestand opbouwen")
-        try:
-            route, waarschuwingen = trace_import_mod.bouw_route(
-                cached["type"], cached["data"], req.lagen)
-        except trace_import_mod.TraceImportError as e:
-            raise HTTPException(400, str(e))
-        if route.length < 1.0:
-            raise HTTPException(400, "Geselecteerde laag/lagen bevatten geen "
-                                     "bruikbare lijn (lengte < 1 m).")
-
-        stations = [[round(c, 2) for c in route.coords[0]],
-                   [round(c, 2) for c in route.coords[-1]]]
-
-        gebied = route.buffer(AUTO_GEBIED_BUFFER_M)
-        km2 = gebied.area / 1e6
-        if km2 > MAX_GEBIED_KM2:
-            raise HTTPException(400, f"Het geïmporteerde tracé beslaat met "
-                                     f"zoekruimte {km2:.1f} km²; maximum voor "
-                                     f"dit prototype is {MAX_GEBIED_KM2} km².")
-        xmin, ymin, xmax, ymax = gebied.bounds
-        bbox = (xmin - BBOX_BUFFER_M, ymin - BBOX_BUFFER_M,
-               xmax + BBOX_BUFFER_M, ymax + BBOX_BUFFER_M)
-        cell = 0.5 if km2 <= 1.5 else 0.75 if km2 <= 2.5 else 1.0
-
-        _voortgang("datalagen ophalen bij PDOK")
-        data = _fetch_lagen(bbox, cell, (gebied.centroid.x, gebied.centroid.y))
-        bgt = data["bgt"]
-        percelen = data["percelen"]
-        gemeente = data["gemeente"]
-        boom_zones = data["boom_zones"]
-        t_data = time.time()
-
-        # alleen voor classificatie/zone-analyse van de al vaststaande route,
-        # geen padvinding — het wegingsprofiel maakt hier geen kostenafweging
-        # en heeft dus geen invloed op klasse/zones (zie engine.Painter.build)
-        painter = build_painter(bbox, bgt, [], cell, data["zone_data"])
-        grid = painter.build(DEFAULT_WEIGHTS)
-        eigendom_sig = eigendom_mod.signalen_uit_bgt(bgt)
-        referentie = maatvoering.referentieranden(bgt, percelen)
-
-        _voortgang("tracé verrijken")
-        variant = _verrijk_route(
-            route, grid, bgt, percelen, gemeente, data, boom_zones,
-            eigendom_sig, referentie, "Geïmporteerd tracé", DEFAULT_WEIGHTS,
-            stations, req.haspel_m)
-
-        result = {
-            "modus": "import",
-            "bestandsnaam": cached["bestandsnaam"],
-            "gemeente": gemeente,
-            "celgrootte_m": cell,
-            "bbox": bbox,
-            "rekentijd_s": {"datalagen": round(t_data - t0, 1),
-                           "route": round(time.time() - t_data, 1)},
-            "bgt_fouten": bgt.get("_errors", []),
-            "laag_fouten": data["laag_fouten"] + waarschuwingen,
-            "bodem_bronnen_regionaal": data["bodem_bronnen"],
-            "nge_bronnen_regionaal": data["nge_bronnen"],
-            "buisleiding_bronnen": data["buisleiding_bronnen"],
-            "klic": klic.status(),
-            "brk": brk.status(),
-            "gebied": mapping(gebied),
-            "bomen": [[round(g.x, 2), round(g.y, 2), round(r, 1)] for g, r in boom_zones],
-            "bomen_bronnen": data["bomen_bronnen"],
-            "bomen_rivm_fractie": data.get("bomen_rivm_fractie"),
-            "ndff": data.get("ndff_samenvatting"),
-            "varianten": [variant],
-            "variant_fouten": [],
-            "richtlijnen_toegepast": [],
-            "stations": stations,
-        }
-        LAST_RESULT = result
-        # proces-trigger: data-gedreven processtappen van de actieve fase
-        # automatisch bijwerken, net als na een gewone berekening
-        if req.projectnaam:
-            try:
-                bijgewerkt = proces_mod.event_trace_berekend(req.projectnaam, result)
-                if bijgewerkt:
-                    result["proces_bijgewerkt"] = bijgewerkt
-            except Exception:
-                pass
-        IMPORT_CACHE.pop(req.token, None)
-        return result
-    finally:
-        PROGRESS["actief"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -1302,28 +958,6 @@ def regionale_bronnen(bbox: str):
     except ValueError:
         raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
     return pdok.regionale_bronnen_voor_bbox(delen)
-
-
-@app.get("/api/ndff/hokken")
-def ndff_hokken(bbox: str):
-    """NDFF beschermde soorten per km-hok in het kaartbeeld (open data).
-
-    bbox = 'xmin,ymin,xmax,ymax' in RD. Informatieve kaartlaag: hokken met
-    de beschermde soorten (Ow) per categorie (vaatplanten, broedvogels met
-    jaarrond beschermd nest, vleermuizen, grondgebonden zoogdieren,
-    amfibieën/reptielen) over de laatste PERIODE_JAREN jaar. Boven
-    MAX_HOKKEN_KAART hokken in beeld komt 'te_veel' terug (zoom verder in).
-    """
-    try:
-        delen = tuple(float(x) for x in bbox.split(","))
-        if len(delen) != 4:
-            raise ValueError
-    except ValueError:
-        raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
-    try:
-        return ndff_mod.kaartlaag(delen)
-    except Exception as e:
-        raise HTTPException(502, f"NDFF open data niet bereikbaar: {type(e).__name__}")
 
 
 # ---------------------------------------------------------------------------
@@ -1483,7 +1117,7 @@ def export_dxf(variant: int = 0, projectnaam: str = ""):
 
 
 @app.get("/api/export/xlsx")
-def export_xlsx(variant: int = 0, projectnaam: str = ""):
+def export_xlsx(variant: int = 0):
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
@@ -1507,12 +1141,10 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
         m = var["mca"]
         kr = "; ".join(f"{k}: {n}" for k, n in m["kruisingen"].items()) or "-"
         mca_rows.append([m["variant"], m["lengte_m"], kr, m["meters_privaat_m"],
-                         m["aantal_percelen"], m.get("percelen_privaat", ""),
-                         m["aantal_vergunningen"],
+                         m["aantal_percelen"], m["aantal_vergunningen"],
                          m["kosten_eur"], m["doorlooptijd_wk"]])
     sheet("MCA varianten",
           ["Variant", "Lengte (m)", "Kruisingen", "Privaat (m)", "Percelen",
-           "Percelen privaat (inschatting)",
            "Vergunningen", "Kosten (EUR)", "Doorlooptijd (wk)"], mca_rows)
     sheet("Werkpakketten",
           ["Nr", "Naam", "Van station", "Tot station", "Van (m)", "Tot (m)",
@@ -1520,37 +1152,22 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
           [[w["nr"], w["naam"], w["van_station"], w["tot_station"],
             w["chainage_van_m"], w["chainage_tot_m"], w["lengte_m"]]
            for w in v.get("werkpakketten", [])])
-    sheet("Uitvoeringsplanning",
-          ["Nr", "Werkpakket", "Fase", "Subfase", "Start (wk)", "Eind (wk)",
-           "Duur (wk)", "Status", "Toelichting"],
-          [[p["nr"], p["werkpakket"], p["fase"], p.get("subfase", ""),
-            p["start_wk"], p["eind_wk"], p["duur_wk"], p["status"],
-            p["toelichting"]]
+    sheet("Planning",
+          ["Nr", "Werkpakket", "Fase", "Start (wk)", "Eind (wk)", "Duur (wk)",
+           "Status", "Toelichting"],
+          [[p["nr"], p["werkpakket"], p["fase"], p["start_wk"], p["eind_wk"],
+            p["duur_wk"], p["status"], p["toelichting"]]
            for p in v.get("planning", [])])
-    if projectnaam:
-        try:
-            ontwerpplanning = proces_mod.bouw_ontwerpplanning(projectnaam)
-        except Exception:
-            ontwerpplanning = []
-        sheet("Ontwerpplanning",
-              ["Nr", "Fase", "Discipline", "Start (wk)", "Eind (wk)",
-               "Duur (wk)", "Status", "Tollgate", "Toelichting"],
-              [[r["nr"], r["fase_naam"] or r["fase"], r.get("discipline", ""),
-                r["start_wk"], r["eind_wk"], r["duur_wk"], r["status"],
-                r.get("tollgate", ""), r["toelichting"]]
-               for r in ontwerpplanning])
     sheet("Segmenten", ["Nr", "Werkpakket", "Ligging", "Van (m)", "Tot (m)", "Lengte (m)"],
           [[s["nr"], s.get("werkpakket", ""), s["ligging"], s["van_m"], s["tot_m"],
             s["lengte_m"]] for s in v["segmenten"]])
     sheet("Kruisingen",
           ["Nr", "Werkpakket", "Soort", "Breedte haaks (m)", "Langs tracé (m)",
-           "Techniek", "Noodzaak", "Legger-categorie", "Wegfunctie (BGT)",
-           "Verharding (BGT)", "Wegnaam (NWB)",
+           "Techniek", "Noodzaak", "Legger-categorie", "Wegnaam (NWB)",
            "Detail", "Richtlijn", "Bevoegd gezag"],
           [[c["nr"], c.get("werkpakket", ""), c["soort"], c["breedte_m"],
             c.get("kruislengte_m", ""), c["techniek"],
             c.get("noodzaak", ""), c.get("legger_categorie", ""),
-            c.get("wegfunctie", ""), c.get("verharding", ""),
             c.get("wegnaam", ""),
             c["detail"], c["richtlijn"], c["bevoegd_gezag"]]
            for c in v["kruisingen"]])
@@ -1592,8 +1209,6 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
         d = zro_mod.laad_dossier(zro_mod.slug_van(z["perceel"]))
         zro_rows.append([z["nr"], z.get("werkpakket", ""), z["perceel"],
                          d["eigenaar_naam"] or z["eigenaar"],
-                         z.get("eigendom", "onbekend"),
-                         z.get("eigendom_toelichting", ""),
                          z["ingenomen_lengte_m"], z["werkstrook_m2"],
                          d["aard_recht"] or z["aard_recht"],
                          d["vergoeding_eenmalig_eur"],
@@ -1601,9 +1216,7 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
                          d["vergoeding_grondslag"], d["status"],
                          "; ".join(b["bestand"] for b in d["bijlagen"])])
     sheet("ZRO",
-          ["Nr", "Werkpakket", "Perceel", "Eigenaar",
-           "Eigendom (inschatting)", "Toelichting eigendom",
-           "Ingenomen lengte (m)",
+          ["Nr", "Werkpakket", "Perceel", "Eigenaar", "Ingenomen lengte (m)",
            "Werkstrook (m2)", "Aard recht", "Vergoeding eenmalig (EUR)",
            "Vergoeding jaarlijks (EUR)", "Grondslag vergoeding", "Status",
            "Bijlagen"], zro_rows)
@@ -1814,17 +1427,9 @@ def project_load(name: str):
     # meegeslagen rekenresultaat weer actief maken, zodat registers,
     # exports en nota's direct werken zonder herberekening
     res = (p.get("state") or {}).get("result")
-    LAST_RESULT = res if isinstance(res, dict) and res.get("varianten") else None
+    if isinstance(res, dict) and res.get("varianten"):
+        LAST_RESULT = res
     return p
-
-
-@app.post("/api/project/new")
-def project_new():
-    """Server-state van het huidige (single-user) project wissen, zodat een
-    ververste pagina niet het vorige tracé terughaalt (zie /api/result)."""
-    global LAST_RESULT
-    LAST_RESULT = None
-    return {"ok": True}
 
 
 @app.get("/api/defaults")
@@ -2060,416 +1665,6 @@ def zro_bijlage_download(slug: str, bestand: str):
                                                         "application/octet-stream")
     return FileResponse(pad, media_type=media,
                         headers={"Content-Disposition": f'inline; filename="{pad.name}"'})
-
-
-# ---------------------------------------------------------------------------
-# Procesondersteuning: intake (IV) → VO → DO → UO → overdracht (tollgates)
-# ---------------------------------------------------------------------------
-
-class ProcesStapActie(BaseModel):
-    project: str
-    stap: str
-    actie: str  # start | gereed | goedkeur | afkeur | nvt | heropen
-    toelichting: str = ""
-    verantwoordelijke: str = ""
-    door: str = ""
-
-
-class ProcesTollgate(BaseModel):
-    project: str
-    fase: str
-    besluit: str  # genomen | afgekeurd
-    door: str
-    toelichting: str = ""
-
-
-class ProcesAiRun(BaseModel):
-    project: str
-    stap: str
-    variant: int = 0
-
-
-class ProcesDocOpslaan(BaseModel):
-    project: str
-    stap: str
-    markdown: str
-    variant: int = 0
-
-
-class ProcesConfigUpdate(BaseModel):
-    fases: dict = Field(default_factory=dict)
-    stappen: dict = Field(default_factory=dict)
-    ai_automatisch: bool | None = None
-
-
-class ProcesIntakeUpload(BaseModel):
-    project: str
-    bestandsnaam: str
-    data_base64: str
-
-
-class ProcesIntakeDoc(BaseModel):
-    project: str
-    markdown: str
-
-
-class ProcesRisicoGenereer(BaseModel):
-    project: str
-    variant: int = 0
-    fase: str = ""
-
-
-class ProcesRisicoUpdate(BaseModel):
-    project: str
-    nr: str
-    veld: str = ""
-    waarde: str | int | None = None
-
-
-def _proces_fout(e: Exception):
-    if isinstance(e, proces_mod.ProcesError):
-        raise HTTPException(422, str(e))
-    raise
-
-
-@app.get("/api/proces/overzicht")
-def proces_overzicht(project: str):
-    return proces_mod.overzicht(project, LAST_RESULT)
-
-
-@app.get("/api/proces/sjabloon")
-def proces_sjabloon():
-    """Voor de adminomgeving: het volledige stappenmodel + configuratie."""
-    cfg = proces_mod.laad_config()
-    return {"fasen": proces_mod.FASEN,
-            "stappen": [{**s,
-                         **proces_mod._stap_config(cfg, s),
-                         "standaard_uitvoering": s["uitvoering"]}
-                        for s in proces_mod.STAPPEN],
-            "ai_automatisch": cfg.get("ai_automatisch", True)}
-
-
-@app.post("/api/proces/config")
-def proces_config_opslaan(req: ProcesConfigUpdate):
-    body = {"fases": req.fases, "stappen": req.stappen}
-    if req.ai_automatisch is not None:
-        body["ai_automatisch"] = req.ai_automatisch
-    return proces_mod.bewaar_config(body)
-
-
-@app.post("/api/proces/stap")
-def proces_stap(req: ProcesStapActie):
-    try:
-        return proces_mod.stap_actie(
-            req.project, req.stap, req.actie, toelichting=req.toelichting,
-            verantwoordelijke=req.verantwoordelijke, door=req.door)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.post("/api/proces/tollgate")
-def proces_tollgate(req: ProcesTollgate):
-    try:
-        return proces_mod.tollgate_besluit(
-            req.project, req.fase, req.besluit, door=req.door,
-            toelichting=req.toelichting)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.post("/api/proces/ai/run")
-def proces_ai_run(req: ProcesAiRun):
-    """Data-gedreven stap (data:*) direct uitvoeren vanuit het resultaat."""
-    try:
-        return proces_mod.voer_data_cap_uit(
-            req.project, req.stap, LAST_RESULT, req.variant)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.get("/api/proces/ai/stream")
-def proces_ai_stream(project: str, stap: str, variant: int = 0):
-    """AI-conceptdocument (doc:*/nota:*) live streamen (Markdown)."""
-    try:
-        gen = proces_mod.stream_doc(project, stap, LAST_RESULT, variant)
-    except (proces_mod.ProcesError, nota_mod.NotaError) as e:
-        raise HTTPException(503, str(e))
-    return StreamingResponse(gen, media_type="text/plain; charset=utf-8",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
-
-
-@app.post("/api/proces/ai/document")
-def proces_ai_document(req: ProcesDocOpslaan):
-    """Gestreamde concept-Markdown opslaan als Word-artefact bij de stap."""
-    try:
-        return proces_mod.bewaar_doc(req.project, req.stap, req.markdown,
-                                     LAST_RESULT, req.variant)
-    except (proces_mod.ProcesError, nota_mod.NotaError) as e:
-        raise HTTPException(422, str(e))
-
-
-@app.post("/api/proces/intake/upload")
-def proces_intake_upload(req: ProcesIntakeUpload):
-    data = req.data_base64.split(",", 1)[-1]
-    try:
-        inhoud = base64.b64decode(data)
-    except Exception:
-        raise HTTPException(400, "Bestand is geen geldige base64-inhoud.")
-    try:
-        return proces_mod.intake_upload(req.project, req.bestandsnaam, inhoud)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.get("/api/proces/intake/stream")
-def proces_intake_stream(project: str):
-    try:
-        gen = proces_mod.stream_intake(project)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(503, str(e))
-    return StreamingResponse(gen, media_type="text/plain; charset=utf-8",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
-
-
-@app.post("/api/proces/intake/document")
-def proces_intake_document(req: ProcesIntakeDoc):
-    try:
-        return proces_mod.bewaar_intake(req.project, req.markdown)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-class ProcesIvKaart(BaseModel):
-    project: str
-    verbinding: int = 0
-
-
-@app.post("/api/proces/iv-kaart/genereer")
-def proces_iv_kaart_genereer(req: ProcesIvKaart):
-    """IV → kaart (IV-03): AI-extractie van knooppunten, verbindingen,
-    klantadressen, hoeveelheden, mijlpalen en risico's uit het geüploade
-    IV, gegeocodeerd via de PDOK Locatieserver. Duurt 1-3 minuten."""
-    try:
-        return proces_mod.iv_kaart_genereer(req.project)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.get("/api/proces/iv-kaart")
-def proces_iv_kaart(project: str):
-    try:
-        return proces_mod.iv_kaart_voorstel(project)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(404, str(e))
-
-
-@app.post("/api/proces/iv-kaart/toepassen")
-def proces_iv_kaart_toepassen(req: ProcesIvKaart):
-    """Voorstel doorzetten naar procesgegevens (mijlpalen, opdrachtgever,
-    risico's) en de stations/klantlocaties teruggeven voor het kaartscherm."""
-    try:
-        return proces_mod.iv_kaart_toepassen(req.project, req.verbinding)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.post("/api/proces/risico/genereer")
-def proces_risico_genereer(req: ProcesRisicoGenereer):
-    try:
-        return proces_mod.genereer_risico(req.project, LAST_RESULT,
-                                          req.variant, req.fase)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.post("/api/proces/risico/update")
-def proces_risico_update(req: ProcesRisicoUpdate):
-    try:
-        return proces_mod.risico_update(req.project, req.nr, req.veld,
-                                        req.waarde)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.delete("/api/proces/risico")
-def proces_risico_verwijder(project: str, nr: str):
-    try:
-        return proces_mod.risico_verwijder(project, nr)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-class ProcesGegevens(BaseModel):
-    project: str
-    gegevens: dict
-
-
-@app.get("/api/proces/gegevens")
-def proces_gegevens(project: str):
-    """Projectgegevens voor de ontwikkelnota's: verificatietabel-namen,
-    projectteam en mijlpalen (invulscherm op de procespagina)."""
-    return {**proces_mod.laad_gegevens(project),
-            "team_rollen": proces_mod.TEAM_ROLLEN,
-            "mijlpaal_labels": proces_mod.MIJLPAAL_LABELS}
-
-
-@app.post("/api/proces/gegevens")
-def proces_gegevens_opslaan(req: ProcesGegevens):
-    try:
-        return proces_mod.bewaar_gegevens(req.project, req.gegevens)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-class ProcesBudgetTaakstellend(BaseModel):
-    project: str
-    fasen: dict = Field(default_factory=dict)
-    aanleiding: str = ""
-    toelichting: str = ""
-    door: str = ""
-
-
-class ProcesBudgetRealisatie(BaseModel):
-    project: str
-    fase: str
-    bedrag_excl_btw: float
-    bedrag_incl_btw: float | None = None
-    toelichting: str = ""
-    door: str = ""
-
-
-@app.get("/api/proces/budget")
-def proces_budget(project: str):
-    """Taakstellend budget (ontwerpfase IV t/m UO) en de begroting van de
-    realisatiefase, huidig + historie (Budget-scherm op de procespagina)."""
-    return {
-        "posten": proces_mod.BUDGET_POSTEN, "fasen": proces_mod.BUDGET_FASEN,
-        "taakstellend_huidig": proces_mod.taakstellend_huidig(project),
-        "taakstellend_historie": proces_mod.taakstellend_historie(project),
-        "realisatie_huidig": proces_mod.realisatie_huidig(project),
-        "realisatie_historie": proces_mod.realisatie_historie(project),
-    }
-
-
-@app.post("/api/proces/budget/taakstellend")
-def proces_budget_taakstellend(req: ProcesBudgetTaakstellend):
-    try:
-        return proces_mod.zet_taakstellend_budget(
-            req.project, req.fasen, aanleiding=req.aanleiding,
-            toelichting=req.toelichting, door=req.door)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-@app.post("/api/proces/budget/realisatie")
-def proces_budget_realisatie(req: ProcesBudgetRealisatie):
-    try:
-        return proces_mod.zet_realisatie_begroting(
-            req.project, req.fase, bedrag_excl_btw=req.bedrag_excl_btw,
-            bedrag_incl_btw=req.bedrag_incl_btw, bron="handmatig",
-            status="vastgesteld", toelichting=req.toelichting, door=req.door)
-    except proces_mod.ProcesError as e:
-        raise HTTPException(422, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Kaartafbeeldingen (PNG) voor de ontwikkelnota's en de nota-preview
-# ---------------------------------------------------------------------------
-
-def _jpg(data: bytes) -> StreamingResponse:
-    return StreamingResponse(io.BytesIO(data), media_type="image/jpeg",
-                             headers={"Cache-Control": "no-cache"})
-
-
-@app.get("/api/kaart/overzicht.jpg")
-def kaart_overzicht(variant: int = 0, projectnaam: str = ""):
-    _need_result(variant)
-    return _jpg(kaart_mod.overzichtskaart(LAST_RESULT, variant, projectnaam))
-
-
-@app.get("/api/kaart/varianten.jpg")
-def kaart_varianten(projectnaam: str = ""):
-    _need_result(0)
-    return _jpg(kaart_mod.variantenkaart(LAST_RESULT, projectnaam))
-
-
-@app.get("/api/kaart/variant.jpg")
-def kaart_variant(variant: int = 0, projectnaam: str = ""):
-    _need_result(variant)
-    return _jpg(kaart_mod.variantkaart(LAST_RESULT, variant, projectnaam))
-
-
-@app.get("/api/kaart/werkpakket.jpg")
-def kaart_werkpakket(wp: str, variant: int = 0, projectnaam: str = ""):
-    _need_result(variant)
-    idx = kaart_mod.werkpakket_index(LAST_RESULT, variant, wp)
-    if idx is None:
-        raise HTTPException(404, f"Werkpakket '{wp}' bestaat niet.")
-    return _jpg(kaart_mod.werkpakketkaart(LAST_RESULT, variant, idx, projectnaam))
-
-
-@app.get("/api/proces/planning")
-def proces_planning(project: str):
-    """Ontwerpplanning (IV t/m NAO), projectbreed — Planning-tab procespagina."""
-    return {"planning": proces_mod.bouw_ontwerpplanning(project),
-            "vandaag_wk": proces_mod.vandaag_week(project)}
-
-
-@app.get("/api/proces/planning/xlsx")
-def proces_planning_xlsx(project: str):
-    data = proces_mod.planning_xlsx(project)
-    naam = f"ontwerpplanning_{proces_mod._slug(project)}.xlsx"
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/vnd.openxmlformats-officedocument"
-                   ".spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{naam}"'})
-
-
-@app.get("/api/kaart/planning-ontwerp.jpg")
-def kaart_planning_ontwerp(project: str = "", projectnaam: str = ""):
-    naam = project or projectnaam
-    rijen = proces_mod.bouw_ontwerpplanning(naam) if naam else []
-    vandaag_wk = proces_mod.vandaag_week(naam) if naam else None
-    return _jpg(planning_kaart.ontwerpplanning_kaart(rijen, naam, vandaag_wk))
-
-
-@app.get("/api/kaart/planning-uitvoering.jpg")
-def kaart_planning_uitvoering(variant: int = 0, projectnaam: str = ""):
-    v = _need_result(variant)
-    return _jpg(planning_kaart.uitvoeringsplanning_kaart(
-        v.get("planning", []), v.get("werkpakketten", []), projectnaam))
-
-
-@app.get("/api/proces/risico/xlsx")
-def proces_risico_xlsx(project: str):
-    data = proces_mod.risico_xlsx(project)
-    naam = f"risicoregister_{proces_mod._slug(project)}.xlsx"
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="application/vnd.openxmlformats-officedocument"
-                   ".spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{naam}"'})
-
-
-@app.get("/api/proces/artefact")
-def proces_artefact(project: str, bestand: str):
-    """Download van een in het procesdossier opgeslagen artefact."""
-    naam = Path(bestand).name  # geen padtraversal
-    pad = proces_mod.artefact_dir(project) / naam
-    if not pad.exists():
-        raise HTTPException(404, "Artefact niet gevonden.")
-    media = {".pdf": "application/pdf", ".md": "text/markdown; charset=utf-8",
-             ".txt": "text/plain; charset=utf-8",
-             ".json": "application/json; charset=utf-8",
-             ".docx": "application/vnd.openxmlformats-officedocument"
-                      ".wordprocessingml.document"}.get(
-        pad.suffix.lower(), "application/octet-stream")
-    return FileResponse(pad, media_type=media,
-                        headers={"Content-Disposition":
-                                 f'inline; filename="{pad.name}"'})
 
 
 app.mount("/", StaticFiles(directory=ROOT / "frontend", html=True), name="frontend")

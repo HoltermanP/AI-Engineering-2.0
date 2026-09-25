@@ -1,0 +1,22 @@
+{
+ "status": "contact te leggen",
+ "eigenaar_naam": "",
+ "eigenaar_adres": "",
+ "eigenaar_postcode_plaats": "",
+ "eigenaar_email": "",
+ "eigenaar_telefoon": "",
+ "netbeheerder": "",
+ "aard_recht": "",
+ "vergoeding_eenmalig_eur": 954,
+ "vergoeding_jaarlijks_eur": null,
+ "vergoeding_grondslag": "richtlijnsystematiek LTO Nederland / gezamenlijke netbeheerders (indicatieve startwaarden)",
+ "notaris": "",
+ "opmerkingen": "",
+ "bijlagen": [
+  {
+   "bestand": "ZRO-tekening_ZRO-152.pdf",
+   "soort": "tekening",
+   "datum": "12-09-2026"
+  }
+ ]
+}

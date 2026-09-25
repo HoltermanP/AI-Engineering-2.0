@@ -1,0 +1,143 @@
+{
+ "id": "20260912-135150-Trace-afwegingskader-v1.0",
+ "naam": "Trace-afwegingskader-v1.0",
+ "bestandsnaam": "Trace-afwegingskader-v1.0.pdf",
+ "geupload": "2026-09-12T13:51:50",
+ "actief": true,
+ "interpretatie": {
+  "status": "ok",
+  "model": "claude-opus-4-8",
+  "datum": "2026-09-12T13:52:33",
+  "samenvatting": "Dit is het interne tracé-afwegingskader (versie 1.0) van de ontwerpafdeling voor MS 10/20 kV-kabeltracés: het beschrijft harde uitsluitingen, gewogen kostencriteria (C1–C7) met klassefactoren, puntkosten per kruising, maakbaarheidsparameters en de MCA-variantscore. Bedoeld voor ontwerpers/ontwerpleiders die de tracébepalings-engine configureren.",
+  "parameters": [
+   {
+    "sleutel": "berm_groen",
+    "waarde": 1.0,
+    "standaard": 0.8,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C1 zet berm/onverhard openbaar als referentie (factor 1,0); dit is de goedkoopste openbare klasse en fungeert als voorkeursligging.",
+    "citaat": "Berm / onverhard openbaar  berm_onverhard  1,0"
+   },
+   {
+    "sleutel": "voetpad",
+    "waarde": 1.3,
+    "standaard": 1.0,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C1-factor voor trottoir/tegels is 1,3; direct overgenomen.",
+    "citaat": "Trottoir / tegels  trottoir  1,3"
+   },
+   {
+    "sleutel": "parkeervlak",
+    "waarde": 1.5,
+    "standaard": 1.5,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C1-factor klinker/parkeervak is 1,5; direct overgenomen.",
+    "citaat": "Klinker / parkeervak  klinker_parkeer  1,5"
+   },
+   {
+    "sleutel": "rijbaan",
+    "waarde": 4.0,
+    "standaard": 3.0,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C1 geeft asfalt hoofdrijbaan factor 4,0, duidelijk hoger dan de engine-standaard van 3, conform de zwaardere weging van rijbaanligging.",
+    "citaat": "Asfalt hoofdrijbaan  asfalt_hoofdrijbaan  4,0"
+   },
+   {
+    "sleutel": "erf_prive",
+    "waarde": 1.8,
+    "standaard": 2.5,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "Particulier agrarisch (ZRO) heeft eigendomsfactor 1,8 in C2; representatief voor privaat/agrarisch terrein.",
+    "citaat": "Particulier agrarisch (ZRO)  particulier_agrar  1,8"
+   },
+   {
+    "sleutel": "natuur_groen",
+    "waarde": 2.0,
+    "standaard": 1.2,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C1 geeft bos/natuur (onbeschermd) factor 2,0; direct overgenomen.",
+    "citaat": "Bos / natuur, onbeschermd  bos_natuur  2,0"
+   },
+   {
+    "sleutel": "gesloten_verharding",
+    "waarde": 2.5,
+    "standaard": 1.5,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "Asfalt woonstraat (gesloten verharding) heeft C1-factor 2,5, hoger dan de engine-standaard van 1,5.",
+    "citaat": "Asfalt woonstraat  asfalt_secundair  2,5"
+   },
+   {
+    "sleutel": "nnn",
+    "waarde": 2.5,
+    "standaard": 3.0,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C5 zet Natuurnetwerk Nederland op factor 2,5; direct overgenomen.",
+    "citaat": "Natuurnetwerk Nederland  nnn  2,5"
+   },
+   {
+    "sleutel": "bodem_verontreinigd",
+    "waarde": 3.5,
+    "standaard": 2.0,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C4 geeft sterk verontreinigde bodem factor 3,5, hoger dan de engine-standaard.",
+    "citaat": "Sterk verontreinigd  sterk_veront  3,5"
+   },
+   {
+    "sleutel": "bodem_verdacht",
+    "waarde": 1.3,
+    "standaard": 1.5,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C4 geeft licht verontreinigd/verdacht (onder interventiewaarde) factor 1,3.",
+    "citaat": "Licht verontreinigd, onder interventiewaarde  licht_veront  1,3"
+   },
+   {
+    "sleutel": "archeologie",
+    "waarde": 1.8,
+    "standaard": 1.5,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C4 geeft hoge archeologische verwachting factor 1,8, hoger dan de engine-standaard.",
+    "citaat": "Hoge archeologische verwachting  archeologie  1,8"
+   },
+   {
+    "sleutel": "boom_wortelzone",
+    "waarde": 3.0,
+    "standaard": 2.0,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "C5 zet kroonprojectie/boomzone op factor 3,0 (feitelijk sleufloos verplicht), hoger dan engine-standaard.",
+    "citaat": "Kroonprojectie + 1,5 m — feitelijk sleufloos verplicht  boomzone  3,0"
+   },
+   {
+    "sleutel": "boom_wortelzone_m",
+    "waarde": 1.5,
+    "standaard": 2.5,
+    "eenheid": "m",
+    "motivering": "C5 definieert de boomzone als kroonprojectie plus 1,5 m; het document noemt 1,5 m als relevante marge rond de boom.",
+    "citaat": "Kroonprojectie + 1,5 m — feitelijk sleufloos verplicht"
+   },
+   {
+    "sleutel": "spoor_kruising",
+    "waarde": 900.0,
+    "standaard": 60.0,
+    "eenheid": "kosten/m (relatief)",
+    "motivering": "Puntkosten kruising spoor bedragen 900 m-eq; overgenomen als sterke prikkel om spoor te omlopen/haaks te kruisen.",
+    "citaat": "Kruising spoor  kruising_spoor  900"
+   }
+  ],
+  "niet_gemapt": [
+   "Rekenmodel: gewogen gemiddelde celfactor = celgrootte × Σ(gewicht×factor)/Σ(gewicht), met criteriumgewichten C1=20, C2=25, C3=15, C4=15, C5=10, C6=10, C7=5 (geen directe engine-parameter).",
+   "Harde uitsluitingen U01-U13 met buffers, minimumhoeken en STOP/KRUISEN-regimes (o.a. gas, hoogspanning, Natura2000, waterkering, spoor 6m/80°, rijksweg 5m/75°, saneringslocatie, terrein derden, graafrust) - masker-/regellaag, niet in de beschikbare parameterset.",
+   "U13 graafrust instelbaar; bij uitschakelen verhuist naar C6 met factor 5,0 - geen beschikbare sleutel.",
+   "C2 eigendom/vergunningregime factoren en doorlooptijden (gemeente 1,0/8wk t/m particulier bebouwd 3,0/26wk) - deels gemapt naar erf_prive; overige eigendomsklassen niet mapbaar.",
+   "C3 dichtheid K&L (0-2:1,0 t/m >10:2,6, toets NEN 7171-1) - geen beschikbare parameter.",
+   "C4 klassen veen/slappe bodem 1,4 en NGE-verdacht 2,2 - geen passende engine-sleutel.",
+   "C5 weidevogelgebied seizoensbeperking factor 1,6 - geen passende sleutel.",
+   "C6 graafrust-factoren (kort 1,5 / lang 5,0) - geen beschikbare parameter.",
+   "C7 omgevingshinder (buitengebied 1,0, woonwijk 1,4, gevoelig object 1,5, dorpskern/winkel 2,0) - geen passende engine-sleutel.",
+   "Puntkosten (o.a. rijksweg 600, waterkering 400, primaire watergang 250, provinciale weg 250, ZRO nieuwe eigenaar 200, hogedruk gas 150, woonstraat-boring 80, sloot-boring 60, boring in/uittrede 50, mofput 40, richtingsveranderingen, bestaande K&L 10) - puntkostensystematiek, niet mapbaar op de per-m",
+   "Maakbaarheid: buigstralen (15×D gelegd, 20×D trekken, 1200×D HDD), max treklengte 350 m, bocht 50 m/90°, min kruisingshoek 60°, dekkingen (berm/trottoir 0,70; rijbaan 1,00; agrarisch 1,15; waterbodem 1,50; cunet 1,25), HDD intrede 8-15°/uittrede 6-12°, parallelafstanden - validatieparameters, geen m",
+   "Laag 3 MCA-criteria V1-V6 met gewichten en scorebanden, en beslisregel 5-puntsmarge - variantscore, geen engine-kostenparameter.",
+   "Implementatie-aandachtspunten (Bresenham-toets 16-buurs, richting in zoektoestand, azimut kruisbare objecten) en kalibratie-instructies - geen parameters."
+  ],
+  "genegeerd": []
+ }
+}

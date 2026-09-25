@@ -436,6 +436,9 @@ def bouw_context(result: dict, variant_idx: int, projectnaam: str) -> dict:
             "datum": date.today().strftime("%d-%m-%Y"),
             "modus": result.get("modus"),
             "aantal_stations": len(result.get("stations", [])),
+            # gesloten ring: het tracé loopt van het laatste station terug
+            # naar het eerste (extra werkpakket "Station N – Station 1")
+            "ring_gesloten": bool(result.get("ring")),
             "coordinatenstelsel": "RD New (EPSG:28992)",
             # richtlijndocumenten (beheerscherm) die als parameter-overrides
             # in deze berekening zijn toegepast

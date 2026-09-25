@@ -11,8 +11,6 @@ import math
 from shapely.geometry import LineString, Point, mapping
 
 import brk
-import eigendom
-import ndff as ndff_mod
 from engine import (
     CL_BERM, CL_ERF, CL_FIETSPAD, CL_NATUURGROEN, CL_ONBEKEND, CL_ONVERHARD,
     CL_PAND, CL_PARKEER, CL_RIJBAAN, CL_SPOOR, CL_VERBODEN, CL_VOETPAD, CL_WATER,
@@ -382,8 +380,7 @@ def build_sonderingen(route: LineString, cpts: list | None,
 # 6.3 Zakelijk recht (ZRO): gekruiste percelen
 # ---------------------------------------------------------------------------
 
-def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0,
-              eigendom_signalen: "eigendom.Signalen | None" = None) -> list:
+def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0) -> list:
     from shapely.prepared import prep
 
     items = []
@@ -409,16 +406,11 @@ def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0,
                                              if brk_info.get("adres") else ""))
                     if brk_info and brk_info.get("eigenaar")
                     else "onbekend — BRK-eigendom niet gekoppeld (licentie)")
-        schatting = eigendom.schat(
-            geom if geom.geom_type in ("Polygon", "MultiPolygon") else None,
-            brk_info, eigendom_signalen)
         items.append({
             **_basisitem(f"ZRO-{len(items) + 1:03d}", "zro",
                          mapping(geom) if geom.geom_type in ("Polygon", "MultiPolygon") else None),
             "perceel": perceel,
             "eigenaar": eigenaar,
-            "eigendom": schatting["eigendom"],
-            "eigendom_toelichting": schatting["eigendom_toelichting"],
             "ingenomen_lengte_m": round(lengte, 1),
             "chainage_m": round(route.project(snede.centroid), 1),
             "werkstrook_m2": round(opp),
@@ -435,8 +427,7 @@ def build_zro(route: LineString, percelen: list, werkstrook_m: float = 3.0,
 # 6.4 Onderzoeken (FO): bodem, archeologie, natuur, grondonderzoek, NGE
 # ---------------------------------------------------------------------------
 
-def build_onderzoeken(zones_m: dict | None, boringen: list,
-                      ndff: dict | None = None) -> list:
+def build_onderzoeken(zones_m: dict | None, boringen: list) -> list:
     zones_m = {**LEGE_ZONES, **(zones_m or {})}
     items = []
 
@@ -448,20 +439,10 @@ def build_onderzoeken(zones_m: dict | None, boringen: list,
         })
 
     add("KLIC-oriëntatiemelding", "Ontwerpfase (WIBON); ligging bestaande netten")
-    # natuur-quickscan: gebiedsbescherming (Natura 2000/NNN) en/of
-    # soortenbescherming (NDFF-verspreidingsdata van beschermde soorten in
-    # de km-hokken van het gebied — hok-niveau, dus aanleiding, geen bewijs)
-    natuur = []
     if zones_m[ZN_NATURA] > 0 or zones_m[ZN_NNN] > 0:
-        natuur.append(f"{zones_m[ZN_NATURA] + zones_m[ZN_NNN]:.0f} m tracé in of "
-                      f"nabij beschermd natuurgebied")
-    ndff_tekst = ndff_mod.tekst(ndff)
-    if ndff_tekst:
-        natuur.append(f"NDFF {ndff['periode'][0]}–{ndff['periode'][1]}: beschermde "
-                      f"soorten (Ow) geregistreerd in {ndff['hokken']} km-hok(ken) "
-                      f"van het gebied — {ndff_tekst}")
-    if natuur:
-        add("Natuur-quickscan (flora en fauna)", "; ".join(natuur))
+        add("Natuur-quickscan (flora en fauna)",
+            f"{zones_m[ZN_NATURA] + zones_m[ZN_NNN]:.0f} m tracé in of nabij "
+            f"beschermd natuurgebied")
     if zones_m[ZN_BODEM] > 0:
         add("Milieuhygiënisch bodemonderzoek + saneringsplan-check",
             f"{zones_m[ZN_BODEM]:.0f} m tracé door verontreinigd of nazorggebied "
@@ -525,37 +506,13 @@ def build_onderzoeken(zones_m: dict | None, boringen: list,
 
 def build_checks(route: LineString, segments: list, crossings: list, boringen: list,
                  zones_m: dict | None = None,
-                 bomen_rivm_fractie: float | None = None,
-                 ndff: dict | None = None) -> list:
+                 bomen_rivm_fractie: float | None = None) -> list:
     checks = []
     zones_m = {**LEGE_ZONES, **(zones_m or {})}
 
     def add(ernst, toets, grondslag, melding, punt=None):
         checks.append({"ernst": ernst, "toets": toets, "grondslag": grondslag,
                        "melding": melding, "punt": punt})
-
-    # soortenbescherming (Omgevingswet): NDFF-verspreidingsdata op
-    # km-hokniveau — strikt beschermde soorten (Habitat-/Vogelrichtlijn,
-    # jaarrond beschermde nesten) vragen om een quickscan vóór de uitvoering
-    # en bepalen de seizoensbeperkingen; 'andere soorten' vaak provinciaal
-    # vrijgesteld bij ruimtelijke ontwikkeling, maar zorgplicht blijft
-    if ndff and ndff.get("soorten_totaal"):
-        strikt = ndff_mod.strikte_soorten(ndff)
-        if strikt:
-            add("waarschuwing", "Soortenbescherming (Ow, strikt beschermd)",
-                "Omgevingswet/Bal flora- en fauna-activiteit; Habitat-/Vogelrichtlijn",
-                f"NDFF ({ndff['periode'][0]}–{ndff['periode'][1]}): in de km-hokken van "
-                f"het gebied zijn {len(strikt)} strikt beschermde soorten geregistreerd — "
-                f"{', '.join(strikt[:6])}{' e.a.' if len(strikt) > 6 else ''}. Verblijfplaatsen, "
-                f"nesten en voortplantingswater langs het tracé in de quickscan "
-                f"onderzoeken; werkzaamheden buiten kwetsbare perioden plannen, "
-                f"anders ontheffing flora- en fauna-activiteit (provincie).")
-        else:
-            add("info", "Soortenbescherming (Ow, andere soorten)",
-                "Omgevingswet/Bal; zorgplicht art. 11.27",
-                f"NDFF ({ndff['periode'][0]}–{ndff['periode'][1]}): alleen nationaal "
-                f"beschermde 'andere soorten' geregistreerd ({ndff_mod.tekst(ndff)}); "
-                f"provinciale vrijstelling mogelijk, zorgplicht en werkprotocol blijven.")
 
     for s in segments:
         if s["klasse"] in (CL_PAND, CL_VERBODEN):
@@ -570,19 +527,12 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
                 f"Segment {s['nr']} ({s['lengte_m']} m) ligt op erf; ZRO waarschijnlijk "
                 f"nodig. Controleer eigendom via BRK.")
 
-    # dekking-eisen uit het normenkader (normen.py / data/normen.json);
-    # geen z-waarden in het datamodel, dus eis-rapportage i.p.v. meting
-    import normen
-    d_trot = f"{normen.waarde('dekking_trottoir_m'):.2f} m"
-    dekking = {CL_BERM: f"{normen.waarde('dekking_berm_m'):.2f} m",
-               CL_VOETPAD: d_trot, CL_FIETSPAD: d_trot, CL_PARKEER: d_trot,
-               CL_RIJBAAN: f"≥ {normen.waarde('dekking_rijbaan_m'):.2f} m "
-                           "of mantelbuis"}
+    dekking = {CL_BERM: "0,80 m", CL_VOETPAD: "0,80 m", CL_FIETSPAD: "0,80 m",
+               CL_PARKEER: "0,80 m", CL_RIJBAAN: "≥ 1,00 m of mantelbuis"}
     liggingen = {s["klasse"] for s in segments if s["klasse"] in dekking}
     for k in sorted(liggingen):
-        add("info", "Dekking op maaiveld", normen.bron("dekking_berm_m"),
-            f"Ligging {CLASS_NAMES[k]}: aan te houden dekking {dekking[k]} "
-            "(instelbaar in het normenkader).")
+        add("info", "Dekking op maaiveld", "Kabelleggingsnorm netbeheerder; NEN 7171-1",
+            f"Ligging {CLASS_NAMES[k]}: aan te houden dekking {dekking[k]} (instelbare norm).")
 
     for b in boringen:
         if not b.get("recht", True):
@@ -627,8 +577,21 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
                     f"binnen de richtlijnen; maatwerk vereist (in-/uittredepunt "
                     f"verplaatsen, langere boring of ander tracé).", c["punt"])
 
-    # de buigradiustoets (inpasbare boogstraal per knikpunt, factor × Ø uit
-    # het normenkader) zit in maatvoering.toets — geen dubbeling hier
+    # scherpe knikken (minimale buigradius, vereenvoudigde toets)
+    coords = list(route.coords)
+    for i in range(1, len(coords) - 1):
+        ax, ay = coords[i - 1]; bx, by = coords[i]; cx, cy = coords[i + 1]
+        v1 = (bx - ax, by - ay); v2 = (cx - bx, cy - by)
+        l1 = math.hypot(*v1); l2 = math.hypot(*v2)
+        if l1 < 0.1 or l2 < 0.1:
+            continue
+        cosa = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (l1 * l2)))
+        hoek = math.degrees(math.acos(cosa))
+        if hoek > 80:
+            chainage = route.project(Point(bx, by))
+            add("waarschuwing", "Buigradius", "IEC-norm / kabelspecificatie (15 × D)",
+                f"Scherpe richtingsverandering ({hoek:.0f}°) op chainage {chainage:.0f} m; "
+                f"controleer minimale buigradius.", (round(bx, 2), round(by, 2)))
 
     # zonelagen (FO §5)
     if zones_m[ZN_NATURA] > 0:
@@ -727,42 +690,32 @@ def build_checks(route: LineString, segments: list, crossings: list, boringen: l
 
 WP_TRACEBREED = "tracébreed"
 
-# Indicatieve planningsparameters voor de uitvoeringsplanning, per werkpakket
-# (per organisatie instelbaar). De voorbereiding (onderzoeken, vergunningen,
-# ZRO) plant de ontwerpplanning (proces.py, ONTWERP_PLANNING) — deze dict
-# bevat uitsluitend de bouwfase.
-UITVOERINGSPLANNING = {
-    "mobilisatie_wk": 1,          # inrichten werkterrein, per werkpakket
+# Indicatieve planningsparameters per werkpakket (per organisatie instelbaar)
+PLANNING = {
+    "tempo_m_per_wk": 600,       # open ontgraving incl. aanvullen en herstel
     "wk_per_boring": {TECHNIEK_HDD: 1.0, TECHNIEK_PERSING: 1.0,
                       TECHNIEK_NANO: 0.5, TECHNIEK_RAKET: 0.5},
-    "tempo_m_per_wk": 600,        # open ontgraving (graven, buis/mantel leggen)
-    "kabelwerk_m_per_wk": 1200,   # kabel intrekken/leggen en aansluiten
-    "wk_per_mof": 0.25,           # extra tijd per mof (lassen/meten/testen)
-    "herstel_m_per_wk": 800,      # bestrating en terrein herstellen
-    "oplevering_min_wk": 1,       # keuring en oplevering, per werkpakket
+    "voorbereiding_min_wk": 6,   # engineering en werkvoorbereiding
+    "onderzoeken_wk": 8,
+    "zro_wk": 16,
+    "uitvoering_min_wk": 1,
 }
 
 
-def build_werkpakketten(route: LineString, stations: list,
-                        ring: bool = False) -> list:
-    """Tracé opdelen in werkpakketten: van station tot station, in strengvolgorde.
-
-    Bij een gesloten ring eindigt het tracé weer bij station 1 en is er een
-    extra werkpakket "Station N – Station 1" voor de sluitende verbinding."""
-    n = len(stations)
-    nrs = list(range(1, n + 1)) + ([1] if ring and n >= 2 else [])
-    ch = [route.project(Point(stations[i - 1])) for i in nrs]
+def build_werkpakketten(route: LineString, stations: list) -> list:
+    """Tracé opdelen in werkpakketten: van station tot station, in strengvolgorde."""
+    ch = [route.project(Point(s)) for s in stations]
     ch[0], ch[-1] = 0.0, route.length
     for i in range(1, len(ch)):  # volgorde = streng; chainage mag niet dalen
         ch[i] = max(ch[i], ch[i - 1])
     items = []
-    for i in range(len(nrs) - 1):
+    for i in range(len(stations) - 1):
         m0, m1 = ch[i], ch[i + 1]
         items.append({
             "nr": f"WP-{i + 1:02d}",
-            "naam": f"Station {nrs[i]} – Station {nrs[i + 1]}",
-            "van_station": nrs[i],
-            "tot_station": nrs[i + 1],
+            "naam": f"Station {i + 1} – Station {i + 2}",
+            "van_station": i + 1,
+            "tot_station": i + 2,
             "chainage_van_m": round(m0, 1),
             "chainage_tot_m": round(m1, 1),
             "lengte_m": round(m1 - m0, 1),
@@ -812,62 +765,59 @@ def ken_werkpakketten_toe(werkpakketten: list, route: LineString,
                            if c.get("punt") else WP_TRACEBREED)
 
 
-def build_uitvoeringsplanning(werkpakketten: list, boringen: list,
-                              moffen: list) -> list:
-    """Indicatieve uitvoeringsplanning per werkpakket, in weken vanaf de
-    start van de bouw (GSU — geplande start uitvoering).
+def build_planning(werkpakketten: list, vergunningen: list, onderzoeken: list,
+                   boringen: list, zro: list) -> list:
+    """Indicatieve planning per werkpakket, in weken vanaf projectstart.
 
-    De voorbereiding (onderzoeken, vergunningen, ZRO) is onderdeel van de
-    ontwerpplanning (proces.py, ``bouw_ontwerpplanning``) en staat hier niet
-    meer in. Model: één ploeg werkt de werkpakketten in strengvolgorde af;
-    per werkpakket doorloopt de ploeg vaste subfasen: mobilisatie, boring/
-    persing (indien van toepassing), grondwerk, kabelwerk/montage, herstel
-    en oplevering. Parameters in UITVOERINGSPLANNING.
+    Model: de voorbereiding (onderzoeken, vergunningen, ZRO) start voor elk
+    werkpakket in week 1 en loopt parallel; de uitvoering gebeurt met één
+    ploeg in strengvolgorde en start zodra de eigen voorbereiding én de
+    uitvoering van het vorige werkpakket klaar zijn. Parameters in PLANNING.
     """
-    p = UITVOERINGSPLANNING
+    p = PLANNING
     rows: list = []
 
-    def add(wp_nr, subfase, start, duur_wk, toelichting):
+    def add(wp_nr, fase, start, duur_wk, toelichting):
         eind = start + max(1, int(math.ceil(duur_wk))) - 1
         rows.append({
             "nr": f"PLN-{len(rows) + 1:03d}",
-            "werkpakket": wp_nr, "fase": "Uitvoering", "subfase": subfase,
+            "werkpakket": wp_nr, "fase": fase,
             "start_wk": start, "eind_wk": eind, "duur_wk": eind - start + 1,
             "status": "gepland", "toelichting": toelichting,
         })
         return eind
 
-    klaar = 0
+    verg_breed = max((max(v["doorlooptijd_wk"]) for v in vergunningen
+                      if v.get("werkpakket", WP_TRACEBREED) == WP_TRACEBREED),
+                     default=0)
+    uitvoer_klaar = 0
     for wp in werkpakketten:
         nr = wp["nr"]
-        start = klaar + 1
-        klaar = add(nr, "Mobilisatie/inrichting werkterrein", start,
-                    p["mobilisatie_wk"], "Werkterrein inrichten en bereikbaar maken")
-
+        klaar = 0
+        if onderzoeken:
+            klaar = max(klaar, add(nr, "Onderzoeken", 1, p["onderzoeken_wk"],
+                                   f"{len(onderzoeken)} onderzoek(en), tracébreed"))
+        verg_wp = [v for v in vergunningen if v.get("werkpakket") == nr]
+        verg_wk = max([max(v["doorlooptijd_wk"]) for v in verg_wp]
+                      + [verg_breed, p["voorbereiding_min_wk"]])
+        klaar = max(klaar, add(
+            nr, "Vergunningen en werkvoorbereiding", 1, verg_wk,
+            f"{len(verg_wp)} werkpakket-specifiek + tracébrede vergunningen; "
+            f"langste doorlooptijd bepaalt"))
+        percelen = sum(1 for z in zro if z.get("werkpakket") == nr)
+        if percelen:
+            klaar = max(klaar, add(nr, "Zakelijk recht (ZRO)", 1, p["zro_wk"],
+                                   f"{percelen} perceel/percelen"))
         boringen_wp = [b for b in boringen if b.get("werkpakket") == nr]
+        boor_wk = sum(p["wk_per_boring"].get(b["type"], 1.0) for b in boringen_wp)
+        duur = max(p["uitvoering_min_wk"],
+                   wp["lengte_m"] / p["tempo_m_per_wk"] + boor_wk)
+        toel = f"{wp['lengte_m']:.0f} m sleufwerk"
         if boringen_wp:
-            boor_wk = sum(p["wk_per_boring"].get(b["type"], 1.0) for b in boringen_wp)
-            klaar = add(nr, "Boring/persing", klaar + 1, boor_wk,
-                       f"{len(boringen_wp)} boring(en)/persing(en)")
-
-        klaar = add(nr, "Grondwerk (open sleuf)", klaar + 1,
-                    wp["lengte_m"] / p["tempo_m_per_wk"],
-                    f"{wp['lengte_m']:.0f} m graven, leggen en aanvullen")
-
-        moffen_wp = [m for m in moffen if m.get("werkpakket") == nr]
-        kabel_wk = (wp["lengte_m"] / p["kabelwerk_m_per_wk"]
-                   + p["wk_per_mof"] * len(moffen_wp))
-        toel = f"{wp['lengte_m']:.0f} m kabel intrekken en aansluiten"
-        if moffen_wp:
-            toel += f", {len(moffen_wp)} mof/moffen lassen en meten"
-        klaar = add(nr, "Kabelwerk/montage", klaar + 1, kabel_wk, toel)
-
-        klaar = add(nr, "Herstelwerk", klaar + 1,
-                    wp["lengte_m"] / p["herstel_m_per_wk"],
-                    f"{wp['lengte_m']:.0f} m bestrating en terrein herstellen")
-
-        klaar = add(nr, "Oplevering/keuring", klaar + 1,
-                    p["oplevering_min_wk"], "Keuring en oplevering werkpakket")
+            toel += f", {len(boringen_wp)} boring(en)"
+        toel += " — één ploeg, in strengvolgorde"
+        uitvoer_klaar = add(nr, "Uitvoering", max(klaar, uitvoer_klaar) + 1,
+                            duur, toel)
     return rows
 
 
@@ -933,12 +883,6 @@ def build_mca_row(naam: str, route: LineString, segments: list, crossings: list,
         "kruisingen": per_techniek,
         "meters_privaat_m": round(privaat),
         "aantal_percelen": len(zro),
-        # inschatting eigendom (eigendom.py): private percelen vragen een ZRO,
-        # publieke lopen doorgaans via de AVOI-vergunning
-        "percelen_privaat": sum(1 for z in zro if z.get("eigendom") == "privaat"),
-        "percelen_publiek": sum(1 for z in zro if z.get("eigendom") == "publiek"),
-        "percelen_eigendom_onbekend": sum(1 for z in zro
-                                          if z.get("eigendom") == "onbekend"),
         "aantal_vergunningen": len(vergunningen),
         "kosten_eur": kosten.get("aannemingssom_excl_btw", kosten["totaal"]),
         "doorlooptijd_wk": doorloop,

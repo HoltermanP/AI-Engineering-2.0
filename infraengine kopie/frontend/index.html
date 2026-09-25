@@ -6,9 +6,8 @@
 <title>InfraEngine — MS-tracéontwerp</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="styles.css?v=3">
-<link rel="stylesheet" href="registers.css?v=2">
-<link rel="stylesheet" href="proces.css?v=4">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="registers.css">
 </head>
 <body>
 <header id="topbar">
@@ -18,10 +17,7 @@
   <span class="spacer"></span>
   <button id="btn-richtlijnen" title="Beheer: richtlijndocumenten (ontwerphandboek, AVOI, keur) uploaden; de AI vertaalt ze naar rekenparameters voor de tracébepaling">⚖ Richtlijnen</button>
   <button id="btn-registers" title="Alle registers op één pagina: bewerken, filteren, sorteren">▤ Registers</button>
-  <button id="btn-proces" title="Procesondersteuning: intake (IV) → VO → DO → UO met tollgates, AI-stappen en goedkeuringen">◫ Proces</button>
   <button id="btn-new" title="Nieuw leeg project starten">+ Nieuw</button>
-  <button id="btn-import-trace" title="Bestaand tracé (PDF/DXF) uploaden en als nieuw project laden — daarna net zo te verrijken/aanpassen als een zelf ingetekend tracé">⇧ Trace uploaden</button>
-  <input id="import-trace-file" type="file" hidden accept=".dxf,.pdf">
   <input id="project-naam" type="text" placeholder="projectnaam" spellcheck="false">
   <button id="btn-save" title="Project opslaan (invoer én berekend tracé)">Opslaan</button>
   <select id="project-lijst" title="Project openen"><option value="">— openen —</option></select>
@@ -31,15 +27,11 @@
   <aside id="sidebar">
     <section>
       <h2>1 · Verkennen</h2>
-      <button id="btn-compute" class="primair" disabled
-        title="Berekent het tracé langs de geplaatste MS-stations (opties en wegingsprofiel hieronder)">▶ Tracé bepalen</button>
-      <div id="status" class="mono"></div>
       <div class="toolgrid">
         <button class="tool" data-mode="pan" title="Navigeren">⇱ Navigeren</button>
         <button class="tool" data-mode="area" title="Projectgebied tekenen (polygoon; dubbelklik om af te sluiten)">▱ Projectgebied</button>
         <button class="tool" data-mode="station" title="MS-station plaatsen (klik op de kaart)">◉ MS-station</button>
         <button class="tool" data-mode="via" title="Verplicht passeerpunt">◈ Via-punt</button>
-        <button class="tool" data-mode="sleep" title="Tracé verslepen: pak het berekende (rode) tracé op en sleep het naar de gewenste ligging — op de losgelaten plek komt een via-punt en het tracé wordt automatisch herberekend. Beschikbaar zodra een tracé is berekend.">↷ Tracé verslepen</button>
         <button class="tool" data-mode="forbidden" title="Verboden zone tekenen">⊘ Verboden zone</button>
         <button class="tool" data-mode="delete" title="Klik op een station, via-punt of zone om te verwijderen">✕ Verwijderen</button>
         <button class="tool breed" data-mode="street" title="Street View: klik op (of naast) het tracé en loop er doorheen — versleep de blauwe marker over het tracé of gebruik de pijltjestoetsen; het beeld loopt mee. Beschikbaar zodra een tracé is berekend.">🚶 Street View langs het tracé</button>
@@ -76,7 +68,6 @@
       <label><input type="checkbox" id="lg-monument" title="Rijksmonument-contouren (RCE, open WFS/WMS). Wegen mee (×2,0) en triggeren de omgevingsvergunning rijksmonumentenactiviteit."> Rijksmonumenten (RCE)</label>
       <label><input type="checkbox" id="lg-kering" title="Waterkeringen uit de landelijke IMWA-leggerdataset van de waterschappen (PDOK). De keringlijn + beschermingszone (± 15 m) weegt mee (×3,0) en triggert de waterschapsvergunning."> Waterkeringen (legger IMWA)</label>
       <label><input type="checkbox" id="lg-stilte" title="Provinciale stiltegebieden (PDOK, INSPIRE). Lichte weging (×1,2) + melding geluidsarme uitvoering."> Stiltegebieden (provincie)</label>
-      <label><input type="checkbox" id="lg-ndff" title="NDFF-verspreidingsdata van beschermde soorten (Omgevingswet: Habitat-/Vogelrichtlijn en 'andere soorten') per kilometerhok, live uit de open data achter de Flora &amp; Fauna Verkenner (laatste 10 jaar). Categorieën: vaatplanten, broedvogels met jaarrond beschermd nest, vleermuizen, grondgebonden zoogdieren, amfibieën/reptielen. Kwetsbare soorten zijn vervaagd tot km-hok — informatief (weegt niet mee in het tracé), voedt de natuur-quickscan en de toetsing. Klik in navigeermodus op een hok voor de soortenlijst. Hokken laden per kaartbeeld (max. 25); zoom in als er niets verschijnt."> NDFF: beschermde soorten (km-hok) <span class="hint" id="lg-ndff-info"></span></label>
       <label><input type="checkbox" id="lg-nge" title="NGE-verdachte gebieden uit gekoppelde gemeentelijke/regionale bodembelastingkaarten; welke bron geldt volgt automatisch uit het trace/projectgebied (NGE_REGIONAAL in backend/pdok.py). Geen landelijke open bron — buiten gekoppelde gebieden blijft het onderzoeksitem 'handmatig beoordelen'."> NGE-verdacht (regionaal) <span class="hint" id="lg-nge-info"></span></label>
       <label><input type="checkbox" id="lg-bomen" checked title="Bomen uit de BGT (vegetatieobject, plustopografie) aangevuld met het gemeentelijke bomenregister dat bij het trace/projectgebied hoort (BOMEN_REGIONAAL in backend/pdok.py). Wortelzone = kroonprojectie waar bekend, anders r ≈ 2,5 m. Zichtbaar na het berekenen van een tracé."> Bomen + wortelzone <span class="hint" id="lg-bomen-info"></span></label>
       <p class="hint">Aangevinkte datalagen verschijnen met hun kleuruitleg in de
@@ -92,17 +83,17 @@
     </section>
 
     <section>
-      <h2>3 · Rekenopties</h2>
-      <label><input type="checkbox" id="opt-varianten"> Drie extra varianten + MCA (standaard uit: alleen de voorkeursvariant)</label>
-      <label><input type="checkbox" id="opt-ring" title="Ook het tracé van het laatste station terug naar het eerste station bepalen, zodat de stations een gesloten ring vormen. Vraagt minimaal drie stations; de sluitende verbinding wordt een eigen werkpakket (Station N – Station 1). Via-punten op de terugweg sturen die verbinding bij."> Ring sluiten (laatste station → eerste station)</label>
+      <h2>3 · Tracé berekenen</h2>
+      <label><input type="checkbox" id="opt-varianten" checked> Drie varianten + MCA (FO §3.4)</label>
       <label class="inline">Haspellengte <input id="opt-haspel" type="number" value="500" min="100" step="50" class="mono"> m</label>
       <p class="hint">Tot 70 km en meerdere stations. Boven ± 2,5 km hemelsbreed rekent de
         app per deeltraject in een corridor van ± 160 m rond de rechte lijn tussen de
         stations. Loopt een deeltraject vast (natuurgebied, bebouwing, verboden zone),
         dan verbreedt de app de corridor automatisch tot ± 1,3 km om een begaanbare
         route te vinden; stuur het tracé zo nodig met via-punten. Reken op enkele
-        minuten voor lange tracés. De knop <strong>▶ Tracé bepalen</strong> staat
-        bovenin het blok Verkennen.</p>
+        minuten voor lange tracés.</p>
+      <button id="btn-compute" class="primair" disabled>Bereken tracé</button>
+      <div id="status" class="mono"></div>
     </section>
 
     <section>
@@ -140,7 +131,6 @@
       </header>
       <div id="sv-beeld">
         <div id="sv-pano"></div>
-        <canvas id="sv-overlay"></canvas>
         <div id="sv-melding"></div>
       </div>
       <div id="sv-controls">
@@ -157,10 +147,6 @@
         </select>
         <input id="sv-slider" type="range" min="0" max="1000" value="0" step="1"
                title="Positie langs het tracé">
-        <label id="sv-overlay-label" title="Tracé op het maaiveld in het beeld tekenen">
-          <input id="sv-overlay-aan" type="checkbox" checked> tracé</label>
-        <span id="sv-draai" title="Kijkrichting draaien">
-          <button id="sv-draai-l">⟲</button><button id="sv-draai-r">⟳</button></span>
       </div>
     </div>
 
@@ -242,7 +228,7 @@
     <nav id="tabs">
       <button data-tab="mca" class="actief">Varianten / MCA</button>
       <button data-tab="werkpakketten">Werkpakketten</button>
-      <button data-tab="planning">Uitvoeringsplanning</button>
+      <button data-tab="planning">Planning</button>
       <button data-tab="segmenten">Segmenten</button>
       <button data-tab="kruisingen">Kruisingen</button>
       <button data-tab="vergunningen">Vergunningen</button>
@@ -299,24 +285,6 @@
   </div>
 </div>
 
-<div id="import-overlay" class="dicht" aria-label="Trace importeren">
-  <div id="import-venster">
-    <header id="import-kop">
-      <h3>Trace importeren <span id="import-bestandsnaam"></span></h3>
-      <span id="import-status" class="mono"></span>
-      <span class="spacer"></span>
-      <button id="import-sluit" title="Sluiten">✕</button>
-    </header>
-    <div id="import-inhoud">
-      <p class="hint">Kies hieronder de laag/lagen die het tracé voorstellen. Andere lagen
-        (ondergrond, kadaster, bestaande kabels, tekstkader) blijven buiten beschouwing.
-        Meerdere lagen samen worden aaneengeregen tot één doorlopend tracé.</p>
-      <div id="import-lagen-lijst"><p class="leeg">Bestand wordt gelezen…</p></div>
-      <button id="import-bevestig" disabled>Dit is het tracé — importeren</button>
-    </div>
-  </div>
-</div>
-
 <div id="register-pagina">
   <div id="register-kop">
     <button id="btn-reg-terug" title="Terug naar het ontwerp">‹ Ontwerp</button>
@@ -338,117 +306,9 @@
   </div>
 </div>
 
-<div id="proces-pagina">
-  <div id="proces-kop">
-    <button id="btn-proces-terug" title="Terug naar het ontwerp">‹ Ontwerp</button>
-    <h2>Proces</h2>
-    <span id="proces-project" class="mono"></span>
-    <nav id="proces-tabs"></nav>
-    <span class="spacer"></span>
-    <span id="proces-status" class="mono"></span>
-    <button id="btn-proces-gegevens" title="Projectgegevens voor de ontwikkelnota's: namen verificatietabel, projectteam en mijlpalen">👥 Projectgegevens</button>
-    <button id="btn-proces-budget" title="Taakstellend budget ontwerpfase (IV t/m UO) en de begroting van de realisatiefase">💶 Budget</button>
-    <button id="btn-proces-admin" title="Adminomgeving: stappen en producten aan/uit, uitvoering per stap (AI / mens / hybride)">⚙ Admin</button>
-    <button id="btn-proces-verversen" title="Overzicht verversen">⟳</button>
-  </div>
-  <div id="proces-layout">
-    <aside id="proces-zijbalk">
-      <section class="zb-mens">
-        <h3>👤 Wacht op jou</h3>
-        <div id="proces-taken"><p class="leeg">Geen openstaande taken.</p></div>
-      </section>
-      <section class="zb-ai">
-        <h3>🤖 AI kan nu uitvoeren</h3>
-        <div id="proces-ai-taken"><p class="leeg">Geen AI-stappen open.</p></div>
-      </section>
-      <section>
-        <h3>Meldingen</h3>
-        <div id="proces-meldingen"><p class="leeg">Nog geen meldingen.</p></div>
-      </section>
-    </aside>
-    <div id="proces-inhoud"><p class="leeg">Kies of open eerst een project in de kopbalk.</p></div>
-  </div>
-
-  <div id="proces-doc-overlay" hidden>
-    <div id="proces-doc-venster">
-      <div id="proces-doc-kop">
-        <strong id="proces-doc-titel">AI-concept</strong>
-        <span id="proces-doc-status" class="mono"></span>
-        <span class="spacer"></span>
-        <button id="proces-doc-opslaan" disabled>Opslaan als product (Word)</button>
-        <button id="proces-doc-sluiten">Sluiten</button>
-      </div>
-      <div id="proces-doc-wrap"><div id="proces-doc-sheet"></div></div>
-    </div>
-  </div>
-
-  <div id="proces-iv-overlay" hidden>
-    <div id="proces-iv-venster">
-      <div id="proces-iv-kop">
-        <strong>IV → kaart</strong>
-        <span id="proces-iv-status" class="mono"></span>
-        <span class="spacer"></span>
-        <button id="proces-iv-toepassen" disabled
-          title="Stations en klantlocaties op de kaart zetten; mijlpalen en risico's in het procesdossier">
-          📍 Op kaart zetten en proces vullen</button>
-        <button id="proces-iv-sluiten">Sluiten</button>
-      </div>
-      <div id="proces-iv-wrap"><div id="proces-iv-sheet"></div></div>
-    </div>
-  </div>
-
-  <div id="proces-gegevens-overlay" hidden>
-    <div id="proces-gegevens-venster">
-      <div id="proces-gegevens-kop">
-        <strong>Projectgegevens — ontwikkelnota's</strong>
-        <span id="proces-gegevens-status" class="mono"></span>
-        <span class="spacer"></span>
-        <button id="proces-gegevens-opslaan">Opslaan</button>
-        <button id="proces-gegevens-sluiten">Sluiten</button>
-      </div>
-      <p class="hint">Deze gegevens vullen de <strong>verificatietabel</strong>, het
-        <strong>projectteam</strong> en de <strong>mijlpalenplanning</strong> in de
-        AI-ontwikkelnota's (VO/DO/UO). Lege velden verschijnen in de nota als
-        [IN TE VULLEN].</p>
-      <div id="proces-gegevens-inhoud"></div>
-    </div>
-  </div>
-
-  <div id="proces-budget-overlay" hidden>
-    <div id="proces-budget-venster">
-      <div id="proces-budget-kop">
-        <strong>Budget — taakstellend budget en begroting realisatiefase</strong>
-        <span id="proces-budget-status" class="mono"></span>
-        <span class="spacer"></span>
-        <button id="proces-budget-sluiten">Sluiten</button>
-      </div>
-      <div id="proces-budget-inhoud"></div>
-    </div>
-  </div>
-
-  <div id="proces-admin-overlay" hidden>
-    <div id="proces-admin-venster">
-      <div id="proces-admin-kop">
-        <strong>Adminomgeving — processtappen en producten</strong>
-        <span class="spacer"></span>
-        <label class="admin-vlag"><input type="checkbox" id="admin-ai-auto">
-          AI-stappen automatisch uitvoeren na elke berekening</label>
-        <button id="proces-admin-opslaan">Opslaan</button>
-        <button id="proces-admin-sluiten">Sluiten</button>
-      </div>
-      <p class="hint">Vink stappen/producten aan of uit en kies per stap wie hem uitvoert.
-        Stappen zonder automatisering kunnen alleen door de mens. Fasen zijn als geheel uit te
-        schakelen. Goedkeuringen en tollgate-besluiten blijven altijd menselijk.</p>
-      <div id="proces-admin-uitleg"></div>
-      <div id="proces-admin-inhoud"></div>
-    </div>
-  </div>
-</div>
-
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
-<script src="app.js?v=4"></script>
-<script src="registers.js?v=2"></script>
-<script src="proces.js?v=4"></script>
+<script src="app.js"></script>
+<script src="registers.js"></script>
 </body>
 </html>

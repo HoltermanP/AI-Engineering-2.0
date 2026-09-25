@@ -1,0 +1,14 @@
+BRK-import (voorbereid koppelvlak — nog geen BRK-toegang)
+
+Leg hier "eigenaren.csv" neer met kolommen (scheiding ; of ,):
+
+  perceel;eigenaar;adres
+  AMERSFOORT A 1234;J. Jansen;Straatweg 1, 3811 AA Amersfoort
+
+"perceel" in dezelfde aanduiding als het ZRO-register:
+GEMEENTE SECTIE NUMMER (hoofdletters, spaties vrij).
+
+Effect zodra het bestand er ligt: het ZRO-register en de dossiers tonen de
+echte eigenaar in plaats van "onbekend — BRK-eigendom niet gekoppeld".
+Een BRK-levering (BRK Bevragen / BRK Levering) is met één export naar dit
+formaat te vertalen.

@@ -645,7 +645,6 @@ def route_chunk(grid: Grid, start: tuple, end: tuple, end_radius_m: float = 0.0,
             )
     tb = mcp.traceback(rb)
     pts = [grid.cell_to_world(r, c) for r, c in tb]
-    del mcp, cumcost, tb  # MCP-rasters vrij vóór het gladstrijken
     if len(pts) < 2:  # start en eind in dezelfde cel (heel korte verbinding)
         pts = pts * 2
     return smooth_route(pts, grid, slack)
@@ -674,10 +673,6 @@ def shortest_path(grid: Grid, waypoints: list, slack: float = 1.05) -> list:
         if coords:
             seg = seg[1:]
         coords.extend(seg)
-        # de MCP-structuren (kosten-, cumulatieve-kosten- en heap-rasters, samen
-        # ~50 bytes/cel) niet vasthouden tot de volgende verbinding klaar is:
-        # anders leven er bij via-punten twee tegelijk
-        del mcp, cumcost, tb
     return coords
 
 
@@ -733,54 +728,8 @@ BOOR_UITLOOP_DEFAULT = 3.0
 # alleen voorgesteld waar de beheerder open ontgraving feitelijk niet toestaat.
 WATER_OPEN_MAX_M = 3.0      # watergang B/C: open ontgraving met afdamming
 WATER_PERSING_MAX_M = 8.0   # tot hier volstaat persing/nanodrill; daarboven HDD
-RIJBAAN_OPEN_MAX_M = 7.0    # erftoegangsweg in elementenverharding: open sleuf (AVOI)
+RIJBAAN_OPEN_MAX_M = 7.0    # erftoegangsweg: open sleuf in halve rijbaan (AVOI)
 RIJBAAN_PERSING_MAX_M = 12.0
-
-# Rijbaan: verharding en wegfunctie (BGT) en wegbeheerder (NWB) wegen
-# zwaarder dan de breedte. Onder gesloten verharding (asfalt/beton) is een
-# open sleuf in de praktijk de uitzondering: zagen, frezen, volledig herstel
-# van de deklaag, degeneratievergoeding en een langdurige afsluiting — de
-# wegbeheerder staat dat bij asfalt in de regel niet toe. Persing vanuit
-# kuipen buiten de verharding is dan de standaard. Alleen onder open
-# verharding (klinkers/tegels: herstraten is gangbaar en goedkoop) blijft de
-# open sleuf tot RIJBAAN_OPEN_MAX_M de standaard.
-VERHARDING_GESLOTEN = "gesloten verharding"
-VERHARDING_RANG = {"gesloten verharding": 3, "open verharding": 2,
-                   "half verhard": 1, "onverhard": 0}
-# wegfuncties waar open ontgraving door de beheerder niet wordt toegestaan
-# (stroomwegen, regionale wegen, busbanen): altijd sleufloos
-WEGFUNCTIE_SLEUFLOOS = {"rijbaan autosnelweg", "rijbaan autoweg",
-                        "rijbaan regionale weg", "ov-baan", "spoorbaan",
-                        "baan voor vliegverkeer"}
-WEGFUNCTIE_RANG = {"rijbaan autosnelweg": 6, "rijbaan autoweg": 5,
-                   "baan voor vliegverkeer": 5, "spoorbaan": 4,
-                   "rijbaan regionale weg": 3, "ov-baan": 2,
-                   "rijbaan lokale weg": 1}
-# NWB-beheerdersoort waarvoor open ontgraving niet aan de orde is
-WEGBEHEERDER_SLEUFLOOS = {"R": "Rijkswaterstaat", "P": "de provincie"}
-
-
-def _zwaarste(waarden, rang: dict):
-    """Zwaarste waarde volgens de ranglijst; onbekende waarden tellen als 0."""
-    waarden = [w for w in waarden if w]
-    if not waarden:
-        return None
-    return max(waarden, key=lambda w: rang.get(w, 0))
-
-
-def _sleufloos_verplicht(kenmerken: dict | None) -> str | None:
-    """Reden waarom een rijbaankruising sleufloos móet, of None."""
-    if not kenmerken:
-        return None
-    functie = (kenmerken.get("wegfunctie") or "").lower()
-    if functie in WEGFUNCTIE_SLEUFLOOS:
-        return (f"{functie}: wegbeheerder staat open ontgraving in de rijbaan "
-                "niet toe")
-    srt = (kenmerken.get("wegbeheerder_srt") or "").upper()
-    if srt in WEGBEHEERDER_SLEUFLOOS:
-        return (f"weg in beheer bij {WEGBEHEERDER_SLEUFLOOS[srt]}: open "
-                "ontgraving in de rijbaan niet toegestaan")
-    return None
 
 # Indicatieve ruimtebehoefte werkterrein per techniek (m², instelbaar).
 # Globale toets: aaneengesloten inzetbaar oppervlak rond het in-/uittredepunt;
@@ -800,17 +749,13 @@ WERKTERREIN_KLASSEN = (CL_ONBEKEND, CL_BERM, CL_VOETPAD, CL_FIETSPAD,
                        CL_PARKEER, CL_ERF, CL_ONVERHARD, CL_NATUURGROEN)
 
 
-def _techniek_voor_kruising(soort: str, breedte: float,
-                            kenmerken: dict | None = None) -> dict:
+def _techniek_voor_kruising(soort: str, breedte: float) -> dict:
     """Beslistabel FO §4 (vereenvoudigd naar de in het MVP geladen lagen).
 
     Kritisch toegepast: open kruising is de standaard waar de beheerder die
-    toestaat; sleufloos waar dat verplicht of feitelijk onvermijdelijk is
-    (spoor, brede watergang, asfaltrijbaan, stroom-/regionale weg). Elke
-    keuze draagt een `noodzaak`-motivering.
-
-    `kenmerken` (rijbaan): dict — mag de kruising zelf zijn — met
-    `verharding` en `wegfunctie` (BGT-wegdeel) en `wegbeheerder_srt` (NWB).
+    toestaat; sleufloos alleen waar dat verplicht of feitelijk onvermijdelijk
+    is (spoor, brede watergang, brede/drukke rijbaan). Elke keuze draagt een
+    `noodzaak`-motivering.
     """
     if soort == "spoor":
         return {
@@ -851,75 +796,22 @@ def _techniek_voor_kruising(soort: str, breedte: float,
                         "open kruising of persing per keur niet toegestaan/haalbaar",
         }
     if soort == "rijbaan":
-        verharding = (kenmerken or {}).get("verharding")
-        verplicht = _sleufloos_verplicht(kenmerken)
-        gemeente = {"richtlijn": "AVOI gemeente; CROW 308",
-                    "bevoegd_gezag": "Wegbeheerder (gemeente, aanname)"}
-        if verplicht:
-            basis = {"richtlijn": "Eisen wegbeheerder; RWS-richtlijn boortechnieken; "
-                                  "NEN 3651; CROW 308",
-                     "bevoegd_gezag": "Wegbeheerder"}
-            if breedte <= RIJBAAN_PERSING_MAX_M:
-                return {
-                    "techniek": TECHNIEK_PERSING,
-                    "detail": "Persing (mantelbuis) haaks onder de rijbaan; pers- en "
-                              "ontvangkuip buiten de verharding en de obstakelvrije zone",
-                    **basis,
-                    "noodzaak": f"sleufloos verplicht — {verplicht}; korte kruising, "
-                                "dus persing volstaat",
-                }
-            return {
-                "techniek": TECHNIEK_HDD,
-                "detail": "HDD onder de rijbaan; in-/uittredepunt buiten de verharding "
-                          "en de obstakelvrije zone",
-                **basis,
-                "noodzaak": f"sleufloos verplicht — {verplicht}; rijbaan > "
-                            f"{RIJBAAN_PERSING_MAX_M:g} m, te lang voor persing vanuit kuipen",
-            }
-        if verharding is None or verharding == VERHARDING_GESLOTEN:
-            # asfalt/beton (of verharding onbekend: rijbanen zijn overwegend
-            # asfalt, dus veilige aanname): open sleuf is hier de uitzondering
-            reden = ("gesloten verharding (asfalt/beton)" if verharding
-                     else "verharding onbekend in BGT, aanname asfalt")
-            if breedte <= RIJBAAN_PERSING_MAX_M:
-                return {
-                    "techniek": TECHNIEK_PERSING,
-                    "detail": "Persing (mantelbuis) onder de asfaltrijbaan; pers- en "
-                              "ontvangkuip in berm/trottoir buiten de verharding; deklaag "
-                              "blijft intact, geen zaagsneden of degeneratievergoeding",
-                    **gemeente,
-                    "noodzaak": f"sleufloos gewenst — {reden}: open sleuf vraagt zagen, "
-                                "frezen en volledig herstel van de deklaag met "
-                                "degeneratievergoeding en afsluiting; wegbeheerder staat "
-                                "dit onder asfalt in de regel niet toe; korte kruising, dus "
-                                "persing volstaat (open sleuf alleen met instemming beheerder)",
-                }
-            return {
-                "techniek": TECHNIEK_HDD,
-                "detail": "HDD of lange persing; pers- en ontvangkuip buiten de verharding",
-                "richtlijn": "AVOI / RWS-richtlijn boortechnieken",
-                "bevoegd_gezag": "Wegbeheerder",
-                "noodzaak": f"sleufloos vereist — {reden} én brede rijbaan "
-                            f"(> {RIJBAAN_PERSING_MAX_M:g} m): open ontgraving niet aan de "
-                            "orde en boorlengte te groot voor persing vanuit kuipen",
-            }
-        # open verharding / half verhard / onverhard
         if breedte <= RIJBAAN_OPEN_MAX_M:
             return {
                 "techniek": TECHNIEK_OPEN,
                 "detail": "Open sleuf in halve rijbaan met fasering en verkeersmaatregelen; "
-                          "elementen opnemen, herstraten en degeneratievergoeding",
+                          "herstel verharding en degeneratievergoeding",
                 "richtlijn": "AVOI gemeente; CROW 96b",
                 "bevoegd_gezag": "Wegbeheerder (gemeente, aanname)",
-                "noodzaak": f"boring niet nodig — {verharding} (klinkers/tegels): "
-                            f"herstraten is gangbaar; smalle rijbaan (≤ {RIJBAAN_OPEN_MAX_M:g} "
-                            "m, erftoegangsweg), open sleuf onder AVOI toegestaan",
+                "noodzaak": f"boring niet nodig — smalle rijbaan (≤ {RIJBAAN_OPEN_MAX_M:g} m, "
+                            "erftoegangsweg), open sleuf onder AVOI toegestaan",
             }
         if breedte <= RIJBAAN_PERSING_MAX_M:
             return {
                 "techniek": TECHNIEK_PERSING,
                 "detail": "Persing (mantelbuis); pers- en ontvangkuip buiten de verharding",
-                **gemeente,
+                "richtlijn": "AVOI gemeente; CROW 308",
+                "bevoegd_gezag": "Wegbeheerder (gemeente, aanname)",
                 "noodzaak": f"sleufloos vereist — rijbaan > {RIJBAAN_OPEN_MAX_M:g} m "
                             "(gebiedsontsluiting, aanname): wegbeheerder staat open sleuf "
                             "niet toe; korte kruising, dus persing volstaat",
@@ -977,30 +869,12 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
     if water:
         obstakels["water"] = unary_union(water)
     rijbanen = []
-    rijbaan_delen = []  # (prepared, functie, fysiek_voorkomen) voor de kenmerken
     for g, p in bgt.get("wegdeel", []):
         functie = (p.get("functie") or "").lower()
         if WEGDEEL_FUNCTIE.get(functie) is None and ("rijbaan" in functie or "baan" in functie):
             rijbanen.append(g)
-            rijbaan_delen.append((prep(g), functie,
-                                  (p.get("fysiek_voorkomen") or "").lower() or None))
     if rijbanen:
         obstakels["rijbaan"] = unary_union(rijbanen)
-
-    def wegkenmerken(m0: float, m1: float) -> dict:
-        """Verharding en wegfunctie van de gekruiste wegdelen (BGT): de
-        zwaarste telt — één asfaltstrook in de passage maakt de kruising
-        een asfaltkruising."""
-        n = max(4, int((m1 - m0) * 2) + 1)
-        functies, verhardingen = set(), set()
-        for i in range(n + 1):
-            pt = route.interpolate(m0 + (m1 - m0) * i / n)
-            for pg, functie, verharding in rijbaan_delen:
-                if pg.covers(pt):
-                    functies.add(functie)
-                    verhardingen.add(verharding)
-        return {"verharding": _zwaarste(verhardingen, VERHARDING_RANG),
-                "wegfunctie": _zwaarste(functies, WEGFUNCTIE_RANG)}
     spoor = [g.buffer(2.5) for g, p in bgt.get("spoor", [])]
     if spoor:
         obstakels["spoor"] = unary_union(spoor)
@@ -1034,21 +908,16 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
             if langs > KRUISING_LANGS_FACTOR * max(dwars, 1.0):
                 continue  # loopt in lengterichting door/langs het obstakel
             mid = route.interpolate((m0 + m1) / 2)
-            kenmerken = wegkenmerken(m0, m1) if soort == "rijbaan" else {}
-            voorstel = _techniek_voor_kruising(soort, round(dwars, 1), kenmerken)
-            c = {
+            voorstel = _techniek_voor_kruising(soort, round(dwars, 1))
+            crossings.append({
                 "soort": soort,
                 "breedte_m": round(dwars, 1),
                 "kruislengte_m": round(langs, 1),
                 "chainage_van_m": round(m0, 1),
                 "chainage_tot_m": round(m1, 1),
                 "punt": (round(mid.x, 2), round(mid.y, 2)),
-                **kenmerken,
                 **voorstel,
-            }
-            if _sleufloos_verplicht(kenmerken):
-                c["sleufloos_verplicht"] = True
-            crossings.append(c)
+            })
     crossings.sort(key=lambda c: c["chainage_van_m"])
     for i, c in enumerate(crossings, 1):
         c["nr"] = f"KR-{i:03d}"
@@ -1077,9 +946,7 @@ def verrijk_kruisingen(crossings: list, legger_water: list | None = None,
       techniek die past. Het bevoegde waterschap komt uit de IMSO-grenzen
       (``waterschap_bij``: callable (x, y) → naam of None).
     - rijbaan: dichtstbijzijnd NWB-wegvak levert de echte wegbeheerder
-      (Rijk/provincie/gemeente/waterschap) voor het bevoegd gezag. Bij een
-      rijks- of provinciale weg is open ontgraving niet aan de orde: een
-      open voorstel wordt dan opgeschaald naar persing/HDD.
+      (Rijk/provincie/gemeente/waterschap) voor het bevoegd gezag.
     """
     for c in crossings:
         p = Point(c["punt"])
@@ -1130,12 +997,6 @@ def verrijk_kruisingen(crossings: list, legger_water: list | None = None,
             straat = (props.get("sttNaam") or "").strip()
             if srt:
                 soort_naam = NWB_BEHEERDER.get(srt, "Wegbeheerder")
-                c["wegbeheerder_srt"] = srt
-                if srt in WEGBEHEERDER_SLEUFLOOS and not c.get("sleufloos_verplicht"):
-                    # rijks-/provinciale weg: beslistabel opnieuw met de
-                    # beheerder erbij (open → persing/HDD, motivering mee)
-                    c["sleufloos_verplicht"] = True
-                    c.update(_techniek_voor_kruising("rijbaan", c["breedte_m"], c))
                 c["bevoegd_gezag"] = (f"{soort_naam} {naam}".strip()
                                       if naam and naam.lower() != soort_naam.lower()
                                       else soort_naam)
@@ -1186,8 +1047,7 @@ def _ruimte_oordeel(beschikbaar: float, benodigd: float) -> str:
     return "onvoldoende"
 
 
-def _sleufloze_alternatieven(soort: str, breedte: float,
-                             kenmerken: dict | None = None) -> list:
+def _sleufloze_alternatieven(soort: str, breedte: float) -> list:
     """Toegestane sleufloze alternatieven binnen de richtlijnen, in volgorde
     van voorkeur bij ruimtegebrek (aflopende ruimtebehoefte)."""
     if soort == "spoor":
@@ -1205,19 +1065,6 @@ def _sleufloze_alternatieven(soort: str, breedte: float,
             return [TECHNIEK_PERSING, TECHNIEK_NANO]
         return [TECHNIEK_HDD, TECHNIEK_NANO, TECHNIEK_PERSING]
     if soort == "rijbaan":
-        verharding = (kenmerken or {}).get("verharding")
-        if _sleufloos_verplicht(kenmerken):
-            # stroom-/regionale weg of rijks-/provinciale weg: geen open
-            # sleuf en geen ongestuurde techniek
-            if breedte <= RIJBAAN_PERSING_MAX_M:
-                return [TECHNIEK_PERSING, TECHNIEK_NANO, TECHNIEK_HDD]
-            return [TECHNIEK_HDD, TECHNIEK_PERSING, TECHNIEK_NANO]
-        if verharding is None or verharding == VERHARDING_GESLOTEN:
-            # asfalt: eerst elke sleufloze techniek die past; open sleuf pas
-            # als laatste uitweg met instemming van de wegbeheerder
-            if breedte <= RIJBAAN_PERSING_MAX_M:
-                return [TECHNIEK_PERSING, TECHNIEK_NANO, TECHNIEK_RAKET, TECHNIEK_OPEN]
-            return [TECHNIEK_HDD, TECHNIEK_PERSING, TECHNIEK_NANO]
         if breedte <= RIJBAAN_OPEN_MAX_M:
             return [TECHNIEK_NANO, TECHNIEK_RAKET, TECHNIEK_OPEN]
         if breedte <= RIJBAAN_PERSING_MAX_M:
@@ -1281,12 +1128,11 @@ def beoordeel_werkterreinen(route: LineString, crossings: list, grid: Grid) -> N
             # sleufloze alternatieven aflopen; eerste techniek die past wint
             gekozen = None
             beste_onzeker = None
-            for alt in _sleufloze_alternatieven(c["soort"], c["breedte_m"], c):
+            for alt in _sleufloze_alternatieven(c["soort"], c["breedte_m"]):
                 if alt == c["techniek"]:
                     continue
-                if alt == TECHNIEK_OPEN and (c.get("legger_verbiedt_open")
-                                             or c.get("sleufloos_verplicht")):
-                    continue  # A-watergang / rijks-, provinciale of stroomweg: open blijft verboden
+                if alt == TECHNIEK_OPEN and c.get("legger_verbiedt_open"):
+                    continue  # primaire (A-)watergang: open blijft verboden
                 boorlengte = (c.get("kruislengte_m", c["breedte_m"])
                               + 2 * BOOR_UITLOOP.get(alt, BOOR_UITLOOP_DEFAULT))
                 if alt == TECHNIEK_RAKET and boorlengte > RAKET_MAX_BOORLENGTE_M:
