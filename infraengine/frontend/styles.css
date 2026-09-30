@@ -615,3 +615,19 @@ table.nota-meta td:first-child{color:var(--ink-3);width:130px}
 #kaart-popup .ndff-lijst{margin:3px 0 4px;padding-left:16px;line-height:1.35;
   max-height:150px;overflow:auto}
 #kaart-popup .ndff-lijst li{margin:1.5px 0}
+
+/* tracé verslepen: voorlopige wijzigingen toepassen of annuleren */
+#sleep-acties{margin-top:8px;padding:8px;border:1px dashed #B8771E;border-radius:6px;background:#FBF5EC}
+#sleep-acties[hidden]{display:none}
+#sleep-acties .hint{margin:0 0 6px;color:#8A5A14}
+
+/* selectie op de kaart: werkpakketknoppen en selectiekolom in de tabellen */
+#sidebar section#sel-sectie{border-top-color:rgba(30,90,168,.55)}
+#sidebar section#sel-sectie h2::before{background:#1E5AA8;box-shadow:0 0 0 3px rgba(30,90,168,.15)}
+#sel-sectie .sel-wp{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 8px}
+#sidebar #sel-sectie .sel-wp button{font-family:var(--mono);font-size:11px;padding:3px 7px;margin:0}
+#sidebar #sel-sectie .sel-wp button.aan{background:#1E5AA8;border-color:#1E5AA8;color:#fff}
+#sel-sectie select{border:1px solid var(--rule);padding:2px 4px;font-size:11.5px}
+#sel-gebied-hint{color:#8A5A14}
+table.register td.sel{width:22px;padding-right:6px}
+table.register tr:has(td.sel input:checked) td{background:rgba(30,90,168,.09)}

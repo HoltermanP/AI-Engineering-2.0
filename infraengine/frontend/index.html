@@ -6,7 +6,7 @@
 <title>InfraEngine — MS-tracéontwerp</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=5">
 <link rel="stylesheet" href="registers.css?v=2">
 <link rel="stylesheet" href="proces.css?v=4">
 </head>
@@ -41,10 +41,17 @@
         <button class="tool" data-mode="area" title="Projectgebied tekenen (polygoon; dubbelklik om af te sluiten)">▱ Projectgebied</button>
         <button class="tool" data-mode="station" title="MS-station plaatsen (klik op de kaart)">◉ MS-station</button>
         <button class="tool" data-mode="via" title="Verplicht passeerpunt">◈ Via-punt</button>
-        <button class="tool" data-mode="sleep" title="Tracé verslepen: pak het berekende (rode) tracé op en sleep het naar de gewenste ligging — op de losgelaten plek komt een via-punt en het tracé wordt automatisch herberekend. Beschikbaar zodra een tracé is berekend.">↷ Tracé verslepen</button>
+        <button class="tool" data-mode="sleep" title="Tracé verslepen: pak het berekende (rode) tracé op en sleep het naar de gewenste ligging — de lijn buigt direct mee. Versleep zo veel punten als nodig (een versleept punt kun je opnieuw oppakken) en klik daarna op ✓ Aanpassen tracé: het tracé wordt dan herberekend langs de versleepte punten. Beschikbaar zodra een tracé is berekend.">↷ Tracé verslepen</button>
         <button class="tool" data-mode="forbidden" title="Verboden zone tekenen">⊘ Verboden zone</button>
         <button class="tool" data-mode="delete" title="Klik op een station, via-punt of zone om te verwijderen">✕ Verwijderen</button>
         <button class="tool breed" data-mode="street" title="Street View: klik op (of naast) het tracé en loop er doorheen — versleep de blauwe marker over het tracé of gebruik de pijltjestoetsen; het beeld loopt mee. Beschikbaar zodra een tracé is berekend.">🚶 Street View langs het tracé</button>
+      </div>
+      <div id="sleep-acties" hidden>
+        <p class="hint" id="sleep-aantal"></p>
+        <div class="toolgrid">
+          <button id="btn-sleep-toepassen" class="primair" title="Zet de versleepte punten om in via-punten en herbereken het tracé">✓ Aanpassen tracé</button>
+          <button id="btn-sleep-annuleren" title="Versleepte punten vergeten en het berekende tracé terugzetten">↺ Annuleren</button>
+        </div>
       </div>
       <p class="hint" id="tekenhint">Plaats minimaal twee MS-stations; een projectgebied tekenen is optioneel. Punten zijn daarna versleepbaar.</p>
     </section>
@@ -64,6 +71,7 @@
       <label><input type="checkbox" id="lg-cpt" title="BRO geotechnisch sondeeronderzoek (CPT): bestaande sonderingen. Informatief; het boringenregister meldt automatisch of er binnen ± 100 m van een boring al sonderingen bekend zijn."> Sonderingen (BRO CPT)</label>
       <label><input type="checkbox" id="lg-seg" checked> Segmenten (ligging)</label>
       <label><input type="checkbox" id="lg-alt" checked> Overige varianten</label>
+      <label><input type="checkbox" id="lg-percelen" title="Kadastrale percelen die het tracé raakt (ZRO-register), met perceelnummer. Zichtbaar na het berekenen van een tracé."> Geraakte percelen (ZRO)</label>
       <hr>
       <span class="hint">Zonelagen (wegen mee in het tracé)</span>
       <label><input type="checkbox" id="lg-natura"> Natura 2000</label>
@@ -84,6 +92,34 @@
       <p class="hint">Aangevinkte datalagen verschijnen met hun kleuruitleg in de
         legenda rechtsonder op de kaart; klik in navigeermodus op de kaart om de
         gegevens van die lagen op dat punt te zien.</p>
+    </section>
+
+    <section id="sel-sectie">
+      <h2>Selectie op de kaart</h2>
+      <p class="hint" id="sel-samenvatting"></p>
+      <div id="sel-wp" class="sel-wp"></div>
+      <div class="toolgrid">
+        <button id="sel-zoom" disabled title="Inzoomen op de geselecteerde werkpakketten/segmenten">⌖ Zoom naar selectie</button>
+        <button id="sel-wis" disabled title="Selectie opheffen: alle lagen weer volledig tonen">✕ Selectie wissen</button>
+      </div>
+      <p class="hint">Alleen binnen de selectie tonen:</p>
+      <label><input type="checkbox" id="sel-f-gebieden" checked title="Alle aangevinkte gebiedslagen (Natura 2000, NNN, AMK, bodem, kadaster, NDFF, …) worden uitgeknipt tot een strook rond de geselecteerde tracédelen"> Gebieden (zonelagen, kadaster)</label>
+      <label class="inline" style="margin-left:18px">strook
+        <select id="sel-strook" class="mono">
+          <option value="25">± 25 m</option>
+          <option value="50" selected>± 50 m</option>
+          <option value="100">± 100 m</option>
+          <option value="250">± 250 m</option>
+        </select></label>
+      <p class="hint" id="sel-gebied-hint" hidden>Vink onder Kaartlagen een of meer gebiedslagen aan om de geraakte gebieden te zien.</p>
+      <label><input type="checkbox" id="sel-f-percelen" checked title="Geraakte percelen (ZRO) van de selectie; worden ook getoond als de laag zelf uit staat"> Geraakte percelen (ZRO)</label>
+      <label><input type="checkbox" id="sel-f-kruisingen" checked> Kruisingen en boringen</label>
+      <label><input type="checkbox" id="sel-f-moffen" checked> Moffen</label>
+      <label><input type="checkbox" id="sel-f-toetsing" checked> Toetsingsbevindingen</label>
+      <label><input type="checkbox" id="sel-f-segmenten" checked> Segmenten (ligging)</label>
+      <label><input type="checkbox" id="sel-f-bomen" checked title="Bomen binnen de strook rond de selectie"> Bomen + wortelzone</label>
+      <p class="hint">Selecteer met de knoppen hierboven, met de vinkjes in de tabs
+        Werkpakketten en Segmenten, of met shift-klik op het tracé.</p>
     </section>
 
     <section>
@@ -469,7 +505,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=7"></script>
 <script src="registers.js?v=3"></script>
 <script src="proces.js?v=4"></script>
 </body>

@@ -47,6 +47,8 @@ const srcGrondwater = new ol.source.Vector();
 const srcGwIso = new ol.source.Vector();
 const srcNdff = new ol.source.Vector();     // NDFF km-hokken met beschermde soorten
 const srcKlant = new ol.source.Vector();    // klantlocaties (adressen) uit het IV
+const srcPercelen = new ol.source.Vector(); // door het tracé geraakte percelen (ZRO)
+const srcSelectie = new ol.source.Vector(); // geselecteerde werkpakketten/segmenten
 
 // kleur van een NDFF-hok naar het aantal beschermde soorten (Ow) erin
 const NDFF_KLASSEN = [
@@ -166,6 +168,27 @@ const lagen = {
     style: new ol.style.Style({
       stroke: new ol.style.Stroke({ color: "#A3302A", width: 1.5 }),
       fill: new ol.style.Fill({ color: "rgba(163,48,42,0.18)" }),
+    }),
+  }),
+  // geraakte percelen (ZRO-register): vlak + perceelnummer
+  percelen: new ol.layer.Vector({
+    source: srcPercelen, zIndex: 15, visible: false, declutter: true,
+    style: f => new ol.style.Style({
+      fill: new ol.style.Fill({ color: "rgba(232,185,35,0.16)" }),
+      stroke: new ol.style.Stroke({ color: "#C6910A", width: 1.6, lineDash: [7, 4] }),
+      text: new ol.style.Text({
+        text: f.get("zro").perceel, overflow: false,
+        font: "600 10px 'IBM Plex Mono',monospace",
+        fill: new ol.style.Fill({ color: "#8A6508" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 3 }),
+      }),
+    }),
+  }),
+  // selectie: brede blauwe band onder het tracé langs de gekozen delen
+  selectie: new ol.layer.Vector({
+    source: srcSelectie, zIndex: 21,
+    style: new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: "rgba(30,90,168,0.32)", width: 18, lineCap: "round" }),
     }),
   }),
   segments: new ol.layer.Vector({
@@ -671,7 +694,7 @@ document.getElementById("lg-gwiso").addEventListener("change", e => {
   ververLegenda();
 });
 document.getElementById("lg-seg").addEventListener("change", e => {
-  lagen.segments.setVisible(e.target.checked);
+  lagen.segments.setVisible(e.target.checked && !sleepBezig());
   ververLegenda();
 });
 document.getElementById("lg-alt").addEventListener("change", e => {
@@ -688,16 +711,16 @@ document.getElementById("lg-alt").addEventListener("change", e => {
 let mode = "pan";
 let drawInteractie = null;
 // stations, via-punten en getekende vlakken zijn versleepbaar; een versleept
-// via-punt stuurt het tracé bij en rekent daarom automatisch opnieuw
+// via-punt rekent niet meteen opnieuw maar telt mee bij "✓ Aanpassen tracé"
 [srcStations, srcVia, srcArea, srcForbidden].forEach(src => {
   const m = new ol.interaction.Modify({ source: src });
-  if (src === srcVia)
-    m.on("modifyend", () => {
-      if (resultaat && !document.getElementById("btn-compute").disabled) {
-        statusEl.textContent = "Via-punt versleept — tracé wordt herberekend…";
-        bereken();
-      }
-    });
+  if (src === srcVia) {
+    m.on("modifystart", e => e.features.forEach(f => {
+      if (resultaat && !sleepViaOrigineel.has(f))
+        sleepViaOrigineel.set(f, f.getGeometry().getCoordinates().slice());
+    }));
+    m.on("modifyend", () => { if (resultaat) sleepPaneelBijwerken(); });
+  }
   map.addInteraction(m);
 });
 
@@ -725,31 +748,124 @@ function setMode(nieuw) {
       return;
     }
     statusEl.textContent = "Pak het rode tracé op en sleep het naar de " +
-      "gewenste ligging; bij loslaten komt daar een via-punt en wordt het " +
-      "tracé automatisch herberekend.";
+      "gewenste ligging; de lijn buigt direct mee. Sleep zo vaak als nodig en " +
+      "klik daarna op ✓ Aanpassen tracé om het tracé langs de versleepte " +
+      "punten te herberekenen.";
   }
 }
 document.querySelectorAll("button.tool").forEach(b =>
   b.addEventListener("click", () => setMode(b.dataset.mode)));
 setMode("pan");
 
-/* ---- tracé verslepen: greep op de actieve route → via-punt + herberekenen */
-const srcSleep = new ol.source.Vector();
+/* ---- tracé verslepen: de rode lijn buigt live mee; elk losgelaten punt
+   wordt een voorlopig via-punt. Pas "✓ Aanpassen tracé" zet ze om in echte
+   via-punten en rekent opnieuw; "Annuleren" zet alles terug. */
+const srcSleep = new ol.source.Vector();  // voorlopige (nog niet berekende) punten
 map.addLayer(new ol.layer.Vector({
   source: srcSleep, zIndex: 40,
-  style: f => f.getGeometry().getType() === "LineString"
-    ? new ol.style.Style({ stroke: new ol.style.Stroke(
-        { color: "#B8771E", width: 2.5, lineDash: [7, 6] }) })
-    : new ol.style.Style({ image: new ol.style.RegularShape({
-        points: 4, radius: 8, angle: 0,
-        fill: new ol.style.Fill({ color: "#B8771E" }),
-        stroke: new ol.style.Stroke({ color: "#fff", width: 2 }) }) }),
+  style: new ol.style.Style({ image: new ol.style.RegularShape({
+    points: 4, radius: 8, angle: 0,
+    fill: new ol.style.Fill({ color: "#fff" }),
+    stroke: new ol.style.Stroke({ color: "#B8771E", width: 3 }) }) }),
 }));
 
-let sleepGreep = null;  // gegrepen punt op de route (RD)
+const SLEEP_TOL_PX = 12;
+let sleepOrigineel = null;             // routecoördinaten vóór de eerste sleep (annuleren)
+const sleepViaOrigineel = new Map();   // versleepte via-punten → oude ligging
+let sleep = null;  // lopende sleep: { basis, s, k, greep, marker, links, rechts }
 
 function actieveRouteFeature() {
   return srcRoutes.getFeatures().find(f => f.get("actief")) || null;
+}
+
+function sleepAantal() {
+  for (const f of sleepViaOrigineel.keys())  // intussen verwijderde via-punten
+    if (!srcVia.hasFeature(f)) sleepViaOrigineel.delete(f);
+  return srcSleep.getFeatures().length + sleepViaOrigineel.size;
+}
+function sleepBezig() { return sleepAantal() > 0; }
+
+function sleepPaneelBijwerken() {
+  const n = sleepAantal();
+  document.getElementById("sleep-acties").hidden = n === 0;
+  document.getElementById("sleep-aantal").textContent =
+    `${n} versleept${n === 1 ? " punt" : "e punten"} — tracé nog niet herberekend.`;
+  document.getElementById("btn-sleep-toepassen").disabled =
+    n === 0 || document.getElementById("btn-compute").disabled;
+  // de gekleurde segmenten volgen de versleepte lijn niet; tijdelijk verbergen
+  lagen.segments.setVisible(n === 0 && document.getElementById("lg-seg").checked);
+}
+
+// voorlopige wijzigingen vergeten; met terugzetten=true ook de ligging herstellen
+function sleepWissen(terugzetten) {
+  if (terugzetten) {
+    const routeF = actieveRouteFeature();
+    if (routeF && sleepOrigineel) routeF.getGeometry().setCoordinates(sleepOrigineel);
+    sleepViaOrigineel.forEach((c, f) => {
+      if (srcVia.hasFeature(f)) f.getGeometry().setCoordinates(c);
+    });
+  }
+  srcSleep.clear();
+  sleepViaOrigineel.clear();
+  sleepOrigineel = null;
+  sleep = null;
+  sleepPaneelBijwerken();
+}
+
+// route verdichten (max. stap in m) met het greeppunt als eigen hoekpunt;
+// geeft de coördinaten, de afstand langs de lijn per punt en de greepindex
+function sleepBasis(coords, greep, stap) {
+  let beste = { d: Infinity, i: 0, t: 0 };
+  for (let i = 1; i < coords.length; i++) {
+    const [ax, ay] = coords[i - 1], [bx, by] = coords[i];
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, ((greep[0] - ax) * dx + (greep[1] - ay) * dy) / l2)) : 0;
+    const d = Math.hypot(ax + t * dx - greep[0], ay + t * dy - greep[1]);
+    if (d < beste.d) beste = { d, i, t };
+  }
+  const uit = [coords[0].slice()], s = [0];
+  let k = 0;
+  const voeg = p => {
+    const q = uit[uit.length - 1];
+    s.push(s[s.length - 1] + Math.hypot(p[0] - q[0], p[1] - q[1]));
+    uit.push(p);
+  };
+  for (let i = 1; i < coords.length; i++) {
+    const a = coords[i - 1], b = coords[i];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const n = Math.max(1, Math.ceil(l / stap));
+    for (let j = 1; j <= n; j++) {
+      const t = j / n;
+      if (i === beste.i && k === 0 && t >= beste.t) {
+        voeg([a[0] + beste.t * (b[0] - a[0]), a[1] + beste.t * (b[1] - a[1])]);
+        k = uit.length - 1;
+      }
+      voeg([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+    }
+  }
+  return { basis: uit, s, k };
+}
+
+// vaste punten op de route (stations, via-punten, andere versleepte punten):
+// de vervorming stopt daar, zodat eerder gezette punten blijven liggen
+function sleepAnkers(basis, s, k, zelf) {
+  const punten = [
+    ...srcStations.getFeatures(), ...srcVia.getFeatures(),
+    ...srcSleep.getFeatures().filter(f => f !== zelf),
+  ].map(f => f.getGeometry().getCoordinates());
+  let links = 0, rechts = s[s.length - 1];
+  const tol = Math.max(15, map.getView().getResolution() * SLEEP_TOL_PX);
+  for (const p of punten) {
+    let bi = -1, bd = tol;
+    for (let i = 0; i < basis.length; i++) {
+      const d = Math.hypot(basis[i][0] - p[0], basis[i][1] - p[1]);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    if (bi < 0 || bi === k) continue;
+    if (bi < k) links = Math.max(links, s[bi]);
+    else rechts = Math.min(rechts, s[bi]);
+  }
+  return { links, rechts };
 }
 
 const sleepInteractie = new ol.interaction.Pointer({
@@ -757,59 +873,92 @@ const sleepInteractie = new ol.interaction.Pointer({
     if (mode !== "sleep" || !resultaat) return false;
     const routeF = actieveRouteFeature();
     if (!routeF) return false;
-    const dichtst = routeF.getGeometry().getClosestPoint(evt.coordinate);
-    const px = map.getPixelFromCoordinate(dichtst);
-    if (Math.hypot(px[0] - evt.pixel[0], px[1] - evt.pixel[1]) > 12)
+    // een eerder versleept punt opnieuw pakken, anders een nieuw punt op de lijn
+    let marker = null;
+    map.forEachFeatureAtPixel(evt.pixel, f => { marker = f; return true; },
+      { hitTolerance: 6, layerFilter: l => l.getSource() === srcSleep });
+    const geom = routeF.getGeometry();
+    const greep = marker ? marker.getGeometry().getCoordinates()
+                         : geom.getClosestPoint(evt.coordinate);
+    const px = map.getPixelFromCoordinate(greep);
+    if (!marker && Math.hypot(px[0] - evt.pixel[0], px[1] - evt.pixel[1]) > SLEEP_TOL_PX)
       return false;  // niet op het tracé gepakt → kaart gewoon verschuiven
-    sleepGreep = dichtst;
-    srcSleep.clear();
-    srcSleep.addFeature(new ol.Feature(
-      new ol.geom.LineString([sleepGreep, evt.coordinate])));
-    srcSleep.addFeature(new ol.Feature(new ol.geom.Point(evt.coordinate)));
+    if (!sleepOrigineel) sleepOrigineel = geom.getCoordinates();
+    const stap = Math.max(1, map.getView().getResolution() * 3);
+    const { basis, s, k } = sleepBasis(geom.getCoordinates(), greep, stap);
+    const { links, rechts } = sleepAnkers(basis, s, k, marker);
+    sleep = { basis, s, k, greep, marker, links, rechts, startPx: evt.pixel };
     return true;
   },
   handleDragEvent(evt) {
-    if (!sleepGreep) return;
-    srcSleep.getFeatures().forEach(f => {
-      const g = f.getGeometry();
-      if (g.getType() === "LineString")
-        g.setCoordinates([sleepGreep, evt.coordinate]);
-      else g.setCoordinates(evt.coordinate);
+    if (!sleep) return;
+    const { basis, s, k, greep, links, rechts } = sleep;
+    const dx = evt.coordinate[0] - greep[0], dy = evt.coordinate[1] - greep[1];
+    // invloedsgebied groeit met de sleepafstand; nooit voorbij een vast punt
+    const R = Math.max(Math.hypot(dx, dy) * 2.5,
+                       map.getView().getResolution() * 40);
+    const rL = Math.min(R, s[k] - links), rR = Math.min(R, rechts - s[k]);
+    const nieuw = basis.map((p, i) => {
+      const afst = s[i] - s[k];
+      const r = afst < 0 ? rL : rR;
+      if (i !== k && Math.abs(afst) >= r) return p;
+      const w = i === k ? 1 : 0.5 * (1 + Math.cos(Math.PI * Math.abs(afst) / r));
+      return [p[0] + w * dx, p[1] + w * dy];
     });
+    actieveRouteFeature().getGeometry().setCoordinates(nieuw);
+    if (sleep.marker) sleep.marker.getGeometry().setCoordinates(evt.coordinate);
   },
   handleUpEvent(evt) {
-    srcSleep.clear();
-    if (!sleepGreep) return false;
-    const doel = evt.coordinate;
-    const verplaatst_m = Math.hypot(doel[0] - sleepGreep[0],
-                                    doel[1] - sleepGreep[1]);
-    sleepGreep = null;
-    if (verplaatst_m < 2) return false;  // klik zonder sleep: niets doen
-    srcVia.addFeature(new ol.Feature(new ol.geom.Point(doel)));
-    updateUI();
-    setMode("pan");
-    if (!document.getElementById("btn-compute").disabled) {
-      statusEl.textContent = "Via-punt geplaatst op de nieuwe ligging — " +
-        "tracé wordt herberekend…";
-      bereken();
+    if (!sleep) return false;
+    const { marker, startPx, basis, greep } = sleep;
+    sleep = null;
+    const verplaatst_px = Math.hypot(evt.pixel[0] - startPx[0], evt.pixel[1] - startPx[1]);
+    if (verplaatst_px < 3) {  // klik zonder sleep: niets veranderen
+      actieveRouteFeature().getGeometry().setCoordinates(basis);
+      if (marker) marker.getGeometry().setCoordinates(greep);
+      if (!sleepBezig()) sleepOrigineel = null;
+      return false;
     }
+    if (marker) marker.getGeometry().setCoordinates(evt.coordinate);
+    else srcSleep.addFeature(new ol.Feature(new ol.geom.Point(evt.coordinate)));
+    sleepPaneelBijwerken();
+    statusEl.textContent = "Tracé versleept (nog niet herberekend). Sleep " +
+      "verder of klik op ✓ Aanpassen tracé.";
     return false;
   },
 });
 map.addInteraction(sleepInteractie);
 
+// voorlopige punten omzetten in echte via-punten (vlak voor het rekenen)
+function sleepVastleggen() {
+  srcSleep.getFeatures().forEach(f =>
+    srcVia.addFeature(new ol.Feature(new ol.geom.Point(f.getGeometry().getCoordinates()))));
+  sleepWissen(false);
+}
+
+document.getElementById("btn-sleep-toepassen").addEventListener("click", () => {
+  if (!sleepBezig() || document.getElementById("btn-compute").disabled) return;
+  setMode("pan");
+  bereken();
+});
+document.getElementById("btn-sleep-annuleren").addEventListener("click", () => {
+  sleepWissen(true);
+  statusEl.textContent = "Verslepen geannuleerd — het berekende tracé is teruggezet.";
+});
+
 // grijp-cursor boven het tracé in sleepmodus
 map.on("pointermove", evt => {
   if (mode !== "sleep" || evt.dragging || !resultaat) return;
   const routeF = actieveRouteFeature();
-  let grijpbaar = false;
-  if (routeF) {
+  let grijpbaar = map.hasFeatureAtPixel(evt.pixel,
+    { hitTolerance: 6, layerFilter: l => l.getSource() === srcSleep });
+  if (routeF && !grijpbaar) {
     const dichtst = routeF.getGeometry().getClosestPoint(evt.coordinate);
     const px = map.getPixelFromCoordinate(dichtst);
-    grijpbaar = Math.hypot(px[0] - evt.pixel[0], px[1] - evt.pixel[1]) <= 12;
+    grijpbaar = Math.hypot(px[0] - evt.pixel[0], px[1] - evt.pixel[1]) <= SLEEP_TOL_PX;
   }
   map.getTargetElement().style.cursor =
-    sleepGreep ? "grabbing" : (grijpbaar ? "grab" : "");
+    sleep ? "grabbing" : (grijpbaar ? "grab" : "");
 });
 
 map.on("click", evt => {
@@ -825,6 +974,8 @@ map.on("click", evt => {
     }, { hitTolerance: 8 });
   } else if (mode === "street") {
     svOpen(evt.coordinate);
+  } else if (mode === "pan" && evt.originalEvent.shiftKey && resultaat) {
+    selecteerSegmentOpKaart(evt);
   } else if (mode === "pan" || mode === "sleep") {
     // in sleepmodus vangt de sleep-interactie de greep op het tracé;
     // klikken ernaast gedragen zich als navigeren (popups blijven werken)
@@ -1276,6 +1427,7 @@ function updateUI() {
       : `${n} stations; volgorde = plaatsingsvolgorde (streng).${ringTekst} Punten zijn versleepbaar.`;
   srcStations.changed();
   planRegionaleBronnen();
+  sleepPaneelBijwerken();
 }
 [srcArea, srcStations].forEach(s => {
   s.on("addfeature", updateUI); s.on("removefeature", updateUI);
@@ -1367,10 +1519,13 @@ const statusEl = document.getElementById("status");
 
 async function bereken() {
   const btn = document.getElementById("btn-compute");
+  const versleept = sleepBezig();
+  sleepVastleggen();  // versleepte punten tellen mee als via-punt
   btn.disabled = true;
-  statusEl.textContent = hemelsbreedM() > CORRIDOR_VANAF_M
+  statusEl.textContent = (versleept ? "Tracé herberekenen langs de versleepte punten.\n" : "") +
+    (hemelsbreedM() > CORRIDOR_VANAF_M
     ? "Lang tracé: datalagen ophalen en per deeltraject rekenen…\n(dit kan enkele minuten duren)"
-    : "Datalagen ophalen bij PDOK en tracé rekenen…\n(eerste keer 30–90 s)";
+    : "Datalagen ophalen bij PDOK en tracé rekenen…\n(eerste keer 30–90 s)");
   // voortgang van de backend tonen zolang de berekening loopt
   const poll = setInterval(async () => {
     try {
@@ -1470,9 +1625,10 @@ const geojson = new ol.format.GeoJSON();
 
 function toonResultaat() {
   sluitPopup();
+  sleepWissen(true);  // niet-toegepaste versleepte punten vervallen (bv. variantwissel)
   srcRoutes.clear(); srcSegments.clear(); srcCrossings.clear(); srcMoffen.clear();
   srcBomen.clear(); srcWerkpakketten.clear(); srcHighlight.clear();
-  srcMaatvoering.clear();
+  srcMaatvoering.clear(); srcPercelen.clear();
   svRouteGewijzigd();  // Street View-paneel meebewegen met variant/nieuw tracé
   if (!resultaat) return;
   (resultaat.bomen || []).forEach(c => {
@@ -1529,7 +1685,17 @@ function toonResultaat() {
       srcCrossings.addFeature(f);
     });
   });
-  v.moffen.forEach(m => srcMoffen.addFeature(new ol.Feature(new ol.geom.Point(m.punt))));
+  v.moffen.forEach(m => {
+    const f = new ol.Feature(new ol.geom.Point(m.punt));
+    f.set("mof", m);
+    srcMoffen.addFeature(f);
+  });
+  (v.zro || []).forEach(z => {
+    if (!z.geometry) return;
+    const f = new ol.Feature(geojson.readGeometry(z.geometry));
+    f.set("zro", z);
+    srcPercelen.addFeature(f);
+  });
   (v.werkpakketten || []).forEach(w => {
     const lijn = geojson.readGeometry(w.geometry);
     const f = new ol.Feature(new ol.geom.Point(lijn.getCoordinateAt(0.5)));
@@ -1546,6 +1712,7 @@ function toonResultaat() {
     if (i === actieveVariant) o.selected = true;
     sel.appendChild(o);
   });
+  selectieNaResultaat();
   ververLegenda();
   toonTab();
 }
@@ -1704,7 +1871,8 @@ function tabel(headers, rijen, opRij) {
     tr.innerHTML = r.cells.join("");
     if (r.zoom) {
       tr.className = "klik";
-      tr.addEventListener("click", () => {
+      tr.addEventListener("click", e => {
+        if (e.target.closest("td.sel")) return;  // selectievinkje: geen rij-klik
         tb.querySelectorAll("tr").forEach(x => x.classList.remove("geselecteerd"));
         tr.classList.add("geselecteerd");
         zoomNaar(r.zoom);
@@ -1712,7 +1880,7 @@ function tabel(headers, rijen, opRij) {
       });
     } else if (opRij) {
       tr.className = "klik";
-      tr.addEventListener("click", () => opRij(i));
+      tr.addEventListener("click", e => { if (!e.target.closest("td.sel")) opRij(i); });
     }
     tb.appendChild(tr);
   });
@@ -1726,6 +1894,280 @@ function tabel(headers, rijen, opRij) {
   return t;
 }
 const td = x => `<td>${x ?? ""}</td>`;
+
+/* ------------------------------------------ selectie: werkpakketten/segmenten
+   Eén of meer werkpakketten en/of segmenten selecteren (vinkjes in de tabs
+   Werkpakketten en Segmenten, de knoppen in het blok Selectie of shift-klik
+   op het tracé). De kaart zoomt in op de selectie; per laag is aan te vinken
+   dat alleen wat binnen de selectie valt getoond wordt: kruisingen, percelen,
+   moffen, … op metrering, en de gebiedslagen (WMS-zones, kadaster, NDFF)
+   uitgeknipt tot een strook rond de geselecteerde tracédelen. */
+const selectie = { wp: new Set(), seg: new Set() };
+const SEL_FILTERS = ["gebieden", "percelen", "kruisingen", "moffen", "toetsing",
+                     "segmenten", "bomen"];
+const SEL_LAAG = { percelen: "percelen", kruisingen: "crossings", moffen: "moffen",
+                   toetsing: "maatvoering", segmenten: "segments", bomen: "bomen" };
+let selLijnen = [];    // ol.geom.LineString's van de geselecteerde delen
+let selBereiken = [];  // [van_m, tot_m] per geselecteerd deel
+
+function selectieActief() { return selectie.wp.size + selectie.seg.size > 0; }
+function selFilterAan(soort) {
+  const cb = document.getElementById("sel-f-" + soort);
+  return selectieActief() && !!cb && cb.checked;
+}
+function selStrookM() {
+  return parseFloat(document.getElementById("sel-strook").value) || 50;
+}
+
+// geselecteerde delen: de werkpakketten zelf plus losse segmenten
+function selDelen(v) {
+  const delen = [];
+  (v.werkpakketten || []).forEach(w => {
+    if (selectie.wp.has(w.nr))
+      delen.push({ geom: w.geometry, van: w.chainage_van_m, tot: w.chainage_tot_m });
+  });
+  v.segmenten.forEach(s => {
+    if (selectie.seg.has(s.nr) && !selectie.wp.has(s.werkpakket))
+      delen.push({ geom: s.geometry, van: s.van_m, tot: s.tot_m });
+  });
+  return delen;
+}
+
+// ligt [van, tot] (metrering) binnen een geselecteerd deel? Een punt mag op
+// de grens liggen; een traject moet echt overlappen (buursegmenten niet)
+function inBereik(van, tot = van) {
+  return selBereiken.some(([a, b]) => tot - van < 0.5
+    ? van >= a - 0.5 && van <= b + 0.5
+    : Math.min(tot, b) - Math.max(van, a) > 0.5);
+}
+// ligt een punt binnen `tol` meter van een geselecteerd tracédeel?
+function bijSelectie(p, tol) {
+  return selLijnen.some(l => {
+    const q = l.getClosestPoint(p);
+    return Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol;
+  });
+}
+
+function featureInSelectie(soort, f, kruisSel) {
+  if (soort === "kruisingen") {
+    const b = f.get("bor"), c = f.get("kr");
+    if (b) return (b.kruisingen && b.kruisingen.length ? b.kruisingen : [b.kruising])
+      .some(nr => kruisSel.has(nr));
+    return c ? kruisSel.has(c.nr) : false;
+  }
+  if (soort === "segmenten") {
+    const s = f.get("seg");
+    return inBereik(s.van_m, s.tot_m);
+  }
+  if (soort === "moffen") return inBereik(f.get("mof").chainage_m);
+  if (soort === "percelen") {
+    const z = f.get("zro"), half = (z.ingenomen_lengte_m || 0) / 2;
+    return z.chainage_m != null ? inBereik(z.chainage_m - half, z.chainage_m + half)
+                                : selectie.wp.has(z.werkpakket);
+  }
+  if (soort === "toetsing") return bijSelectie(f.get("mv").punt, 5);
+  if (soort === "bomen")
+    return bijSelectie(f.getGeometry().getCoordinates(), selStrookM());
+  return true;
+}
+
+// vlaggen per feature herberekenen, band tekenen, lagen verversen
+function selectieVerversen(zoom) {
+  srcSelectie.clear();
+  selLijnen = []; selBereiken = [];
+  const v = resultaat && resultaat.varianten[actieveVariant];
+  if (v && selectieActief()) {
+    selDelen(v).forEach(d => {
+      const g = geojson.readGeometry(d.geom);
+      srcSelectie.addFeature(new ol.Feature(g));
+      (g.getType() === "MultiLineString" ? g.getLineStrings() : [g])
+        .forEach(l => selLijnen.push(l));
+      selBereiken.push([d.van, d.tot]);
+    });
+  }
+  const kruisSel = new Set(v ? v.kruisingen
+    .filter(c => inBereik(c.chainage_van_m, c.chainage_tot_m)).map(c => c.nr) : []);
+  for (const [soort, laag] of Object.entries(SEL_LAAG)) {
+    lagen[laag].getSource().getFeatures().forEach(f =>
+      f.set("insel", selectieActief() && featureInSelectie(soort, f, kruisSel), true));
+    lagen[laag].changed();
+  }
+  // percelen: ook zonder eigen laagvinkje tonen zolang ze gefilterd gemarkeerd worden
+  lagen.percelen.setVisible(document.getElementById("lg-percelen").checked
+                            || selFilterAan("percelen"));
+  map.render();
+  selectiePaneelBijwerken(v);
+  if (zoom) zoomNaarSelectie();
+}
+
+function zoomNaarSelectie() {
+  if (srcSelectie.isEmpty()) return;
+  map.getView().fit(srcSelectie.getExtent(),
+    { padding: [70, 70, 70, 70], maxZoom: 15, duration: 400 });
+}
+
+// na elk (nieuw) resultaat of variantwissel: onbekende nummers laten vallen
+function selectieNaResultaat() {
+  const v = resultaat && resultaat.varianten[actieveVariant];
+  const wps = new Set(v ? (v.werkpakketten || []).map(w => w.nr) : []);
+  const segs = new Set(v ? v.segmenten.map(s => s.nr) : []);
+  [...selectie.wp].forEach(nr => { if (!wps.has(nr)) selectie.wp.delete(nr); });
+  [...selectie.seg].forEach(nr => { if (!segs.has(nr)) selectie.seg.delete(nr); });
+  selectieVerversen(false);
+}
+
+function selectieWissel(soort, nr, aan) {
+  const set = selectie[soort];
+  if (aan === undefined) aan = !set.has(nr);
+  aan ? set.add(nr) : set.delete(nr);
+  selectieVerversen(aan);  // bij toevoegen inzoomen op de hele selectie
+}
+
+// shift-klik op het tracé: het segment onder de muis (de)selecteren
+function selecteerSegmentOpKaart(evt) {
+  const tol = map.getView().getResolution() * 10;
+  let beste = null, bd = tol;
+  srcSegments.getFeatures().forEach(f => {
+    const q = f.getGeometry().getClosestPoint(evt.coordinate);
+    const d = Math.hypot(q[0] - evt.coordinate[0], q[1] - evt.coordinate[1]);
+    if (d <= bd) { bd = d; beste = f; }
+  });
+  if (!beste) return;
+  selectieWissel("seg", beste.get("seg").nr);
+  if (actieveTab === "segmenten" || actieveTab === "werkpakketten") toonTab();
+}
+
+// laagstijlen: buiten de selectie niets tekenen als het filter voor die laag aan staat
+for (const [soort, laag] of Object.entries(SEL_LAAG)) {
+  const orig = lagen[laag].getStyleFunction();
+  lagen[laag].setStyle((f, res) =>
+    selFilterAan(soort) && !f.get("insel") ? null : orig(f, res));
+}
+
+// gebiedslagen (alle WMS-overlays + NDFF/isohypsen) uitknippen tot een strook
+// rond de selectie: de canvas-clip is de vereniging van rechthoeken per
+// lijnstuk en cirkels per hoekpunt, allemaal met dezelfde draairichting
+function knipGebied(e) {
+  const laag = e.target;
+  const isGebied = laag === lagen.ndff || laag === lagen.gwiso
+    || overlayLagen.some(o => o.laag === laag);
+  if (!isGebied || !selFilterAan("gebieden") || !selLijnen.length) return;
+  const ctx = e.context;
+  const res = map.getView().getResolution();
+  const rp = c => ol.render.getRenderPixel(e, map.getPixelFromCoordinate(c));
+  const c0 = selLijnen[0].getFirstCoordinate();
+  const a = rp(c0), b = rp([c0[0] + selStrookM(), c0[1]]);
+  const w = Math.max(2, Math.hypot(b[0] - a[0], b[1] - a[1]));
+  ctx.save();
+  ctx.beginPath();
+  selLijnen.forEach(l => {
+    const pts = l.simplify(res).getCoordinates().map(rp);
+    pts.forEach((p, i) => {
+      ctx.moveTo(p[0] + w, p[1]);
+      ctx.arc(p[0], p[1], w, 0, 2 * Math.PI);
+      if (!i) return;
+      const q = pts[i - 1], dx = p[0] - q[0], dy = p[1] - q[1];
+      const L = Math.hypot(dx, dy);
+      if (!L) return;
+      const nx = -dy / L * w, ny = dx / L * w;
+      ctx.moveTo(q[0] - nx, q[1] - ny);
+      ctx.lineTo(p[0] - nx, p[1] - ny);
+      ctx.lineTo(p[0] + nx, p[1] + ny);
+      ctx.lineTo(q[0] + nx, q[1] + ny);
+      ctx.closePath();
+    });
+  });
+  ctx.clip();
+  e.target.set("_selClip", true, true);
+}
+function herstelGebied(e) {
+  if (!e.target.get("_selClip")) return;
+  e.target.set("_selClip", false, true);
+  e.context.restore();
+}
+function koppelSelectieKnip(laag) {
+  if (laag.get("_selKnip")) return;
+  laag.set("_selKnip", true, true);
+  laag.on("prerender", knipGebied);
+  laag.on("postrender", herstelGebied);
+}
+map.getLayers().forEach(koppelSelectieKnip);
+map.getLayers().on("add", e => koppelSelectieKnip(e.element));
+
+// selectievinkjes in de tabellen (kop = alles aan/uit)
+function selKop(soort) {
+  return `<span class="sel"><input type="checkbox" data-selalles="${soort}" ` +
+    `title="Alles (de)selecteren"></span>`;
+}
+function selCel(soort, nr, viaWp) {
+  if (viaWp)  // segment valt in een geselecteerd werkpakket
+    return `<td class="sel"><input type="checkbox" checked disabled ` +
+      `title="Geselecteerd via werkpakket ${rlEsc(viaWp)}"></td>`;
+  return `<td class="sel"><input type="checkbox" data-sel="${soort}" data-nr="${rlEsc(nr)}"` +
+    `${selectie[soort].has(nr) ? " checked" : ""} title="Selecteren voor de kaart"></td>`;
+}
+document.getElementById("paneel-inhoud").addEventListener("change", e => {
+  const cb = e.target;
+  if (cb.dataset.sel) {
+    selectieWissel(cb.dataset.sel, cb.dataset.nr, cb.checked);
+  } else if (cb.dataset.selalles) {
+    const soort = cb.dataset.selalles;
+    const v = resultaat.varianten[actieveVariant];
+    const nrs = soort === "wp" ? (v.werkpakketten || []).map(w => w.nr)
+                               : v.segmenten.map(s => s.nr);
+    nrs.forEach(nr => cb.checked ? selectie[soort].add(nr) : selectie[soort].delete(nr));
+    selectieVerversen(cb.checked);
+    toonTab();
+  }
+});
+
+// blok "Selectie" in de zijbalk: werkpakketknoppen, samenvatting, filters
+function selectiePaneelBijwerken(v) {
+  const knoppen = document.getElementById("sel-wp");
+  const wps = v ? (v.werkpakketten || []) : [];
+  knoppen.innerHTML = wps.length ? wps.map(w =>
+    `<button class="klein${selectie.wp.has(w.nr) ? " aan" : ""}" data-wp="${rlEsc(w.nr)}" ` +
+    `title="${rlEsc(w.naam || "")} · ${w.lengte_m} m">${rlEsc(w.nr)}</button>`).join("")
+    : `<span class="hint">${v ? "Geen werkpakketten — herbereken het tracé."
+                              : "Nog geen berekend tracé."}</span>`;
+  const lengte = selBereiken.reduce((s, [a, b]) => s + (b - a), 0);
+  const nKr = lagen.crossings.getSource().getFeatures()
+    .filter(f => f.get("insel") && !f.get("punttype")).length;
+  const nPc = srcPercelen.getFeatures().filter(f => f.get("insel")).length;
+  document.getElementById("sel-samenvatting").textContent = selectieActief()
+    ? `${selectie.wp.size} werkpakket(ten), ${selectie.seg.size} los(se) segment(en) · ` +
+      `${(lengte / 1000).toFixed(2)} km · ${nKr} kruising(en)/boring(en) · ${nPc} perce(e)l(en)`
+    : "Niets geselecteerd — kies werkpakketten hieronder, vink ze aan in de tabs " +
+      "Werkpakketten/Segmenten, of shift-klik op het tracé.";
+  document.getElementById("sel-zoom").disabled = !selectieActief();
+  document.getElementById("sel-wis").disabled = !selectieActief();
+  const geenGebied = selFilterAan("gebieden")
+    && !overlayLagen.some(o => o.laag.getVisible())
+    && !lagen.ndff.getVisible() && !lagen.gwiso.getVisible();
+  document.getElementById("sel-gebied-hint").hidden = !geenGebied;
+}
+document.getElementById("sel-wp").addEventListener("click", e => {
+  const b = e.target.closest("button[data-wp]");
+  if (!b) return;
+  selectieWissel("wp", b.dataset.wp);
+  if (actieveTab === "werkpakketten" || actieveTab === "segmenten") toonTab();
+});
+document.getElementById("sel-zoom").addEventListener("click", zoomNaarSelectie);
+document.getElementById("sel-wis").addEventListener("click", () => {
+  selectie.wp.clear(); selectie.seg.clear();
+  selectieVerversen(false);
+  if (actieveTab === "werkpakketten" || actieveTab === "segmenten") toonTab();
+});
+SEL_FILTERS.forEach(soort =>
+  document.getElementById("sel-f-" + soort).addEventListener("change", () => selectieVerversen(false)));
+document.getElementById("sel-strook").addEventListener("change", () => selectieVerversen(false));
+document.getElementById("lg-percelen").addEventListener("change", () => selectieVerversen(false));
+// een gebiedslaag aan/uit zetten: de hint "vink een gebiedslaag aan" bijwerken
+document.getElementById("sidebar").addEventListener("change", e => {
+  if (e.target.id && e.target.id.startsWith("lg-"))
+    selectiePaneelBijwerken(resultaat && resultaat.varianten[actieveVariant]);
+});
+selectiePaneelBijwerken(null);
 const tdn = x => `<td class="num">${x ?? ""}</td>`;
 const eur = x => "€ " + Number(x).toLocaleString("nl-NL");
 const WT_CHIP = { voldoende: "info", onzeker: "waarschuwing", onvoldoende: "kritiek" };
@@ -1767,9 +2209,9 @@ function toonTab() {
       })),
       i => { actieveVariant = i; toonResultaat(); });
   } else if (actieveTab === "werkpakketten") {
-    t = tabel(["Nr", "Naam", "Van (m)", "Tot (m)", "Lengte"],
+    t = tabel([selKop("wp"), "Nr", "Naam", "Van (m)", "Tot (m)", "Lengte"],
       (v.werkpakketten || []).map(w => ({
-        cells: [td(w.nr), td(w.naam), tdn(w.chainage_van_m), tdn(w.chainage_tot_m),
+        cells: [selCel("wp", w.nr), td(w.nr), td(w.naam), tdn(w.chainage_van_m), tdn(w.chainage_tot_m),
           tdn(w.lengte_m + " m")],
         zoom: w.geometry,
       })));
@@ -1798,9 +2240,9 @@ function toonTab() {
     if (!rijen.length)
       el.innerHTML = '<p class="leeg">Geen uitvoeringsplanning — herbereken het tracé.</p>';
   } else if (actieveTab === "segmenten") {
-    t = tabel(["Nr", "WP", "Ligging", "Van", "Tot", "Lengte"],
+    t = tabel([selKop("seg"), "Nr", "WP", "Ligging", "Van", "Tot", "Lengte"],
       v.segmenten.map(s => ({
-        cells: [td(s.nr), td(s.werkpakket), td(s.ligging), tdn(s.van_m), tdn(s.tot_m), tdn(s.lengte_m + " m")],
+        cells: [selCel("seg", s.nr, selectie.wp.has(s.werkpakket) && s.werkpakket), td(s.nr), td(s.werkpakket), td(s.ligging), tdn(s.van_m), tdn(s.tot_m), tdn(s.lengte_m + " m")],
         zoom: s.geometry,
       })));
   } else if (actieveTab === "kruisingen") {
