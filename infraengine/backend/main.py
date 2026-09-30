@@ -47,7 +47,8 @@ from calculatie import build_raw_calculatie
 from engine import (
     CLASS_NAMES, EngineError, Grid, ZONE_NAMES, beoordeel_werkterreinen,
     build_painter, build_segments,
-    detect_crossings, propose_moffen, route_chunk, shortest_path,
+    detect_crossings, propose_moffen, route_chunk, shortest_path, verwijder_spieken,
+    verwijder_microknikken,
     straighten_iteratief, zone_lengtes, zone_trajecten, _free_station,
     _techniek_voor_kruising,
     DEFAULT_WEIGHTS,
@@ -77,6 +78,14 @@ CORRIDOR_VANAF_M = 2500.0
 CHUNK_M = 1500.0
 CORRIDOR_BREEDTE_M = 160.0
 NAAD_RADIUS_M = 60.0
+# naden overlappen: van elk deeltraject (behalve aan een station/via-punt)
+# wordt het laatste stuk niet vastgelegd maar opnieuw berekend als begin van
+# het volgende deeltraject, zodat het tracé op de naad nooit hoeft om te keren
+NAAD_TERUG_M = 80.0
+NAAD_TERUG_MAX_M = 400.0
+# spiektoets op het samengestelde corridor-tracé (zonder raster): klein
+# houden, zodat een echte omweg om een slootkop nooit als spiek geldt
+SPIEK_TOL_CORRIDOR_M = 1.5
 # 0,5 m: bij 1 m krijgt een smalle stoep of berm (± 1,5 m) vaak geen enkel
 # celmidden en verdwijnt hij uit het raster — het tracé belandt dan onnodig
 # op de rijbaan of mist een doorgang
@@ -186,6 +195,10 @@ class ComputeRequest(BaseModel):
                        description="Projectgebied: [[x,y],...] in RD; leeg = afleiden uit stations")
     stations: list = Field(..., description="MS-stations in volgorde: [[x,y],...]")
     via: list = Field(default_factory=list, description="Verplichte passeerpunten")
+    via_tolerantie_m: float = Field(
+        default=engine.VIA_TOLERANTIE_M, ge=0.0, le=50.0,
+        description="Via-punten zijn zacht: het tracé passeert binnen deze straal "
+                    "op de goedkoopste plek (0 = exact door het punt)")
     ring: bool = Field(default=False,
                        description="Ring sluiten: ook het tracé van het laatste station "
                                    "terug naar het eerste station bepalen")
@@ -237,6 +250,15 @@ def _insert_via(stations: list, via: list) -> list:
         waypoints.extend(vs)
         waypoints.append(leg[1])
     return waypoints
+
+
+def _via_stralen(req: "ComputeRequest", waypoints: list) -> list:
+    """Per waypoint de passeerstraal: via-punten zacht (via_tolerantie_m),
+    stations exact (0)."""
+    via = {tuple(v) for v in req.via}
+    stations = {tuple(s) for s in req.stations}
+    return [req.via_tolerantie_m if tuple(w) in via and tuple(w) not in stations else 0.0
+            for w in waypoints]
 
 
 def _geheugen_instellen() -> None:
@@ -480,12 +502,14 @@ def _trace_hoogteprofiel(route: LineString) -> tuple:
 # Corridor-modus: lange tracés per deeltraject (tot MAX_TRACE_KM)
 # ---------------------------------------------------------------------------
 
-def _corridor_chunks(waypoints: list) -> list:
+def _corridor_chunks(waypoints: list, via: set | None = None) -> list:
     """Hemelsbrede lijn opdelen in deeltrajecten van ± CHUNK_M.
 
     Deeltrajecten breken nooit door een station of via-punt heen: elke
     verbinding wordt apart opgedeeld. `vast` markeert een eindpunt dat een
-    echt station/via-punt is (naad ligt daar vast)."""
+    echt station/via-punt is (naad ligt daar vast); `via` dat dat eindpunt
+    een (zacht) via-punt is."""
+    via = via or set()
     chunks = []
     for a, b in zip(waypoints[:-1], waypoints[1:]):
         d = math.hypot(b[0] - a[0], b[1] - a[1])
@@ -498,8 +522,43 @@ def _corridor_chunks(waypoints: list) -> list:
                 "van": (a[0] + t0 * (b[0] - a[0]), a[1] + t0 * (b[1] - a[1])),
                 "tot": (a[0] + t1 * (b[0] - a[0]), a[1] + t1 * (b[1] - a[1])),
                 "vast": i == n - 1,
+                "via": i == n - 1 and tuple(b) in via,
             })
     return chunks
+
+
+def _naad_terugnemen(coords: list, volgend: dict) -> list:
+    """Het staartstuk van een deeltraject niet vastleggen: het volgende
+    deeltraject start eerder en berekent de naad opnieuw, in één doorlopende
+    kortste-pad-berekening.
+
+    Hoeveel er terug gaat: minstens NAAD_TERUG_M, en verder terug (tot
+    NAAD_TERUG_MAX_M) als het tracé daar al van het volgende doel wegliep —
+    het overdrachtspunt is het punt op de staart waarvandaan "tot hier + in
+    rechte lijn naar het volgende doel" het kortst is. Loopt de staart recht
+    op het doel af, dan is die som overal gelijk en blijft het bij het
+    minimum; loopt hij een V in, dan valt het punt vóór de V. Alleen punten
+    die ruim binnen het raster van het volgende deeltraject vallen komen in
+    aanmerking (anders blijft alles staan)."""
+    lijn = LineString(coords)
+    L = lijn.length
+    if L <= 2 * NAAD_TERUG_M:
+        return coords
+    x0, y0, x1, y1 = _chunk_bbox(volgend)
+    marge = BBOX_BUFFER_M + 10.0
+    doel = volgend["tot"]
+    beste = None
+    m = L - NAAD_TERUG_M
+    while m >= max(NAAD_TERUG_M, L - NAAD_TERUG_MAX_M):
+        p = lijn.interpolate(m)
+        if x0 + marge <= p.x <= x1 - marge and y0 + marge <= p.y <= y1 - marge:
+            score = m + math.hypot(doel[0] - p.x, doel[1] - p.y)
+            if beste is None or score < beste[0] - 2.0:  # gelijk: liever later
+                beste = (score, m)
+        m -= 5.0
+    if beste is None:
+        return coords
+    return list(engine._substring(lijn, 0.0, beste[1]).coords)
 
 
 def _chunk_bbox(chunk: dict, breedte: float = CORRIDOR_BREEDTE_M) -> tuple:
@@ -579,6 +638,25 @@ def _hecht_kruisingen(kruisingen: list, route: LineString) -> list:
     return samengevoegd
 
 
+def _herprojecteer_segmenten(segmenten: list, route: LineString) -> list:
+    """Van/tot van segmenten opnieuw meten op het definitieve tracé (na het
+    wegsnijden van spieken verschuift de metrering); segmenten die in een
+    weggesneden stuk lagen vervallen."""
+    out = []
+    for s in segmenten:
+        c = s["geometry"]["coordinates"]
+        m0, m1 = route.project(Point(c[0])), route.project(Point(c[-1]))
+        if (route.distance(Point(c[len(c) // 2])) > 2.0 or abs(m1 - m0) < 0.5):
+            continue
+        s["van_m"], s["tot_m"] = round(min(m0, m1), 1), round(max(m0, m1), 1)
+        s["lengte_m"] = round(s["tot_m"] - s["van_m"], 1)
+        out.append(s)
+    out.sort(key=lambda s: s["van_m"])
+    for i, s in enumerate(out, 1):
+        s["nr"] = f"SEG-{i:03d}"
+    return out
+
+
 def _hecht_segmenten(segmenten: list) -> list:
     """Aansluitende segmenten met dezelfde ligging over naden heen samenvoegen.
 
@@ -606,9 +684,11 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
     en routeren; daarna alles aaneenhechten en de registers op het volledige
     tracé vullen. Datalagen van volgende deeltrajecten worden vooruit
     opgehaald terwijl het huidige deeltraject rekent."""
-    chunks = _corridor_chunks(waypoints)
+    via_set = {tuple(v) for v in req.via} - {tuple(s) for s in req.stations}
+    chunks = _corridor_chunks(waypoints, via_set)
     profielen = dict(VARIANT_PROFIELEN) if req.variants else {"Voorkeursvariant": {}}
     staat = {naam: {"coords": [], "lengte": 0.0, "kruisingen": [], "segmenten": [],
+                    "maatlijnen": [],
                     "vast": set(),
                     "zones": {bit: 0.0 for bit in ZONE_NAMES},
                     "zone_geoms": {bit: [] for bit in ZONE_NAMES}, "fout": None}
@@ -715,8 +795,24 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                         grid = painter_voor(breedte).build(weights)
                         _free_station(grid, start)
                         _free_station(grid, chunk["tot"])
-                        coords = route_chunk(grid, start, chunk["tot"],
-                                             0.0 if chunk["vast"] else NAAD_RADIUS_M)
+                        # naad: zwevend eindpunt; via-punt: zacht binnen de
+                        # tolerantie; station: exact. Bij een zwevend eind
+                        # kijkt de keuze vooruit naar het volgende doel.
+                        volgende = chunks[i + 1]["tot"] if i + 1 < len(chunks) else None
+                        if not chunk["vast"]:
+                            straal = NAAD_RADIUS_M
+                        elif chunk.get("via"):
+                            straal = req.via_tolerantie_m
+                        else:
+                            straal = 0.0
+                        coords = route_chunk(grid, start, chunk["tot"], straal,
+                                             vooruit=volgende if straal > 0 else None)
+                        coords = verwijder_spieken(coords, beschermd=req.stations,
+                                                   grid=grid)
+                        coords = verwijder_microknikken(coords, beschermd=req.stations,
+                                                        grid=grid)
+                        if not chunk["vast"] and volgende is not None:
+                            coords = _naad_terugnemen(coords, chunks[i + 1])
                         fout = None
                         if breedte != BREEDTE_ESCALATIE[0]:
                             chunk["breedte"] = max(chunk.get("breedte", 0.0), breedte)
@@ -745,6 +841,9 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                     deel = maatvoering.normaliseer_route(
                         deel, maatvoering.referentieranden(bgt_deel), grid)
                     deel = straighten_iteratief(deel, bgt_deel, grid)
+                    deel = LineString(verwijder_microknikken(
+                        list(deel.coords), beschermd=req.stations, grid=grid,
+                        tol=0.2))
                     kruisingen = detect_crossings(deel, bgt_deel)
                     engine.verrijk_kruisingen(kruisingen,
                                               datas[breedte]["legger_water"],
@@ -758,6 +857,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                     st["vast"].update(engine.bepaal_boorpunten(
                         deel, kruisingen, bgt_deel, grid))
                     segmenten = build_segments(deel, grid)
+                    ml = maatvoering.maatlijnen(deel, bgt_deel)
                     zl = zone_lengtes(deel, grid)
                     zt = zone_trajecten(deel, grid)
                 except EngineError as e:
@@ -772,6 +872,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
                     s["tot_m"] = round(s["tot_m"] + offset, 1)
                 st["kruisingen"].extend(kruisingen)
                 st["segmenten"].extend(segmenten)
+                st["maatlijnen"].extend(ml)
                 for bit, m in zl.items():
                     st["zones"][bit] += m
                 for bit, lijnen in zt.items():
@@ -795,7 +896,17 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         if st["fout"]:
             fouten.append({"variant": naam, "fout": st["fout"]})
             continue
-        route = LineString(st["coords"])
+        # spieken over de naden heen (zonder raster: kleine tolerantie);
+        # stations, boorpunten en kruisingsranden blijven liggen
+        randen = [p for c in st["kruisingen"]
+                  for p in (c.get("van_rd"), c.get("tot_rd")) if p]
+        coords = verwijder_spieken(st["coords"], beschermd=req.stations,
+                                   vast=list(st["vast"]) + randen,
+                                   tol=SPIEK_TOL_CORRIDOR_M)
+        coords = verwijder_microknikken(coords, beschermd=req.stations,
+                                        vast=list(st["vast"]) + randen)
+        gespiekt = len(coords) != len(st["coords"])
+        route = LineString(coords)
         # naadpunten tussen deeltrajecten ontdubbelen/gladstrijken en de
         # buigradius bij het naadpunt zelf verruimen (elk deeltraject was al
         # genormaliseerd, maar de knik ín het naadpunt overspant twee
@@ -804,6 +915,8 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
         route = maatvoering.normaliseer_route(route, vast=st["vast"])
         kruisingen = _hecht_kruisingen(st["kruisingen"], route)
         segmenten = _hecht_segmenten(st["segmenten"])
+        if gespiekt:
+            segmenten = _herprojecteer_segmenten(segmenten, route)
         zones_m = {bit: round(m, 1) for bit, m in st["zones"].items()}
         # boringen vóór de vergunningen: het samenvoegen van aangrenzende
         # sleufloze kruisingen (zo min mogelijk mantelbuizen) kan de techniek
@@ -827,10 +940,11 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             route, segmenten, [(g.x, g.y, r) for g, r in bomen_alle],
             maatvoering.klic_nabij(route))
         checks.extend(mv_checks)
+        maatlijnen = maatvoering.maatlijnen_herprojecteren(st["maatlijnen"], route)
         werkpakketten = build_werkpakketten(route, req.stations, ring=req.ring)
         ken_werkpakketten_toe(werkpakketten, route, segmenten, kruisingen,
                               boringen, moffen, zro, vergunningen,
-                              onderzoeken, checks, son_register)
+                              onderzoeken, checks, son_register, maatlijnen)
         planning = build_uitvoeringsplanning(werkpakketten, boringen, moffen)
         kosten = build_kosten(segmenten, kruisingen, zro, moffen, onderzoeken)
         calculatie = build_raw_calculatie(route.length, segmenten, kruisingen,
@@ -857,6 +971,7 @@ def _compute_corridor(req: ComputeRequest, waypoints: list, hemelsbreed: float,
             "zro": zro,
             "toetsing": checks,
             "maatvoering": mv_overzicht,
+            "maatlijnen": maatlijnen,
             "werkpakketten": werkpakketten,
             "planning": planning,
             "kosten": kosten,
@@ -1000,10 +1115,12 @@ def _verrijk_route(route: LineString, grid: Grid, bgt: dict, percelen: list,
         route, segments, [(g.x, g.y, r) for g, r in boom_zones],
         maatvoering.klic_nabij(route), bgt, referentie)
     checks.extend(mv_checks)
+    # maatvoering: afstand tot verhardingsrand en gevel, met maatlijnen
+    maatlijnen = maatvoering.maatlijnen(route, bgt)
     werkpakketten = build_werkpakketten(route, stations, ring=ring)
     ken_werkpakketten_toe(werkpakketten, route, segments, crossings,
                           boringen, moffen, zro, vergunningen,
-                          onderzoeken, checks, son_register)
+                          onderzoeken, checks, son_register, maatlijnen)
     planning = build_uitvoeringsplanning(werkpakketten, boringen, moffen)
     kosten = build_kosten(segments, crossings, zro, moffen, onderzoeken)
     calculatie = build_raw_calculatie(route.length, segments, crossings,
@@ -1030,6 +1147,7 @@ def _verrijk_route(route: LineString, grid: Grid, bgt: dict, percelen: list,
         "zro": zro,
         "toetsing": checks,
         "maatvoering": mv_overzicht,
+        "maatlijnen": maatlijnen,
         "werkpakketten": werkpakketten,
         "planning": planning,
         "kosten": kosten,
@@ -1097,13 +1215,22 @@ def _compute_gebied(req: ComputeRequest, waypoints: list, t0: float) -> dict:
             grid = painter.build(weights)
             for wp in waypoints:
                 _free_station(grid, wp)
-            route = LineString(shortest_path(grid, waypoints))
+            coords = shortest_path(grid, waypoints, zacht=_via_stralen(req, waypoints))
+            # heen-en-terug-stukken (spieken) wegsnijden; stations blijven
+            coords = verwijder_spieken(coords, beschermd=req.stations, grid=grid)
+            coords = verwijder_microknikken(coords, beschermd=req.stations, grid=grid)
+            route = LineString(coords)
             # afronden op 0,01 m RD, ontdubbelen, korte knik-segmenten
             # samenvoegen, snappen op BGT-/erfranden en buigradius verruimen,
             # zodat het gegenereerde tracé de eisen vooraf respecteert — vóór
             # het rechttrekken, zodat de boorlijnen daarna exact blijven liggen
             route = maatvoering.normaliseer_route(route, referentie, grid)
             route = straighten_iteratief(route, bgt, grid)
+            # knikjes en haakjes (< 1 m) die snappen/rechttrekken nog
+            # achterlaten; de haakse aanloop van een kruising (≥ 2 m) blijft
+            route = LineString(verwijder_microknikken(
+                list(route.coords), beschermd=req.stations, grid=grid,
+                tol=0.2))
             varianten.append(_verrijk_route(
                 route, grid, bgt, percelen, gemeente, data, boom_zones,
                 eigendom_sig, referentie, naam, weights, req.stations,
@@ -1461,7 +1588,7 @@ def export_geojson(variant: int = 0):
                       "properties": {"laag": "kruising", **{k: c.get(k) for k in
                                      ("nr", "soort", "breedte_m", "kruislengte_m",
                                       "techniek", "bevoegd_gezag", "noodzaak",
-                                      "legger_categorie", "wegnaam",
+                                      "kruisingshoek_gr", "legger_categorie", "wegnaam",
                                       "bijzonder_punt", "bijzonder_reden")},
                                      "werkpakket": c.get("werkpakket", "")},
                       "geometry": {"type": "Point", "coordinates": list(c["punt"])}})
@@ -1473,7 +1600,9 @@ def export_geojson(variant: int = 0):
         feats.append({"type": "Feature",
                       "properties": {"laag": "boring", **{k: b.get(k) for k in
                                      ("nr", "type", "obstakel", "kruising", "lengte_m",
-                                      "uitloop_m", "dekking_eis", "noodzaak",
+                                      "uitloop_m", "uitloop_in_m", "uitloop_uit_m",
+                                      "kruisingshoek_gr", "haaks", "kuip_in_rd",
+                                      "kuip_uit_rd", "plaatsing", "dekking_eis", "noodzaak",
                                       "maaiveld_min_nap", "maaiveld_max_nap",
                                       "verval_m", "sonderingen_bro",
                                       "bestaande_netten")},
@@ -1522,6 +1651,31 @@ def export_geojson(variant: int = 0):
     return StreamingResponse(io.BytesIO(data), media_type="application/geo+json",
                              headers={"Content-Disposition":
                                       f'attachment; filename="infraengine_{variant}.geojson"'})
+
+
+class MaatlijnenUpdate(BaseModel):
+    variant: int = 0
+    lijnen: list = Field(default_factory=list,
+                         description="Handmatige maatlijnen: [{van: [x,y], tot: [x,y]}]")
+
+
+@app.post("/api/maatlijnen")
+def maatlijnen_opslaan(req: MaatlijnenUpdate):
+    """Handmatig op de kaart gezette maatlijnen bij de variant bewaren, zodat
+    de DXF-export (en het opgeslagen project) ze meeneemt."""
+    v = _need_result(req.variant)
+    lijnen = []
+    for l in req.lijnen:
+        a, b = l.get("van"), l.get("tot")
+        if not (isinstance(a, list) and isinstance(b, list) and len(a) >= 2 and len(b) >= 2):
+            continue
+        a, b = [round(float(a[0]), 2), round(float(a[1]), 2)], \
+            [round(float(b[0]), 2), round(float(b[1]), 2)]
+        lijnen.append({"van": a, "tot": b,
+                       "afstand_m": round(math.hypot(b[0] - a[0], b[1] - a[1]), 2),
+                       "omschrijving": str(l.get("omschrijving") or "")[:120]})
+    v["maatlijnen_handmatig"] = lijnen
+    return {"ok": True, "aantal": len(lijnen)}
 
 
 @app.get("/api/export/dxf")
@@ -1686,6 +1840,20 @@ def export_xlsx(variant: int = 0, projectnaam: str = ""):
            for o in v.get("onderzoeken", [])])
     sheet("Toetsing", ["Ernst", "Toets", "Grondslag", "Melding"],
           [[c["ernst"], c["toets"], c["grondslag"], c["melding"]] for c in v["toetsing"]])
+    sheet("Maatvoering",
+          ["Nr", "Werkpakket", "Categorie", "Van (m)", "Tot (m)", "Lengte (m)",
+           "Ten opzichte van", "Verharding", "Zijde", "Ligging",
+           "Afstand (m)", "Min (m)", "Max (m)", "Begin (m)", "Eind (m)"],
+          [[x["nr"], x.get("werkpakket", ""), x["categorie"], x["van_m"], x["tot_m"],
+            x["lengte_m"], x["object"], x.get("verharding") or "", x.get("zijde") or "",
+            "in de verharding" if x["status"] == "in"
+            else "verlopend" if x.get("verlopend") else "constant",
+            x["afstand_m"], x["afstand_min_m"], x["afstand_max_m"],
+            x.get("afstand_begin_m"), x.get("afstand_eind_m")]
+           for x in v.get("maatlijnen", [])]
+          + [[f"HAND-{i}", "", "handmatig", "", "", "", x.get("omschrijving", ""), "", "",
+              f"{x['van']} → {x['tot']}", x["afstand_m"], "", "", "", ""]
+             for i, x in enumerate(v.get("maatlijnen_handmatig", []), 1)])
     sheet("Moffen", ["Nr", "Chainage (m)", "X (RD)", "Y (RD)", "Opmerking"],
           [[m["nr"], m["chainage_m"], m["punt"][0], m["punt"][1], m["opmerking"]]
            for m in v["moffen"]])

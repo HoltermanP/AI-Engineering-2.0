@@ -14,6 +14,7 @@ instelbaar wegingsprofiel.
 """
 from __future__ import annotations
 
+import bisect
 import math
 
 import numpy as np
@@ -22,8 +23,12 @@ from PIL import Image, ImageDraw
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon, mapping
 from shapely.ops import nearest_points, unary_union
 from shapely.prepared import prep
+from scipy.ndimage import distance_transform_edt
 from skimage.graph import MCP_Geometric
 from skimage.measure import label as connected_label
+
+import mantelbuizen
+import normen
 
 # ---------------------------------------------------------------------------
 # Wegingsprofiel (startwaarden uit FO §3.1; per project instelbaar)
@@ -42,6 +47,10 @@ DEFAULT_WEIGHTS = {
     "natuur_groen": 1.2,       # bos, heide, duin: graafbaar maar kwetsbaar
     # vermenigvuldigers
     "gesloten_verharding": 1.5,
+    # terrein buiten het wegprofiel (verder dan WEGPROFIEL_MARGE_M van weg,
+    # trottoir, fietspad, parkeervlak of berm) is doorgaans geen openbare
+    # grond: zwaarder wegen zodat het tracé zo veel mogelijk de wegen volgt
+    "buiten_wegprofiel": 1.5,
     # zonelagen (FO §3.1): vermenigvuldigers op de basiskosten
     "natura2000_weg": 1.2,     # binnen Natura 2000 via bestaande weg/berm; daarbuiten ∞
     "nnn": 3.0,                # Natuurnetwerk Nederland: strenge weging
@@ -127,6 +136,19 @@ SLACK_ABS = 2.0
 # vector-exact van het obstakel afgedrukt met deze vrije marge
 SCHAMP_DIEPTE_M = 0.8
 SCHAMP_CLEARANCE_M = 0.2
+# wegprofiel (openbare ruimte langs de weg): cellen van deze klassen plus een
+# strook van WEGPROFIEL_MARGE_M erlangs; terrein daarbuiten krijgt de
+# vermenigvuldiger "buiten_wegprofiel"
+WEGPROFIEL_MARGE_M = 3.0
+# spieken (heen-en-terug-stukken): een tracédeel dat binnen SPIEK_TOL_M van
+# zichzelf terugloopt wordt weggesneden, tot SPIEK_MAX_M lang
+SPIEK_TOL_M = 3.0
+SPIEK_MAX_M = 400.0
+# micro-knikken: hoekpunten binnen deze afstand van de koorde vervallen
+MICROKNIK_TOL_M = 0.30
+MICROKNIK_SEG_M = 1.0   # haakje: zijde korter dan dit, knik dichtbij de koorde
+# zachte via-punten: het tracé passeert binnen deze straal (goedkoopste plek)
+VIA_TOLERANTIE_M = 10.0
 
 ZONE_NAMES = {
     ZN_NATURA: "Natura 2000",
@@ -153,6 +175,8 @@ BGT_URBAAN_GROEN = {"groenvoorziening"}
 # klassen die binnen Natura 2000 begaanbaar blijven ("bestaande weg of berm")
 NATURA_TOEGESTAAN = {CL_BERM, CL_VOETPAD, CL_FIETSPAD, CL_PARKEER, CL_RIJBAAN,
                      CL_ONVERHARD, CL_WATER, CL_SPOOR}
+WEGPROFIEL_KLASSEN = {CL_BERM, CL_VOETPAD, CL_FIETSPAD, CL_PARKEER, CL_RIJBAAN}
+TERREIN_KLASSEN = {CL_ONBEKEND, CL_ONVERHARD, CL_ERF, CL_NATUURGROEN}
 
 WEGDEEL_FUNCTIE = {
     "voetpad": CL_VOETPAD,
@@ -304,6 +328,7 @@ class Painter:
         self.zone_ops: list = []  # (mask, zonebit, gewicht-sleutel)
         self.hard_geom = None     # exacte unie van harde uitsluitingen (vector)
         self.schamp_geoms: list = []  # [(geometrie, gewicht-sleutel)] voor sub-celcorrectie
+        self._buiten = None       # cache: masker terrein buiten het wegprofiel
 
     def add(self, mask: np.ndarray, code: int, key: str | None, factor: float = 1.0):
         if mask.any():
@@ -329,6 +354,12 @@ class Painter:
                 grid.paint(mask, code, factor)  # vaste waarde (∞ voor uitsluitingen)
             else:
                 grid.paint(mask, code, prijs(key) * factor)
+        # terrein buiten het wegprofiel zwaarder: het tracé zoekt de wegen op
+        factor = w.get("buiten_wegprofiel", 1.0)
+        if factor != 1.0:
+            buiten = self._buiten_wegprofiel(grid.klass)
+            if buiten is not None:
+                grid.cost[buiten] *= factor
         # zonelagen: vermenigvuldigen bovenop de basiskosten; Natura 2000 sluit
         # alles buiten bestaande weg of berm hard uit (FO §3.1)
         for mask, bit, key in self.zone_ops:
@@ -345,6 +376,22 @@ class Painter:
             grid._hard_prep = prep(self.hard_geom)
         grid.schamp = [(prep(g), g, float(prijs(key))) for g, key in self.schamp_geoms]
         return grid
+
+    def _buiten_wegprofiel(self, klass: np.ndarray):
+        """Masker van terreincellen verder dan WEGPROFIEL_MARGE_M van weg,
+        trottoir, fietspad, parkeervlak of berm. De klassen hangen niet van
+        het wegingsprofiel af, dus één keer per painter berekend. Zonder
+        wegen in beeld (buitengebied) geen masker: dan is er niets te volgen."""
+        if self._buiten is None:
+            openbaar = np.isin(klass, list(WEGPROFIEL_KLASSEN))
+            if not openbaar.any():
+                self._buiten = False
+            else:
+                afstand = distance_transform_edt(~openbaar) * self.cell
+                self._buiten = ((afstand > WEGPROFIEL_MARGE_M)
+                                & np.isin(klass, list(TERREIN_KLASSEN)))
+                del afstand
+        return None if self._buiten is False else self._buiten
 
 
 def build_painter(bbox: tuple, bgt: dict, forbidden: list, cell: float,
@@ -721,7 +768,7 @@ def smooth_route(coords: list, grid: Grid, slack: float = 1.05) -> list:
 
 
 def route_chunk(grid: Grid, start: tuple, end: tuple, end_radius_m: float = 0.0,
-                slack: float = 1.05) -> list:
+                slack: float = 1.05, vooruit: tuple | None = None) -> list:
     """Kortste gewogen pad binnen één corridor-raster (deeltraject).
 
     Bij ``end_radius_m > 0`` ligt het eindpunt niet vast: de route eindigt op
@@ -730,6 +777,11 @@ def route_chunk(grid: Grid, start: tuple, end: tuple, end_radius_m: float = 0.0,
     in plaats van er hard doorheen geforceerd te worden. De afstand tot het
     doelpunt telt licht mee zodat de naad niet onnodig ver van de hemelsbrede
     lijn afdrijft.
+
+    ``vooruit`` (het doel van het vólgende deeltraject): dan telt de afstand
+    tot dát punt in plaats van tot ``end``. Het eindpunt schuift zo naar de
+    kant waar het tracé verder moet, en het volgende deel hoeft niet terug te
+    keren (geen V-vormige sprong op de naad of bij een zacht via-punt).
     """
     costs = grid.cost * grid.cell
     ra = grid.world_to_cell(*start)
@@ -744,9 +796,14 @@ def route_chunk(grid: Grid, start: tuple, end: tuple, end_radius_m: float = 0.0,
         eindig = np.isfinite(grid.cost)
         prijs_per_m = float(grid.cost[eindig].mean()) if eindig.any() else 1.0
         rr, cc = np.mgrid[r0:r1, c0:c1]
-        score = np.where(np.isfinite(win),
-                         win + np.hypot(rr - rb[0], cc - rb[1]) * grid.cell * prijs_per_m,
-                         np.inf)
+        binnen = np.hypot(rr - rb[0], cc - rb[1]) * grid.cell <= end_radius_m
+        if vooruit is not None:
+            xs = grid.xmin + (cc + 0.5) * grid.cell
+            ys = grid.ymax - (rr + 0.5) * grid.cell
+            rest = np.hypot(xs - vooruit[0], ys - vooruit[1])
+        else:
+            rest = np.hypot(rr - rb[0], cc - rb[1]) * grid.cell
+        score = np.where(np.isfinite(win) & binnen, win + rest * prijs_per_m, np.inf)
         if not np.isfinite(score).any():
             raise EngineError(
                 "Geen begaanbare aansluiting op het volgende deeltraject gevonden. "
@@ -766,16 +823,58 @@ def route_chunk(grid: Grid, start: tuple, end: tuple, end_radius_m: float = 0.0,
     del mcp, cumcost, tb  # MCP-rasters vrij vóór het gladstrijken
     if len(pts) < 2:  # start en eind in dezelfde cel (heel korte verbinding)
         pts = pts * 2
+    # exact op het beginpunt (en een vast eindpunt) aansluiten i.p.v. op het
+    # celmidden: anders ontstaat op elke naad een haakje van een halve cel
+    pts[0] = tuple(start)
+    if end_radius_m <= 0:
+        pts[-1] = tuple(end)
     return smooth_route(pts, grid, slack)
 
 
-def shortest_path(grid: Grid, waypoints: list, slack: float = 1.05) -> list:
+def _zacht_passeerpunt(grid: Grid, costs: np.ndarray, a: tuple, v: tuple,
+                       b: tuple, radius_m: float) -> tuple:
+    """Beste passeerpunt binnen ``radius_m`` rond via-punt ``v``: de cel die
+    de totale kosten a → cel → b minimaliseert. Een via-punt dat net naast de
+    logische lijn ligt (versleept op een erf, midden op de rijbaan) trekt het
+    tracé dan niet meer met een heen-en-terug-stuk naar zich toe; het tracé
+    passeert op de goedkoopste plek in de buurt, met de wegingsfactoren."""
+    ra, rv, rb = grid.world_to_cell(*a), grid.world_to_cell(*v), grid.world_to_cell(*b)
+    n = max(1, int(radius_m / grid.cell))
+    r0, r1 = max(0, rv[0] - n), min(grid.nrows, rv[0] + n + 1)
+    c0, c1 = max(0, rv[1] - n), min(grid.ncols, rv[1] + n + 1)
+    totaal = np.zeros((r1 - r0, c1 - c0))
+    for bron in (ra, rb):  # MCP_Geometric is symmetrisch: b → cel = cel → b
+        mcp = MCP_Geometric(costs, fully_connected=True)
+        cum, _ = mcp.find_costs(starts=[bron])
+        totaal += cum[r0:r1, c0:c1]
+        del mcp, cum
+    rr, cc = np.mgrid[r0:r1, c0:c1]
+    afst = np.hypot(rr - rv[0], cc - rv[1]) * grid.cell
+    # bij gelijke kosten liever dicht bij het geplaatste punt
+    score = np.where((afst <= radius_m) & np.isfinite(totaal), totaal + afst * 0.01, np.inf)
+    if not np.isfinite(score).any():
+        return v
+    idx = np.unravel_index(int(np.argmin(score)), score.shape)
+    return grid.cell_to_world(r0 + int(idx[0]), c0 + int(idx[1]))
+
+
+def shortest_path(grid: Grid, waypoints: list, slack: float = 1.05,
+                  zacht: list | None = None) -> list:
     """Kortste gewogen pad langs alle waypoints; retourneert RD-coördinaten.
 
     Elke verbinding wordt apart gladgestreken zodat via-punten hoekpunten
     blijven en niet worden weggesneden.
+
+    ``zacht``: per waypoint een straal (m); > 0 = zacht via-punt dat het
+    tracé binnen die straal op de goedkoopste plek passeert
+    (`_zacht_passeerpunt`), 0 = vast punt (station).
     """
     costs = grid.cost * grid.cell  # kosten per meter → kosten per cel-stap
+    waypoints = [tuple(p) for p in waypoints]
+    for k in range(1, len(waypoints) - 1):
+        if zacht and zacht[k] > 0:
+            waypoints[k] = _zacht_passeerpunt(grid, costs, waypoints[k - 1],
+                                              waypoints[k], waypoints[k + 1], zacht[k])
     coords: list = []
     for a, b in zip(waypoints[:-1], waypoints[1:]):
         ra = grid.world_to_cell(*a)
@@ -788,7 +887,11 @@ def shortest_path(grid: Grid, waypoints: list, slack: float = 1.05) -> list:
                 "Controleer verboden zones en het projectgebied."
             )
         tb = mcp.traceback(rb)
-        seg = smooth_route([grid.cell_to_world(r, c) for r, c in tb], grid, slack)
+        pad = [grid.cell_to_world(r, c) for r, c in tb]
+        if len(pad) < 2:
+            pad = pad * 2
+        pad[0], pad[-1] = tuple(a), tuple(b)  # exact op station/passeerpunt
+        seg = smooth_route(pad, grid, slack)
         if coords:
             seg = seg[1:]
         coords.extend(seg)
@@ -797,6 +900,168 @@ def shortest_path(grid: Grid, waypoints: list, slack: float = 1.05) -> list:
         # anders leven er bij via-punten twee tegelijk
         del mcp, cumcost, tb
     return coords
+
+
+def _deel(pts: list, cum: list, m0: float, m1: float) -> list:
+    """Coördinaten van een polylijn tussen metrering m0 en m1, op index (niet
+    via project(): dat kiest bij een lijn die over zichzelf terugloopt de
+    verkeerde tak)."""
+    def punt(m):
+        k = max(1, min(len(pts) - 1, bisect.bisect_left(cum, m)))
+        a, b = pts[k - 1], pts[k]
+        seg = cum[k] - cum[k - 1]
+        t = 0.0 if seg <= 0 else min(1.0, max(0.0, (m - cum[k - 1]) / seg))
+        return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+    m0, m1 = max(0.0, m0), min(cum[-1], m1)
+    uit = [punt(m0)]
+    uit += [pts[k] for k in range(len(pts)) if m0 < cum[k] < m1]
+    uit.append(punt(m1))
+    return uit
+
+
+def _polylijn_kosten(grid: Grid, coords: list) -> float:
+    return sum(_straight_cost(grid, a, b) for a, b in zip(coords[:-1], coords[1:]))
+
+
+def verwijder_spieken(coords: list, beschermd: list | tuple = (),
+                      vast: set | list | tuple = (), grid: Grid | None = None,
+                      tol: float = SPIEK_TOL_M, max_m: float = SPIEK_MAX_M) -> list:
+    """Heen-en-terug-stukken ("spieken") uit het tracé snijden.
+
+    Een spiek ontstaat waar het tracé een punt moet halen dat niet op de
+    logische lijn ligt — een naad tussen deeltrajecten, een via-punt naast de
+    weg — en daarna over (bijna) dezelfde weg terugloopt. Voor een kabel is
+    dat nooit zinvol: het levert dubbele sleuflengte en een haarspeldbocht.
+
+    Werkwijze: bij elk hoekpunt kijken of het vervolg van het tracé binnen
+    ``tol`` van het deel ervóór terugloopt. Zo ja, dan wordt het langste stuk
+    dat dat doet weggesneden en sluiten het aankomende en het vertrekkende
+    deel direct op elkaar aan (een verbinding korter dan ``tol``).
+
+    Niet weggesneden wordt:
+    - een spiek naar een station (``beschermd``): de kabel gaat het station
+      in en weer uit, dat heen-en-terug is echt;
+    - een stuk met een vast punt (``vast``: in-/uittredepunten van boringen,
+      kruisingsranden) — dat ligt al vast in de registers;
+    - met ``grid``: een verbinding die een uitsluiting raakt of duurder is
+      dan het weggesneden stuk (bijvoorbeeld om de kop van een sloot heen:
+      rechtdoor zou de sloot kruisen). Zonder raster (samengesteld corridor-
+      tracé) moet de aanroeper een kleine ``tol`` kiezen, zodat zo'n omweg
+      nooit als spiek kan gelden.
+    """
+    pts = [tuple(c) for c in coords]
+    stations = [Point(p) for p in beschermd]
+    vaste = [Point(p) for p in vast]
+    for _ in range(60):  # begrensd; elke ronde snijdt hoogstens één spiek weg
+        if len(pts) < 3:
+            break
+        lijn = LineString(pts)
+        lengte = lijn.length
+        cum = [0.0]
+        for a, b in zip(pts[:-1], pts[1:]):
+            cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+        # metrering van beschermde punten die op (of vlak bij) het tracé liggen
+        m_bescherm = [lijn.project(p) for p in stations
+                      if lijn.distance(p) <= max(tol, 6.0)]
+        m_bescherm += [lijn.project(p) for p in vaste if lijn.distance(p) <= 1.0]
+        snede = None
+        for i in range(1, len(pts) - 1):
+            m_i = cum[i]
+            if m_i < tol or lengte - m_i < 2 * tol:
+                continue
+            vertrek = lijn.interpolate(min(lengte, m_i + 2 * tol))
+            # snelle toets op een kort stuk ervóór; pas daarna het lange deel
+            if LineString(_deel(pts, cum, m_i - 4 * tol, m_i)).distance(vertrek) > tol:
+                continue
+            inkomend = LineString(_deel(pts, cum, m_i - max_m, m_i))
+            # zo ver mogelijk langs het vertrekkende deel terug-lopen
+            s, stap = 2 * tol, 0.5
+            while m_i + s + stap <= min(lengte, m_i + max_m):
+                if inkomend.distance(lijn.interpolate(m_i + s + stap)) > tol:
+                    break
+                s += stap
+            q = lijn.interpolate(m_i + s)
+            m_p = m_i - inkomend.length + inkomend.project(q)
+            m_q = m_i + s
+            if m_q - m_p < 2 * tol:
+                continue
+            if any(m_p - 1.0 <= m <= m_q + 1.0 for m in m_bescherm):
+                continue  # station of vast punt in het weg te snijden stuk
+            p = lijn.interpolate(m_p)
+            if grid is not None:
+                kort = _straight_cost(grid, (p.x, p.y), (q.x, q.y))
+                if (not math.isfinite(kort)
+                        or kort > _polylijn_kosten(grid, _deel(pts, cum, m_p, m_q)) + 1e-6):
+                    continue
+            snede = (m_p, m_q)
+            break
+        if snede is None:
+            break
+        m_p, m_q = snede
+        voor = _deel(pts, cum, 0.0, m_p)
+        pts = [tuple(c) for c in voor + _deel(pts, cum, m_q, lengte)]
+        pts = [c for k, c in enumerate(pts) if k == 0 or c != pts[k - 1]]
+        # de aansluiting (p → q, zijwaarts tot tol) gladstrijken: de twee
+        # aansluitpunten vervallen als de directe koorde niet duurder is
+        if grid is not None:
+            j = min(len(voor) - 1, len(pts) - 2)
+            for k in (j + 1, j):
+                if 0 < k < len(pts) - 1:
+                    a, b, c = pts[k - 1], pts[k], pts[k + 1]
+                    kort = _straight_cost(grid, a, c)
+                    if (math.isfinite(kort) and kort <= _straight_cost(grid, a, b)
+                            + _straight_cost(grid, b, c) + 1e-6):
+                        del pts[k]
+    return pts
+
+
+def verwijder_microknikken(coords: list, beschermd: list | tuple = (),
+                           vast: set | list | tuple = (), grid: Grid | None = None,
+                           tol: float = MICROKNIK_TOL_M, haakjes: bool = True) -> list:
+    """Zigzagjes van enkele decimeters wegnemen (naden, aansluitingen,
+    rasterresten): een hoekpunt vervalt als het minder dan ``tol`` van de
+    koorde tussen zijn buren ligt, of een haakje vormt (een zijde korter
+    dan MICROKNIK_SEG_M, de andere hooguit 4× zo lang, en minder dan
+    MICROKNIK_SEG_M van de koorde). Met ``grid`` alleen als die koorde geen
+    uitsluiting raakt en niet duurder is dan de twee stukken eromheen
+    (+ SLACK_ABS/10). Stations en vaste punten blijven staan.
+
+    ``haakjes=False`` (na het rechttrekken van kruisingen): alleen de
+    afwijkingsregel, zodat de haakse aanloop van een kruising blijft."""
+    pts = [tuple(c) for c in coords]
+    houd = {tuple(p) for p in vast}
+
+    def beschermd_punt(p):
+        return tuple(p) in houd or any(math.hypot(p[0] - q[0], p[1] - q[1]) < 0.05
+                                       for q in beschermd)
+
+    for _ in range(4):
+        gewijzigd = False
+        k = 1
+        while k < len(pts) - 1:
+            a, b, c = pts[k - 1], pts[k], pts[k + 1]
+            dx, dy = c[0] - a[0], c[1] - a[1]
+            L = math.hypot(dx, dy)
+            afwijking = (abs(dx * (a[1] - b[1]) - dy * (a[0] - b[0])) / L if L > 1e-9
+                         else math.hypot(b[0] - a[0], b[1] - a[1]))
+            # ook een haakje: twee korte zijden met een flinke knik
+            l1 = math.hypot(b[0] - a[0], b[1] - a[1])
+            l2 = math.hypot(c[0] - b[0], c[1] - b[1])
+            haakje = haakjes and (min(l1, l2) < MICROKNIK_SEG_M and max(l1, l2) < 4 * MICROKNIK_SEG_M
+                      and afwijking < MICROKNIK_SEG_M)
+            weg = (afwijking < tol or haakje) and not beschermd_punt(b)
+            if weg and grid is not None:
+                kort = _straight_cost(grid, a, c)
+                weg = (math.isfinite(kort) and kort <= _straight_cost(grid, a, b)
+                       + _straight_cost(grid, b, c) + SLACK_ABS / 10)
+            if weg:
+                del pts[k]
+                gewijzigd = True
+            else:
+                k += 1
+        if not gewijzigd:
+            break
+    return pts
 
 
 # ---------------------------------------------------------------------------
@@ -835,90 +1100,402 @@ TECHNIEK_OPEN = "Open sleuf"
 TECHNIEK_NANO = "Nanodrill"
 TECHNIEK_RAKET = "Raketboring (ongestuurd)"
 
-# in-/uittredepunt: afstand vóór en na het obstakel (m), per techniek.
-# HDD: intredehoek 8–12° met dekking ≥ 1,5 m vraagt ruime aanloop;
-# persing/raket: kuip direct naast het obstakel.
+# Minimale uitloop (m) per techniek: ondergrens voor de afstand van de
+# obstakelrand tot het in-/uittredepunt, instelbaar per richtlijn
+# (richtlijnen.py). De werkelijke uitloop volgt uit de boorgeometrie en de
+# afstandseisen van de beheerder (``uitloop_detail``): bij HDD en nanodrill
+# de aanloop die intredehoek en boogstraal vragen om op diepte te komen,
+# bij persing en raket de invloedslijn van de kuip.
 BOOR_UITLOOP = {
-    TECHNIEK_HDD: 10.0,
-    TECHNIEK_NANO: 5.0,
-    TECHNIEK_PERSING: 3.0,
-    TECHNIEK_RAKET: 2.0,
+    TECHNIEK_HDD: 5.0,
+    TECHNIEK_NANO: 3.0,
+    TECHNIEK_PERSING: 1.0,
+    TECHNIEK_RAKET: 1.0,
 }
 BOOR_UITLOOP_DEFAULT = 3.0
 # in-/uittredepunt op vrij terrein: ligt het punt op de uitloopafstand nog
-# in een wegdeel, water, talud of spoor (of tegen een pand), dan schuift het
-# in stappen langs het tracé naar buiten, tot dit maximum
+# in een wegdeel, water, spoor, de afstandszone daarvan of tegen een pand,
+# dan schuift het langs de boorlijn naar buiten, tot dit maximum
 BOOR_VRIJ_STAP_M = 0.5
 BOOR_VRIJ_MAX_M = 25.0
+BOOR_VRIJ_MARGE_M = 0.02  # net buiten de zonegrens, niet erop
+
+# gestuurde technieken: schuin intreden met een boog naar de boordiepte
+GESTUURD = {TECHNIEK_HDD: "hdd", TECHNIEK_NANO: "nanodrill"}
+# technieken met een kuip in de boorrichting: (lanceer-, ontvangstkuip)
+KUIP_NORM = {
+    TECHNIEK_PERSING: ("persing_perskuip_lengte_m", "persing_ontvangkuip_lengte_m"),
+    TECHNIEK_RAKET: ("raket_perskuip_lengte_m", "raket_ontvangkuip_lengte_m"),
+}
+TECHNIEK_ZWAARTE = {TECHNIEK_RAKET: 1, TECHNIEK_NANO: 2, TECHNIEK_PERSING: 3,
+                    TECHNIEK_HDD: 4}
+# referentie van de afstandseis en van de diepte-eis per obstakelsoort
+RAND_NAAM = {"rijbaan": "de kant verharding", "water": "de insteek",
+             "spoor": "hart spoor"}
+DIEPTE_BIJ = {"rijbaan": "de kant verharding", "water": "de waterlijn",
+              "spoor": "de spoorzone"}
 
 
-def boorvrij_toets(bgt: dict | None = None, grid: "Grid | None" = None):
-    """Toets of een in-/uittredepunt op vrij terrein ligt.
+def _nl(x: float, dec: int = 1) -> str:
+    return f"{x:.{dec}f}".rstrip("0").rstrip(".").replace(".", ",") if dec else f"{x:.0f}"
 
-    Vrij = niet in een wegdeel (rijbaan, fietspad, voetpad, parkeervlak, …),
-    niet in water of de oeverzone (talud/onderhoudspad), niet binnen de
-    spoorzone en niet tegen een pand of andere harde uitsluiting. Berm en
-    (on)begroeid terrein zijn vrij. Retourneert een functie Point → bool.
+
+def _n(rid: str) -> float:
+    return float(normen.waarde(rid))
+
+
+def _is_rijbaan(props: dict) -> bool:
+    functie = (props.get("functie") or "").lower()
+    return WEGDEEL_FUNCTIE.get(functie) is None and ("rijbaan" in functie or "baan" in functie)
+
+
+def buis_diameter_m(techniek: str) -> float:
+    """Buitendiameter van de (buitenste) buis van één circuit."""
+    hdpe = mantelbuizen.kleinste_hdpe(1)
+    if techniek == TECHNIEK_PERSING:  # stalen mantelbuis
+        return mantelbuizen.kleinste_staal(1, hdpe["diameter_mm"])["diameter_mm"] / 1000.0
+    return hdpe["diameter_mm"] / 1000.0
+
+
+def boor_diepte_m(techniek: str, soort: str, primair: bool = False) -> float:
+    """Diepte van de onderkant van de buis onder maaiveld bij de obstakelrand."""
+    d = buis_diameter_m(techniek)
+    if soort == "water":
+        dekking = _n("boring_dekking_water_primair_m" if primair else "boring_dekking_water_m")
+        return _n("watergang_diepte_m") + dekking + d
+    if soort == "spoor":
+        if techniek in GESTUURD:
+            return max(_n("hdd_diepte_spoor_m"), d)
+        return _n("persing_dekking_spoor_m") + d
+    return _n("boring_dekking_rijbaan_m") + d
+
+
+def aanloop_m(diepte: float, hoek_gr: float, straal_m: float) -> float:
+    """Horizontale afstand van intredepunt tot het punt waar een gestuurde
+    boring op `diepte` ligt: recht stuk onder de intredehoek, dan een boog
+    met `straal_m` naar horizontaal. Is de boog alleen al dieper dan nodig,
+    dan intreden onder de vlakkere hoek waarbij de boog precies uitkomt."""
+    a = math.radians(hoek_gr)
+    boog = straal_m * (1 - math.cos(a))
+    if diepte <= boog:
+        a2 = math.acos(1 - diepte / straal_m)
+        return straal_m * math.sin(a2)
+    recht = (diepte - boog) / math.sin(a)
+    return recht * math.cos(a) + straal_m * math.sin(a)
+
+
+def boogstraal_m(techniek: str) -> float:
+    pre = GESTUURD[techniek]
+    pe = _n("pe_buigstraal_factor") * mantelbuizen.kleinste_hdpe(1)["diameter_mm"] / 1000.0
+    return max(_n(f"{pre}_boorstang_straal_m"), pe)
+
+
+def kuip_m(techniek: str) -> tuple:
+    """Lengte van lanceer- en ontvangstkuip in de boorrichting (0 = alleen
+    een put op het in-/uittredepunt)."""
+    k = KUIP_NORM.get(techniek)
+    return (_n(k[0]), _n(k[1])) if k else (0.0, 0.0)
+
+
+def ontgraving_m(techniek: str, soort: str, primair: bool = False) -> float:
+    """Diepte van de kuip of put op het in-/uittredepunt."""
+    if techniek in GESTUURD:
+        return _n("boorput_diepte_m")
+    # persing en raket lopen horizontaal: de kuip gaat tot onder de buis
+    return boor_diepte_m(techniek, soort, primair) + _n("kuip_werkruimte_m")
+
+
+def zone_afstand_m(soort: str, ontgraving: float, primair: bool = False) -> float:
+    """Afstand van kuip/put tot de obstakelrand volgens de invloeds- of
+    druklijn van de beheerder (rand + talud × ontgravingsdiepte), bij water
+    de afstand tot de insteek."""
+    if soort == "water":
+        return _n("boring_afstand_insteek_primair_m" if primair else "boring_afstand_insteek_m")
+    if soort == "spoor":
+        # druklijn gemeten uit hart spoor; het obstakel is het spoor ± 2,5 m
+        return max(0.0, _n("boring_rand_spoor_m") - 2.5
+                   + _n("boring_talud_spoor") * ontgraving)
+    return _n("boring_rand_verharding_m") + _n("boring_talud_verharding") * ontgraving
+
+
+def uitloop_detail(techniek: str, soort: str = "rijbaan", kant: str = "in",
+                   primair: bool = False) -> tuple:
+    """(uitloop in m, maatgevende eis) van obstakelrand tot in-/uittredepunt.
+
+    De grootste van: de minimale uitloop van de techniek (richtlijn), de
+    afstand die de invloedslijn aan de kuip of put stelt, en bij gestuurde
+    technieken de aanloop tot de vereiste diepte bij de obstakelrand."""
+    ontgr = ontgraving_m(techniek, soort, primair)
+    zone = zone_afstand_m(soort, ontgr, primair)
+    rand = RAND_NAAM.get(soort, "de obstakelrand")
+    if soort == "water":
+        zone_tekst = (f"{_nl(zone)} m uit {rand}"
+                      + (" (beschermingszone A-watergang)" if primair else ""))
+    else:
+        lijn = "druklijn" if soort == "spoor" else "invloedslijn"
+        zone_tekst = (f"{'kuip' if techniek in KUIP_NORM else 'put'} "
+                      f"({_nl(ontgr)} m diep) buiten de {lijn}: "
+                      f"{_nl(zone)} m uit {rand}")
+    kandidaten = [(zone, zone_tekst)]
+    if techniek in GESTUURD:
+        pre = GESTUURD[techniek]
+        naam = "intrede" if kant == "in" else "uittrede"
+        hoek = _n(f"{pre}_{naam}hoek_gr")
+        straal = boogstraal_m(techniek)
+        diepte = boor_diepte_m(techniek, soort, primair)
+        a = aanloop_m(diepte, hoek, straal)
+        kandidaten.append((a, f"aanloop {_nl(a)} m: {_nl(hoek)}° {naam}hoek, "
+                              f"boogstraal {_nl(straal, 0)} m, {_nl(diepte)} m diep bij "
+                              f"{DIEPTE_BIJ.get(soort, 'de obstakelrand')}"))
+    # minimum van de techniek als laatste: bij gelijke waarde gaat de
+    # inhoudelijke eis voor in de motivering
+    kandidaten.append((BOOR_UITLOOP.get(techniek, BOOR_UITLOOP_DEFAULT),
+                       "minimale uitloop techniek (richtlijn)"))
+    u, reden = max(kandidaten, key=lambda k: k[0])
+    return round(u, 2), reden
+
+
+def uitloop_m(techniek: str, soort: str = "rijbaan", kant: str = "in",
+              primair: bool = False) -> float:
+    return uitloop_detail(techniek, soort, kant, primair)[0]
+
+
+def kruising_uitloop_m(c: dict, techniek: str | None = None, kant: str = "in") -> float:
+    """Uitloop van een kruising (dict) voor zijn eigen of een andere techniek."""
+    return uitloop_m(techniek or c["techniek"], c.get("soort", "rijbaan"), kant,
+                     bool(c.get("legger_verbiedt_open")))
+
+
+class BoorVrij:
+    """Vrij terrein voor een kuip of in-/uittredepunt.
+
+    Niet vrij: een rijbaan plus de invloedszone van de kuip (rand + talud ×
+    ontgravingsdiepte), een ander wegdeel (fiets-/voetpad, parkeervlak), een
+    watergang tot de insteek plus de afstand tot de insteek, het spoor tot
+    de druklijn en panden of andere harde uitsluitingen. Berm en
+    (on)begroeid terrein zijn vrij. Aanroepbaar als Point → bool; voor
+    exacte plaatsing levert ``blokkade(lijn)`` de verboden zone langs een
+    lijn als geometrie.
     """
-    geoms = []
-    if bgt:
-        for laag in ("waterdeel", "ondersteunendwaterdeel", "wegdeel"):
-            geoms.extend(g for g, _ in bgt.get(laag, []))
-        geoms.extend(g.buffer(2.5) for g, _ in bgt.get("spoor", []))
-    obst = prep(unary_union(geoms)) if geoms else None
-    hard = getattr(grid, "hard", None) if grid is not None else None
 
-    def vrij(p: Point) -> bool:
-        if obst is not None and obst.intersects(p):
-            return False
-        if hard is not None and hard.distance(p) < 0.1:
-            return False
-        return True
-    return vrij
+    def __init__(self, bgt: dict | None = None, grid: "Grid | None" = None,
+                 ontgraving: float | None = None, hard_buffer=None):
+        if ontgraving is None:
+            ontgraving = ontgraving_m(TECHNIEK_PERSING, "rijbaan")
+        geoms = []  # (geometrie, oorzaak)
+        if bgt:
+            w_rijbaan = zone_afstand_m("rijbaan", ontgraving)
+            for g, p in bgt.get("wegdeel", []):
+                if _is_rijbaan(p):
+                    geoms.append((g.buffer(w_rijbaan), "invloedszone rijbaan"))
+                else:
+                    geoms.append((g, (p.get("functie") or "wegdeel").lower()))
+            water = [g for laag in ("waterdeel", "ondersteunendwaterdeel")
+                     for g, _ in bgt.get(laag, [])]
+            if water:
+                # waterdeel + talud = tot de insteek; per aaneengesloten
+                # watergang bufferen
+                insteek = unary_union(water)
+                delen = insteek.geoms if hasattr(insteek, "geoms") else [insteek]
+                w_water = zone_afstand_m("water", ontgraving)
+                geoms.extend((d.buffer(w_water), "watergang tot insteek + afstandszone")
+                             for d in delen)
+            w_spoor = 2.5 + zone_afstand_m("spoor", ontgraving)
+            geoms.extend((g.buffer(w_spoor), "spoor tot druklijn") for g, _ in bgt.get("spoor", []))
+        if hard_buffer is None:
+            hard_buffer = _hard_buffer(grid)
+        if hard_buffer is not None:
+            geoms.extend((g, "pand/uitgesloten zone") for g in
+                         (hard_buffer.geoms if hasattr(hard_buffer, "geoms") else [hard_buffer]))
+        geoms = [(g, o) for g, o in geoms if not g.is_empty]
+        self._geoms = [g for g, _ in geoms]
+        self._oorzaak = [o for _, o in geoms]
+        self._boom = shapely.STRtree(self._geoms) if self._geoms else None
+        self.extra: list = []
+
+    def met_extra(self, geoms: list) -> "BoorVrij":
+        """Kopie met extra verboden zones (bijv. de beschermingszone van een
+        A-watergang rond de gekruiste watergang)."""
+        k = object.__new__(BoorVrij)
+        k.__dict__.update(self.__dict__)
+        k.extra = list(self.extra) + [g for g in geoms if g is not None and not g.is_empty]
+        return k
+
+    def _raak(self, geom, met_oorzaak: bool = False) -> list:
+        uit = [(g, "beschermingszone A-watergang") for g in self.extra]
+        if self._boom is not None:
+            uit.extend((self._geoms[i], self._oorzaak[i]) for i in self._boom.query(geom))
+        raak = [(g, o) for g, o in uit if g.intersects(geom)]
+        return raak if met_oorzaak else [g for g, _ in raak]
+
+    def oorzaken(self, geom) -> list:
+        """Welke verboden zones `geom` raakt (voor de motivering)."""
+        return list(dict.fromkeys(o for _, o in self._raak(geom, True)))
+
+    def __call__(self, p: Point) -> bool:
+        return not self._raak(p)
+
+    def blokkade(self, lijn: LineString):
+        raak = self._raak(lijn)
+        return unary_union(raak) if raak else None
+
+
+def _hard_buffer(grid):
+    hard = getattr(grid, "hard", None) if grid is not None else None
+    return hard.buffer(0.1) if hard is not None and not hard.is_empty else None
+
+
+def boorvrij_toets(bgt: dict | None = None, grid: "Grid | None" = None) -> BoorVrij:
+    """Toets of een kuip of in-/uittredepunt op vrij terrein ligt (``BoorVrij``,
+    invloedszone van een persingskuip onder een rijbaan)."""
+    return BoorVrij(bgt, grid)
+
+
+class VrijBron:
+    """``BoorVrij`` per techniek en kruising: de invloedszone rond een
+    rijbaan of spoor hangt af van de ontgravingsdiepte (een perskuip onder
+    een sloot is dieper dan de intredeput van een HDD), en een A-watergang
+    heeft een bredere beschermingszone. Gecachet per ontgravingsdiepte."""
+
+    def __init__(self, bgt: dict | None, grid: "Grid | None" = None):
+        self.bgt, self.grid = bgt, grid
+        self._hard = _hard_buffer(grid)
+        self._cache: dict = {}
+
+    def voor(self, techniek: str, soort: str = "rijbaan", primair: bool = False) -> BoorVrij:
+        k = round(ontgraving_m(techniek, soort, primair), 1)
+        if k not in self._cache:
+            self._cache[k] = BoorVrij(self.bgt, self.grid, k, self._hard)
+        return self._cache[k]
+
+    def kruising(self, c: dict, techniek: str | None = None) -> BoorVrij:
+        v = self.voor(techniek or c["techniek"], c.get("soort", "rijbaan"),
+                      bool(c.get("legger_verbiedt_open")))
+        return v.met_extra(_eigen_zone(c, self.bgt))
+
+
+def _vrije_intervallen(route: LineString, lo: float, hi: float, vrij) -> list | None:
+    """Vrije chainage-intervallen van het tracé tussen `lo` en `hi` (exact,
+    uit de geometrie van de verboden zones). None als `vrij` alleen een
+    punttoets is."""
+    if not hasattr(vrij, "blokkade") or hi - lo < 1e-6:
+        return None
+    deel = _substring(route, lo, hi)
+    blok = vrij.blokkade(deel)
+    if blok is None:
+        return [(lo, hi)]
+    inter = deel.intersection(blok)
+    stukken = [g for g in (inter.geoms if hasattr(inter, "geoms") else [inter])
+               if isinstance(g, LineString) and g.length > 1e-6]
+    bezet = sorted((min(deel.project(Point(s.coords[0])), deel.project(Point(s.coords[-1]))),
+                    max(deel.project(Point(s.coords[0])), deel.project(Point(s.coords[-1]))))
+                   for s in stukken)
+    vrije, cur = [], 0.0
+    for a, b in bezet:
+        if a > cur:
+            vrije.append((lo + cur, lo + a))
+        cur = max(cur, b)
+    if cur < deel.length:
+        vrije.append((lo + cur, lo + deel.length))
+    return vrije
 
 
 def boorspan(route: LineString, m0: float, m1: float, uitloop: float,
-             vrij=None) -> dict:
+             vrij=None, kuip: tuple = (0.0, 0.0),
+             uitloop_uit: float | None = None) -> dict:
     """In-/uittredepunt (chainage) van een boring onder obstakel [m0, m1].
 
-    Basis: de uitloop van de techniek vóór en na de obstakelrand, gemeten
-    langs het tracé. Ligt dat punt niet op vrij terrein (``vrij``), dan
-    schuift het in stappen van BOOR_VRIJ_STAP_M verder naar buiten, tot
-    BOOR_VRIJ_MAX_M; lukt dat niet, dan blijft het basispunt staan en wordt
+    Basis: de uitloop vóór en na de obstakelrand, gemeten langs het tracé
+    (`uitloop_uit` voor de uittredezijde, standaard gelijk aan `uitloop`).
+    Het punt én de kuip erachter (`kuip`: lengte lanceer- en ontvangstkuip
+    in de boorrichting) moeten op vrij terrein liggen (``vrij``); zo niet,
+    dan schuift het punt naar het eerste vrije stuk waar de kuip past —
+    exact op de rand van de verboden zone —, tot BOOR_VRIJ_MAX_M verder.
+    Lukt dat niet, dan blijft het basispunt staan en wordt
     ``vrij_in``/``vrij_uit`` False.
     """
     lengte = route.length
+    u_uit = uitloop if uitloop_uit is None else uitloop_uit
 
-    def zoek(m: float, richting: int) -> tuple:
-        basis = min(max(m, 0.0), lengte)
+    def klem(m):
+        return min(max(m, 0.0), lengte)
+
+    def zoek(m: float, richting: int, k: float) -> tuple:
+        basis = klem(m)
         if vrij is None:
             return basis, 0.0, True
-        d = 0.0
-        while d <= BOOR_VRIJ_MAX_M + 1e-9:
-            mm = basis + richting * d
-            if mm < 0.0 or mm > lengte:
-                break
-            if vrij(route.interpolate(mm)):
-                return mm, d, True
-            d += BOOR_VRIJ_STAP_M
-        return basis, 0.0, False
+        eind = klem(basis + richting * (BOOR_VRIJ_MAX_M + k + 1.0))
+        intervallen = _vrije_intervallen(route, min(basis, eind), max(basis, eind), vrij)
+        if intervallen is None:  # alleen een punttoets: stapsgewijs
+            d = 0.0
+            while d <= BOOR_VRIJ_MAX_M + 1e-9:
+                mm = basis + richting * d
+                if mm < 0.0 or mm > lengte:
+                    break
+                if vrij(route.interpolate(mm)) and \
+                        vrij(route.interpolate(klem(mm + richting * k))):
+                    return mm, d, True
+                d += BOOR_VRIJ_STAP_M
+            return basis, 0.0, False
+        beste = None
+        for a, b in intervallen:
+            if richting < 0:
+                if a <= basis <= b:
+                    p = basis
+                else:
+                    p = b - BOOR_VRIJ_MARGE_M
+                if p - k < a - 1e-9 or p > basis + 1e-9:
+                    continue
+                d = basis - p
+            else:
+                if a <= basis <= b:
+                    p = basis
+                else:
+                    p = a + BOOR_VRIJ_MARGE_M
+                if p + k > b + 1e-9 or p < basis - 1e-9:
+                    continue
+                d = p - basis
+            if d <= BOOR_VRIJ_MAX_M + 1e-9 and (beste is None or d < beste[1]):
+                beste = (p, d)
+        if beste is None:
+            return basis, 0.0, False
+        return beste[0], beste[1], True
 
-    m_in, v_in, ok_in = zoek(m0 - uitloop, -1)
-    m_uit, v_uit, ok_uit = zoek(m1 + uitloop, +1)
+    k_in, k_uit = kuip
+    m_in, v_in, ok_in = zoek(m0 - uitloop, -1, k_in)
+    m_uit, v_uit, ok_uit = zoek(m1 + u_uit, +1, k_uit)
     return {"m_in": m_in, "m_uit": m_uit,
+            "m_basis_in": klem(m0 - uitloop), "m_basis_uit": klem(m1 + u_uit),
+            "m_kuip_in": klem(m_in - k_in), "m_kuip_uit": klem(m_uit + k_uit),
             "verschoven_in_m": round(v_in, 1), "verschoven_uit_m": round(v_uit, 1),
             "vrij_in": ok_in, "vrij_uit": ok_uit}
 
 
+def _eigen_zone(c: dict, bgt: dict | None):
+    """Extra verboden zone rond de gekruiste watergang als die primair is:
+    de beschermingszone van een A-watergang is breder dan de standaard
+    afstand tot de insteek."""
+    if not bgt or c.get("soort") != "water" or not c.get("legger_verbiedt_open"):
+        return []
+    p = Point(c["punt"])
+    water = [g for laag in ("waterdeel", "ondersteunendwaterdeel")
+             for g, _ in bgt.get(laag, []) if g.distance(p) < 30.0]
+    if not water:
+        return []
+    return [unary_union(water).buffer(_n("boring_afstand_insteek_primair_m"))]
+
+
 def bepaal_boorpunten(route: LineString, crossings: list, bgt: dict | None = None,
                       grid: "Grid | None" = None) -> set:
-    """In-/uittredepunt per sleufloze kruising vastleggen (in place).
+    """In-/uittredepunt en kuipen per sleufloze kruising vastleggen (in place).
 
     Per kruising en per techniek (de definitieve techniek kan bij het
-    groeperen tot boringen nog opschalen): uitloop vanaf de obstakelrand,
-    verschoven naar vrij terrein (``boorspan``). De punten worden als
-    RD-coördinaat bewaard — ``boor_punten[techniek]`` en, voor de eigen
-    techniek, ``boor_in_rd``/``boor_uit_rd`` — zodat ze na het samenvoegen en
+    groeperen tot boringen nog opschalen): uitloop vanaf de obstakelrand
+    volgens de boorgeometrie en de invloedslijn van de beheerder
+    (``uitloop_detail``), verschoven naar vrij terrein waar ook de kuip
+    past (``boorspan``). De punten worden als RD-coördinaat bewaard —
+    ``boor_punten[techniek]`` en, voor de eigen techniek,
+    ``boor_in_rd``/``boor_uit_rd`` — zodat ze na het samenvoegen en
     normaliseren van deeltrajecten exact op het tracé terug te vinden zijn;
     een chainage verschuift dan, een coördinaat niet.
 
@@ -926,9 +1503,13 @@ def bepaal_boorpunten(route: LineString, crossings: list, bgt: dict | None = Non
     het normaliseren niet meer verschuiven (``maatvoering.normaliseer_route``,
     parameter ``vast``).
     """
-    vrij = boorvrij_toets(bgt, grid)
+    bron = VrijBron(bgt, grid)
     hoekpunten = [(route.project(Point(xy)), xy) for xy in route.coords]
     vast: set = set()
+
+    def rd(p):
+        return (round(p.x, 2), round(p.y, 2))
+
     for c in crossings:
         if c.get("techniek") not in BOOR_UITLOOP:
             for k in ("boor_punten", "boor_in_rd", "boor_uit_rd"):
@@ -936,17 +1517,38 @@ def bepaal_boorpunten(route: LineString, crossings: list, bgt: dict | None = Non
             continue
         punten = {}
         m_min, m_max = route.length, 0.0
-        for techniek, uitloop in BOOR_UITLOOP.items():
-            s = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], uitloop, vrij)
-            p_in, p_uit = route.interpolate(s["m_in"]), route.interpolate(s["m_uit"])
+        for techniek in BOOR_UITLOOP:
+            vrij = bron.kruising(c, techniek)
+            u_in, r_in = uitloop_detail(techniek, c["soort"], "in",
+                                        bool(c.get("legger_verbiedt_open")))
+            u_uit, r_uit = uitloop_detail(techniek, c["soort"], "uit",
+                                          bool(c.get("legger_verbiedt_open")))
+            kuip = kuip_m(techniek)
+            s = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], u_in, vrij,
+                         kuip, u_uit)
+            oorzaak = {}
+            for kant, m_b, k, r in (("in", s["m_basis_in"], kuip[0], -1),
+                                    ("uit", s["m_basis_uit"], kuip[1], +1)):
+                if s[f"verschoven_{kant}_m"] and hasattr(vrij, "oorzaken"):
+                    stuk = _substring(route, *sorted((m_b, min(max(m_b + r * k, 0.0),
+                                                                route.length))))
+                    oorzaak[kant] = ", ".join(vrij.oorzaken(
+                        stuk if stuk.length > 1e-6 else route.interpolate(m_b)))
             punten[techniek] = {
-                "in_rd": (round(p_in.x, 2), round(p_in.y, 2)),
-                "uit_rd": (round(p_uit.x, 2), round(p_uit.y, 2)),
+                "in_rd": rd(route.interpolate(s["m_in"])),
+                "oorzaak_in": oorzaak.get("in", ""), "oorzaak_uit": oorzaak.get("uit", ""),
+                "uit_rd": rd(route.interpolate(s["m_uit"])),
+                "uitloop_in_m": u_in, "uitloop_uit_m": u_uit,
+                "eis_in": r_in, "eis_uit": r_uit,
                 "verschoven_in_m": s["verschoven_in_m"],
                 "verschoven_uit_m": s["verschoven_uit_m"],
                 "vrij_in": s["vrij_in"], "vrij_uit": s["vrij_uit"],
             }
-            m_min, m_max = min(m_min, s["m_in"]), max(m_max, s["m_uit"])
+            if kuip[0] > 0:
+                punten[techniek]["kuip_in_rd"] = rd(route.interpolate(s["m_kuip_in"]))
+            if kuip[1] > 0:
+                punten[techniek]["kuip_uit_rd"] = rd(route.interpolate(s["m_kuip_uit"]))
+            m_min, m_max = min(m_min, s["m_kuip_in"]), max(m_max, s["m_kuip_uit"])
         c["boor_punten"] = punten
         c["boor_in_rd"] = punten[c["techniek"]]["in_rd"]
         c["boor_uit_rd"] = punten[c["techniek"]]["uit_rd"]
@@ -959,6 +1561,66 @@ def bepaal_boorpunten(route: LineString, crossings: list, bgt: dict | None = Non
         for i in binnen + [i for i in (i_voor, i_na) if i is not None]:
             vast.add(tuple(hoekpunten[i][1]))
     return vast
+
+
+# ---------------------------------------------------------------------------
+# Kruisingshoek: boringen en persingen haaks op weg, water en spoor
+# ---------------------------------------------------------------------------
+
+def haakse_richting(obs, c: Point, zoek_m: float = 80.0) -> tuple | None:
+    """Richting (eenheidsvector) van de kortste koorde door het obstakel
+    via punt `c` — dat is haaks op de as van de weg, watergang of het spoor
+    ter plaatse, ook in een bocht. None als `c` niet in het obstakel ligt."""
+    lokaal = obs.intersection(c.buffer(zoek_m))
+    if lokaal.is_empty or lokaal.distance(c) > 0.05:
+        return None
+
+    def koorde(theta: float) -> float:
+        dx, dy = math.cos(theta), math.sin(theta)
+        lijn = LineString([(c.x - zoek_m * dx, c.y - zoek_m * dy),
+                           (c.x + zoek_m * dx, c.y + zoek_m * dy)])
+        inter = lijn.intersection(lokaal)
+        best = math.inf
+        for g in (inter.geoms if hasattr(inter, "geoms") else [inter]):
+            if isinstance(g, LineString) and g.distance(c) < 0.05:
+                best = min(best, g.length)
+        return best
+
+    stap = math.radians(3.0)
+    hoeken = [i * stap for i in range(60)]
+    lengtes = [koorde(t) for t in hoeken]
+    i = min(range(len(hoeken)), key=lambda k: lengtes[k])
+    if not math.isfinite(lengtes[i]):
+        return None
+    beste = hoeken[i]
+    fijn = math.radians(0.25)
+    for k in range(-12, 13):
+        t = hoeken[i] + k * fijn
+        lt = koorde(t)
+        if lt < lengtes[i] - 1e-9:
+            beste, lengtes[i] = t, lt
+    return math.cos(beste), math.sin(beste), lengtes[i]
+
+
+def kruisingshoek_gr(richting: tuple, haaks: tuple) -> float:
+    """Hoek (°) tussen de boorlijn en de as van het obstakel: 90 = haaks."""
+    n = math.hypot(*richting)
+    if n < 1e-9:
+        return 90.0
+    cos = abs(richting[0] * haaks[0] + richting[1] * haaks[1]) / n
+    return round(90.0 - math.degrees(math.acos(min(1.0, cos))), 1)
+
+
+def _passagemidden(route: LineString, m0: float, m1: float, obs) -> Point:
+    """Midden van het langste stuk tracé binnen het obstakel in [m0, m1]."""
+    deel = _substring(route, m0, m1)
+    inter = deel.intersection(obs)
+    stukken = [g for g in (inter.geoms if hasattr(inter, "geoms") else [inter])
+               if isinstance(g, LineString) and g.length > 0]
+    if not stukken:
+        return route.interpolate((m0 + m1) / 2)
+    s = max(stukken, key=lambda g: g.length)
+    return s.interpolate(0.5, normalized=True)
 
 
 # Beslisdrempels (m, gemeten langs het tracé): tot waar een open kruising de
@@ -1025,7 +1687,10 @@ WERKTERREIN_EIS = {
     TECHNIEK_NANO: {"intrede_m2": 40, "uittrede_m2": 15, "zoekstraal_m": 15},
     TECHNIEK_RAKET: {"intrede_m2": 12, "uittrede_m2": 12, "zoekstraal_m": 12},
 }
-RAKET_MAX_BOORLENGTE_M = 18.0  # ongestuurd: alleen korte kruisingen
+# ongestuurd: alleen korte kruisingen. Boorlengte = kuip tot kuip; impact
+# molling ≤ 160 mm reikt praktisch tot ca. 25 m (WarmingUp 2B2 bijlage 4
+# noemt tot ca. 60 m, maar zonder sturing loopt de afwijking snel op)
+RAKET_MAX_BOORLENGTE_M = 25.0
 
 # cellen waarop een werkterrein kan worden ingericht; privaat terrein telt
 # mee maar vraagt toestemming (opmerking in het register)
@@ -1201,8 +1866,9 @@ def _dwarsbreedte(route: LineString, m0: float, m1: float, obs) -> float:
     return 2.0 * diepte
 
 
-def detect_crossings(route: LineString, bgt: dict) -> list:
-    """Kruisingen van het tracé met water, rijbaan en spoor, met techniekvoorstel."""
+def kruisingsobstakels(bgt: dict) -> tuple:
+    """Obstakels die een kruising vormen, per soort (water, rijbaan, spoor),
+    plus de losse rijbaandelen (prepared, functie, verharding)."""
     obstakels = {}
     # alleen het waterdeel zelf: de oeverzone (ondersteunendwaterdeel) kruisen
     # is geen waterkruising en rechtvaardigt geen boring
@@ -1212,13 +1878,22 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
     rijbanen = []
     rijbaan_delen = []  # (prepared, functie, fysiek_voorkomen) voor de kenmerken
     for g, p in bgt.get("wegdeel", []):
-        functie = (p.get("functie") or "").lower()
-        if WEGDEEL_FUNCTIE.get(functie) is None and ("rijbaan" in functie or "baan" in functie):
+        if _is_rijbaan(p):
             rijbanen.append(g)
-            rijbaan_delen.append((prep(g), functie,
+            rijbaan_delen.append((prep(g), (p.get("functie") or "").lower(),
                                   (p.get("fysiek_voorkomen") or "").lower() or None))
     if rijbanen:
         obstakels["rijbaan"] = unary_union(rijbanen)
+    spoor = [g.buffer(2.5) for g, p in bgt.get("spoor", [])]
+    if spoor:
+        obstakels["spoor"] = unary_union(spoor)
+    return obstakels, rijbaan_delen
+
+
+def detect_crossings(route: LineString, bgt: dict) -> list:
+    """Kruisingen van het tracé met water, rijbaan en spoor, met techniekvoorstel
+    en de kruisingshoek (90° = haaks op de as van het obstakel)."""
+    obstakels, rijbaan_delen = kruisingsobstakels(bgt)
 
     def wegkenmerken(m0: float, m1: float) -> dict:
         """Verharding en wegfunctie van de gekruiste wegdelen (BGT): de
@@ -1234,9 +1909,6 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
                     verhardingen.add(verharding)
         return {"verharding": _zwaarste(verhardingen, VERHARDING_RANG),
                 "wegfunctie": _zwaarste(functies, WEGFUNCTIE_RANG)}
-    spoor = [g.buffer(2.5) for g, p in bgt.get("spoor", [])]
-    if spoor:
-        obstakels["spoor"] = unary_union(spoor)
 
     crossings = []
     for soort, obs in obstakels.items():
@@ -1270,6 +1942,9 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
             p0, p1 = route.interpolate(m0), route.interpolate(m1)
             kenmerken = wegkenmerken(m0, m1) if soort == "rijbaan" else {}
             voorstel = _techniek_voor_kruising(soort, round(dwars, 1), kenmerken)
+            haaks = haakse_richting(obs, _passagemidden(route, m0, m1, obs))
+            hoek = (kruisingshoek_gr((p1.x - p0.x, p1.y - p0.y), haaks[:2])
+                    if haaks else None)
             c = {
                 "soort": soort,
                 "breedte_m": round(dwars, 1),
@@ -1281,6 +1956,7 @@ def detect_crossings(route: LineString, bgt: dict) -> list:
                 "van_rd": (round(p0.x, 2), round(p0.y, 2)),
                 "tot_rd": (round(p1.x, 2), round(p1.y, 2)),
                 "punt": (round(mid.x, 2), round(mid.y, 2)),
+                "kruisingshoek_gr": hoek,
                 **kenmerken,
                 **voorstel,
             }
@@ -1543,12 +2219,14 @@ def beoordeel_werkterreinen(route: LineString, crossings: list, grid: Grid,
     Gemeten op het werkelijke in-/uittredepunt (``boorspan``: uitloop van de
     techniek, verschoven naar vrij terrein als ``bgt`` is meegegeven).
     """
-    vrij = boorvrij_toets(bgt, grid) if bgt else None
+    bron = VrijBron(bgt, grid) if bgt else None
 
     def toets(techniek, c):
         eis = WERKTERREIN_EIS[techniek]
-        uitloop = BOOR_UITLOOP.get(techniek, BOOR_UITLOOP_DEFAULT)
-        span = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], uitloop, vrij)
+        span = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"],
+                        kruising_uitloop_m(c, techniek, "in"),
+                        bron.kruising(c, techniek) if bron else None, kuip_m(techniek),
+                        kruising_uitloop_m(c, techniek, "uit"))
         p_in, p_uit = route.interpolate(span["m_in"]), route.interpolate(span["m_uit"])
         m2_in, prive_in = _werkruimte_m2(grid, p_in, eis["zoekstraal_m"])
         m2_uit, prive_uit = _werkruimte_m2(grid, p_uit, eis["zoekstraal_m"])
@@ -1578,7 +2256,8 @@ def beoordeel_werkterreinen(route: LineString, crossings: list, grid: Grid,
                                              or c.get("sleufloos_verplicht")):
                     continue  # A-watergang / rijks-, provinciale of stroomweg: open blijft verboden
                 boorlengte = (c.get("kruislengte_m", c["breedte_m"])
-                              + 2 * BOOR_UITLOOP.get(alt, BOOR_UITLOOP_DEFAULT))
+                              + kruising_uitloop_m(c, alt, "in")
+                              + kruising_uitloop_m(c, alt, "uit"))
                 if alt == TECHNIEK_RAKET and boorlengte > RAKET_MAX_BOORLENGTE_M:
                     continue
                 if alt == TECHNIEK_OPEN:
@@ -1626,15 +2305,191 @@ def beoordeel_werkterreinen(route: LineString, crossings: list, grid: Grid,
 
 
 OPEN_UITLOOP = 2.0  # open kruising: alleen de directe aanloop haaks trekken
+# haakse boorlijn: zoekvenster langs het tracé voor de aansluiting op de
+# kuip/het intredepunt, en verschuivingen van het kruispunt langs de as
+# van het obstakel als de haakse lijn op de plek zelf niet vrij ligt
+HAAKS_AANSLUIT_M = 60.0
+HAAKS_SCHUIF_M = (0.0, 2.0, -2.0, 4.0, -4.0, 6.0, -6.0, 8.0, -8.0)
+SOORT_ZWAARTE = {"spoor": 3, "water": 2, "rijbaan": 1}
+# aansluiting tracé → kuip: bochten tot 120° (een haakse aanloop langs een
+# sloot vraagt vaak ruim 90°); scherper wordt een haarspeld
+HAAKS_MAX_KNIK_COS = -0.5
+
+
+def _ligt_recht(route: LineString, a: float, b: float, tol: float = 0.25) -> bool:
+    """Ligt het tracé tussen chainage a en b (op `tol` na aan de uiteinden)
+    al op één rechte lijn?"""
+    if b - a <= 2 * tol:
+        return True
+    deel = _substring(route, a + tol, b - tol)
+    koorde = LineString([deel.coords[0], deel.coords[-1]])
+    return all(koorde.distance(Point(xy)) < 0.02 for xy in deel.coords[1:-1])
+
+
+def _rechte_span(route: LineString, c: dict, vrij, marge: bool = True) -> tuple:
+    """Chainages van kuip tot kuip die recht moeten liggen: de uitloop van
+    de voorgestelde techniek en met `marge` minimaal die van de nanodrill —
+    als de werkterrein-toets later naar een alternatief wisselt, blijft de
+    boorlijn op het rechte stuk."""
+    t = c["techniek"]
+    u_in, u_uit = kruising_uitloop_m(c, t, "in"), kruising_uitloop_m(c, t, "uit")
+    if marge:
+        u_in = max(u_in, kruising_uitloop_m(c, TECHNIEK_NANO, "in"))
+        u_uit = max(u_uit, kruising_uitloop_m(c, TECHNIEK_NANO, "uit"))
+    v = vrij.kruising(c, t) if isinstance(vrij, VrijBron) else vrij
+    s = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], u_in, v, kuip_m(t), u_uit)
+    return s["m_kuip_in"], s["m_kuip_uit"]
+
+
+def _aansluiting(route: LineString, doel: Point, m_van: float, m_tot: float,
+                 ingang: bool, richting: tuple, grid, kern, recht_kan) -> float | None:
+    """Chainage waar het tracé aansluit op kuip/intredepunt `doel`.
+
+    Ingang: het tracé blijft tot m en loopt dan recht naar `doel`; uitgang:
+    van `doel` recht naar m en dan het tracé verder. Gekozen wordt de m met
+    de laagste kosten (behouden tracé + aansluitlijn, over het raster), met
+    een aansluitlijn die geen weg, water of spoor raakt, niet door een
+    uitgesloten cel loopt en niet terugknikt tegen de boorrichting in."""
+    if m_tot < m_van:
+        return None
+    ms = sorted(set([m_van, m_tot] + list(np.arange(m_van, m_tot, 0.5))
+                    + [m for m in (route.project(Point(xy)) for xy in route.coords)
+                       if m_van < m < m_tot]))
+    pts = [route.interpolate(m) for m in ms]
+
+    def kost(p, q) -> float:
+        if grid is None:
+            return p.distance(q)
+        return _straight_cost(grid, (p.x, p.y), (q.x, q.y))
+
+    stuk = [0.0] + [kost(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+    cum = np.cumsum(stuk)
+    beste = None
+    for i, (m, p) in enumerate(zip(ms, pts)):
+        behouden = cum[i] if ingang else cum[-1] - cum[i]
+        if not math.isfinite(behouden):
+            continue
+        dx, dy = (doel.x - p.x, doel.y - p.y) if ingang else (p.x - doel.x, p.y - doel.y)
+        lengte = math.hypot(dx, dy)
+        if lengte > 0.05:
+            if (dx * richting[0] + dy * richting[1]) / lengte < HAAKS_MAX_KNIK_COS:
+                continue  # knikt (bijna) terug tegen de boorrichting in
+            lijn = LineString([(p.x, p.y), (doel.x, doel.y)])
+            if kern is not None and kern.intersects(lijn):
+                continue
+            if not recht_kan(p, doel):
+                continue
+            extra = kost(p, doel)
+        else:
+            extra = 0.0
+        totaal = behouden + extra
+        if math.isfinite(totaal) and (beste is None or totaal < beste[1] - 1e-9):
+            beste = (m, totaal)
+    return beste[0] if beste else None
+
+
+def _haakse_vervanging(route: LineString, groep: list, m_van: float, m_tot: float,
+                       grid, vrij, obstakels: dict, kern, recht_kan) -> tuple | None:
+    """Boorlijn haaks op het obstakel leggen in plaats van langs het (schuine)
+    tracé: kortste koorde door het zwaarste obstakel van de groep, in- en
+    uittredepunt en kuipen daarop geplaatst (``boorspan`` langs de haakse
+    as), en het tracé aan beide kanten aangesloten. Retourneert
+    (m_a, m_b, [kuip_in, kuip_uit], hoek_voor) of None als de kruising al
+    haaks genoeg is of een haakse lijn hier niet past."""
+    sleuf = [c for c in groep if c["techniek"] != TECHNIEK_OPEN]
+    if not sleuf:
+        return None
+    hoofd = max(sleuf, key=lambda c: (SOORT_ZWAARTE.get(c["soort"], 0), c["breedte_m"]))
+    obs = obstakels.get(hoofd["soort"])
+    if obs is None:
+        return None
+    C = _passagemidden(route, hoofd["chainage_van_m"], hoofd["chainage_tot_m"], obs)
+    r = haakse_richting(obs, C)
+    if r is None:
+        return None
+    ux, uy, _ = r
+    a, b = route.interpolate(hoofd["chainage_van_m"]), route.interpolate(hoofd["chainage_tot_m"])
+    if (b.x - a.x) * ux + (b.y - a.y) * uy < 0:
+        ux, uy = -ux, -uy
+    hoek = kruisingshoek_gr((b.x - a.x, b.y - a.y), (ux, uy))
+    if hoek >= 90.0 - _n("boring_kruisingshoek_tolerantie_gr"):
+        return None  # al (vrijwel) haaks: geen omweg nodig
+
+    m0g = min(c["chainage_van_m"] for c in groep)
+    m1g = max(c["chainage_tot_m"] for c in groep)
+    per_soort = {}
+    for c in sleuf:
+        if c["soort"] in obstakels:
+            per_soort.setdefault(c["soort"], c)
+    groep_obs = [(s, obstakels[s]) for s in per_soort]
+    t = max((c["techniek"] for c in sleuf), key=lambda x: TECHNIEK_ZWAARTE.get(x, 0))
+    kuip = kuip_m(t)
+    bereik = (m1g - m0g) / 2 + 2.0
+    L = (m1g - m0g) + 2 * (BOOR_VRIJ_MAX_M + 60.0 + max(kuip))
+    ax, ay = -uy, ux
+    for schuif in HAAKS_SCHUIF_M:
+        cx, cy = C.x + schuif * ax, C.y + schuif * ay
+        if schuif and not obs.covers(Point(cx, cy)):
+            continue
+        as_lijn = LineString([(cx - L * ux, cy - L * uy), (cx + L * ux, cy + L * uy)])
+        stukken = []  # (t0, t1, soort) langs de as
+        for soort, g in groep_obs:
+            inter = as_lijn.intersection(g)
+            for s in (inter.geoms if hasattr(inter, "geoms") else [inter]):
+                if isinstance(s, LineString) and s.length > 0.05:
+                    t0 = as_lijn.project(Point(s.coords[0]))
+                    t1 = as_lijn.project(Point(s.coords[-1]))
+                    t0, t1 = min(t0, t1), max(t0, t1)
+                    if t1 >= L - bereik and t0 <= L + bereik:
+                        stukken.append((t0, t1, soort))
+        if not any(t0 - 0.05 <= L <= t1 + 0.05 for t0, t1, _ in stukken):
+            continue
+        t_lo, _, s_lo = min(stukken)
+        _, t_hi, s_hi = max(stukken, key=lambda s: s[1])
+        c_lo, c_hi = per_soort[s_lo], per_soort[s_hi]
+        # uitloop van de eigen techniek: een haakse lijn met nanodrill-marge
+        # zou een onnodig lange omweg geven
+        u_in = kruising_uitloop_m(c_lo, t, "in")
+        u_uit = kruising_uitloop_m(c_hi, t, "uit")
+        if isinstance(vrij, VrijBron):
+            v = vrij.voor(t, hoofd["soort"], bool(hoofd.get("legger_verbiedt_open")))
+            v = v.met_extra([z for c in sleuf for z in _eigen_zone(c, vrij.bgt)])
+        else:
+            v = vrij
+        s = boorspan(as_lijn, t_lo, t_hi, u_in, v, kuip, u_uit)
+        if not (s["vrij_in"] and s["vrij_uit"]):
+            continue
+        k_in = as_lijn.interpolate(s["m_kuip_in"])
+        k_uit = as_lijn.interpolate(s["m_kuip_uit"])
+        if not recht_kan(k_in, k_uit):
+            continue
+        m_a = _aansluiting(route, k_in, max(m_van, m0g - HAAKS_AANSLUIT_M), m0g, True,
+                           (ux, uy), grid, kern, recht_kan)
+        if m_a is None:
+            continue
+        m_b = _aansluiting(route, k_uit, m1g, min(m_tot, m1g + HAAKS_AANSLUIT_M), False,
+                           (ux, uy), grid, kern, recht_kan)
+        if m_b is None:
+            continue
+        return m_a, m_b, [k_in, k_uit], hoek
+    return None
 
 
 def straighten_crossings(route: LineString, crossings: list,
-                         grid: Grid | None = None, vrij=None) -> LineString:
+                         grid: Grid | None = None, vrij=None,
+                         obstakels: dict | None = None) -> LineString:
     """Kruisingssegmenten vervangen door een rechte lijn (boring/persing is recht).
 
-    Recht over de volledige boorlengte — van intrede- tot uittredepunt, met de
-    uitloop van de voorgestelde techniek en verschoven naar vrij terrein
+    Recht over de volledige boorlengte — van kuip tot kuip, met de uitloop
+    van de voorgestelde techniek en verschoven naar vrij terrein
     (``boorspan`` met ``vrij``) — zodat de boring exact op het tracé ligt.
+
+    Haaks: kruist het tracé een weg, watergang of spoor schuiner dan de
+    tolerantie (norm ``boring_kruisingshoek_tolerantie_gr``) en is
+    ``obstakels`` meegegeven, dan wordt de boorlijn haaks op het obstakel
+    gelegd en het tracé erop aangesloten (``_haakse_vervanging``) — RWS,
+    ProRail en de waterschappen vragen een loodrechte kruising.
+
     Als de rechte vervanging door een uitgesloten cel loopt (bijvoorbeeld
     een gebouwhoek), schuift het in-/uittredepunt naar buiten tot de rechte
     lijn wél vrij ligt; lukt ook dat niet, dan blijft het oorspronkelijke
@@ -1658,25 +2513,27 @@ def straighten_crossings(route: LineString, crossings: list,
                 return False
         return True
 
-    spans = []
+    spans = []  # (a, b, kruising, a_eigen, b_eigen): met en zonder nanodrill-marge
     for c in crossings:
         if c["techniek"] == TECHNIEK_OPEN:
-            spans.append((c["chainage_van_m"] - OPEN_UITLOOP,
-                          c["chainage_tot_m"] + OPEN_UITLOOP))
+            a, b = (c["chainage_van_m"] - OPEN_UITLOOP, c["chainage_tot_m"] + OPEN_UITLOOP)
+            spans.append((a, b, c, a, b))
             continue
-        # minimaal de nanodrill-uitloop: als de werkterrein-toets later
-        # naar een alternatief wisselt, blijft de boorlijn op het tracé
-        u = max(BOOR_UITLOOP.get(c["techniek"], BOOR_UITLOOP_DEFAULT),
-                BOOR_UITLOOP[TECHNIEK_NANO])
-        span = boorspan(route, c["chainage_van_m"], c["chainage_tot_m"], u, vrij)
-        spans.append((span["m_in"], span["m_uit"]))
-    spans.sort()
+        a, b = _rechte_span(route, c, vrij)
+        spans.append((a, b, c, *_rechte_span(route, c, vrij, marge=False)))
+    spans.sort(key=lambda s: s[0])
     merged = []
-    for s in spans:
-        if merged and s[0] <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], s[1]))
+    for a, b, c, ae, be in spans:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+            merged[-1][2].append(c)
+            merged[-1][3] = min(merged[-1][3], ae)
+            merged[-1][4] = max(merged[-1][4], be)
         else:
-            merged.append(list(s))
+            merged.append([a, b, [c], ae, be])
+    kern = None
+    if obstakels:
+        kern = prep(unary_union(list(obstakels.values())))
     # als de exacte koorde niet vrij is (bijv. een gebouwhoek), het in-/
     # uittredepunt stapsgewijs naar buiten verschuiven tot de rechte lijn
     # wél vrij ligt — de boring moet recht, dus het punt schuift, niet de lijn
@@ -1684,12 +2541,50 @@ def straighten_crossings(route: LineString, crossings: list,
                       (4.0, 2.0), (2.0, 4.0), (4.0, 4.0), (6.0, 4.0),
                       (4.0, 6.0), (6.0, 6.0), (8.0, 8.0))
     coords: list = []
+    overslaan = [None]  # aansluitpunt dat te dicht bij een kuip ligt
+
+    def voeg(pts):
+        for p in pts:
+            xy = (p.x, p.y) if isinstance(p, Point) else tuple(p)
+            if overslaan[0] is not None:
+                sla, overslaan[0] = overslaan[0], None
+                if math.hypot(xy[0] - sla[0], xy[1] - sla[1]) < 1e-6:
+                    continue
+            if not coords or math.hypot(xy[0] - coords[-1][0], xy[1] - coords[-1][1]) > 1e-6:
+                coords.append(xy)
+
     cursor = 0.0
-    for m0, m1 in merged:
+    for i, (m0, m1, groep, m0_eigen, m1_eigen) in enumerate(merged):
         a, b = max(0.0, m0), min(route.length, m1)
         if b <= cursor:
             continue
         a = max(a, cursor)
+        if obstakels:
+            volgende = merged[i + 1][0] if i + 1 < len(merged) else route.length
+            haaks = _haakse_vervanging(route, groep, cursor, max(b, volgende), grid,
+                                       vrij, obstakels, kern, recht_kan)
+            if haaks is not None:
+                m_a, m_b, kuipen, _ = haaks
+                p_a, p_b = route.interpolate(m_a), route.interpolate(m_b)
+                # geen minisegment tussen tracé en kuip: dan sluit het tracé
+                # direct op de kuip aan (begin- en eindpunt blijven altijd)
+                kort = float(normen.waarde("min_segment_m"))
+                if m_a > cursor:
+                    voeg(_substring(route, cursor, m_a).coords)
+                    if p_a.distance(kuipen[0]) < kort and len(coords) > 1:
+                        coords.pop()
+                else:
+                    voeg([p_a])
+                voeg(kuipen)
+                if p_b.distance(kuipen[1]) < kort and m_b < route.length - 1e-6:
+                    overslaan[0] = (p_b.x, p_b.y)
+                cursor = m_b
+                continue
+        if _ligt_recht(route, max(a, m0_eigen), min(b, m1_eigen)):
+            # al recht (bijv. een eerder haaks gelegde boorlijn): laten
+            # liggen — geen nieuwe hoekpunten, het volgende stuk neemt de
+            # bestaande over vanaf de cursor
+            continue
         recht = None
         for da, db in SCHUIF_STAPPEN:
             a2, b2 = max(cursor, a - da), min(route.length, b + db)
@@ -1700,17 +2595,14 @@ def straighten_crossings(route: LineString, crossings: list,
         if recht is not None:
             a2, b2, pa, pb = recht
             if a2 > cursor:
-                coords.extend(list(_substring(route, cursor, a2).coords)[:-1])
-            coords.extend([(pa.x, pa.y), (pb.x, pb.y)])
+                voeg(_substring(route, cursor, a2).coords)
+            voeg([pa, pb])
             cursor = b2
         else:
-            if a > cursor:
-                coords.extend(list(_substring(route, cursor, a).coords)[:-1])
-            coords.extend(list(_substring(route, a, b).coords))
+            voeg(_substring(route, cursor, b).coords)
             cursor = b
     if cursor < route.length:
-        seg = _substring(route, cursor, route.length)
-        coords.extend(list(seg.coords)[1:])
+        voeg(_substring(route, cursor, route.length).coords)
     return LineString(coords)
 
 
@@ -1873,14 +2765,17 @@ def straighten_iteratief(route: LineString, bgt: dict, grid: Grid | None = None,
     Eén ronde volstaat niet: het rechttrekken kort het (kronkelige raster-)pad
     in, waardoor chainages verschuiven en de rechte koorde net naast het
     beoogde in-/uittredepunt kan beginnen. De tweede ronde meet op het al
-    rechtgetrokken tracé en legt de boorlengte exact recht.
+    rechtgetrokken tracé en legt de boorlengte exact recht. Een schuine
+    kruising wordt in de eerste ronde haaks gelegd; de tweede ronde ziet
+    dan een haakse kruising en laat die staan.
     """
-    vrij = boorvrij_toets(bgt, grid)
+    vrij = VrijBron(bgt, grid)
+    obstakels = kruisingsobstakels(bgt)[0]
     for _ in range(rondes):
         pre = detect_crossings(route, bgt)
         if not pre:
             break
-        route = straighten_crossings(route, pre, grid, vrij)
+        route = straighten_crossings(route, pre, grid, vrij, obstakels)
     return verwijder_schampen(route, grid)
 
 

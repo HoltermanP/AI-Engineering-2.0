@@ -573,3 +573,164 @@ def klic_nabij(route: LineString, marge_m: float = 25.0) -> list:
     import klic as klic_mod
     zone = route.buffer(marge_m)
     return [(g, p) for g, p in klic_mod._laad() if g.intersects(zone)]
+
+
+# ---------------------------------------------------------------------------
+# 3. Maatlijnen: ligging van het tracé t.o.v. verhardingsrand en gevel
+# ---------------------------------------------------------------------------
+
+VERHARD = {"gesloten verharding", "open verharding", "half verhard"}
+MAATLIJN_STAP_M = 2.0        # bemonstering langs het tracé
+MAATLIJN_ZOEK_M = {"verharding": 10.0, "gevel": 5.0}
+MAATLIJN_SPREIDING_M = 0.30  # max. sprong per bemonsteringsstap binnen één stuk;
+                             # daarbinnen ook de grens constant ↔ verlopend
+MAATLIJN_INTERVAL_M = 25.0   # een maatlijn op de kaart/tekening per zoveel m
+
+
+def _objecten_maatvoering(bgt: dict | None) -> dict:
+    """Per categorie de vlakken + omschrijving waartoe gemeten wordt."""
+    bgt = bgt or {}
+    verharding = []
+    for g, p in bgt.get("wegdeel", []):
+        if (p.get("fysiek_voorkomen") or "") in VERHARD and g.geom_type in (
+                "Polygon", "MultiPolygon"):
+            verharding.append((g, (p.get("functie") or "wegdeel").lower(),
+                               p.get("fysiek_voorkomen")))
+    for g, p in bgt.get("onbegroeidterreindeel", []):
+        if p.get("fysiek_voorkomen") in ("open verharding", "gesloten verharding"):
+            verharding.append((g, "verhard terrein", p.get("fysiek_voorkomen")))
+    gevels = [(g, "gevel (pand)", None) for g, _p in bgt.get("pand", [])
+              if g.geom_type in ("Polygon", "MultiPolygon")]
+    return {"verharding": verharding, "gevel": gevels}
+
+
+def maatlijnen(route: LineString, bgt: dict | None) -> list:
+    """Hoe ver ligt het tracé naast de verharding (en langs gevels)?
+
+    Het tracé wordt elke MAATLIJN_STAP_M bemonsterd; per punt de kortste
+    afstand tot de rand van het dichtstbijzijnde verhardingsvlak (BGT-wegdeel
+    met open/gesloten verharding, verhard terrein) en tot een pandgevel, met
+    de zijde (links/rechts in looprichting). Aaneengesloten stukken met
+    dezelfde zijde, hetzelfde object en een afstand die per stap hoogstens
+    MAATLIJN_SPREIDING_M verspringt vormen één maatvoering: constant ("0,80 m
+    uit de rand van de rijbaan, rechts") of verlopend als het tracé schuin
+    van de rand af loopt ("2,2 → 4,9 m"). Ligt het tracé ín de verharding,
+    dan is dat een eigen stuk (afstand 0, bijvoorbeeld een kruising of een
+    tracé in het trottoir).
+
+    Per stuk ook maatlijnen (tracépunt → rand) om de MAATLIJN_INTERVAL_M,
+    voor de kaart en de DXF-tekening."""
+    objecten = _objecten_maatvoering(bgt)
+    L = route.length
+    if L <= 0:
+        return []
+    uit: list = []
+    for cat, lijst in objecten.items():
+        if not lijst:
+            continue
+        geoms = [g for g, _o, _v in lijst]
+        boom = STRtree(geoms)
+        zoek = MAATLIJN_ZOEK_M[cat]
+        samples = []
+        n = max(1, int(L // MAATLIJN_STAP_M))
+        for k in range(n + 1):
+            m = min(L, k * MAATLIJN_STAP_M)
+            p = route.interpolate(m)
+            kand = boom.query(p.buffer(zoek))
+            if len(kand) == 0:
+                samples.append((m, None))
+                continue
+            beste = min(kand, key=lambda i: geoms[int(i)].distance(p))
+            g = geoms[int(beste)]
+            _g, obj, verh = lijst[int(beste)]
+            d = g.distance(p)
+            if d > zoek:
+                samples.append((m, None))
+                continue
+            if d <= 1e-6:  # in het vlak: rand is de dichtstbijzijnde grens
+                samples.append((m, {"status": "in", "afstand": 0.0, "zijde": None,
+                                    "object": obj, "verharding": verh,
+                                    "p": (p.x, p.y), "q": None}))
+                continue
+            q = nearest_points(g, p)[0]
+            rx, ry = _richting_bij(route, m)
+            kruis = rx * (q.y - p.y) - ry * (q.x - p.x)
+            samples.append((m, {"status": "naast", "afstand": d,
+                                "zijde": "links" if kruis > 0 else "rechts",
+                                "object": obj, "verharding": verh,
+                                "p": (p.x, p.y), "q": (q.x, q.y)}))
+        # groeperen
+        groepen: list = []
+        for m, s in samples:
+            g = groepen[-1] if groepen else None
+            if s is None:
+                if g and g["open"]:
+                    g["open"] = False
+                continue
+            zelfde = (g and g["open"] and g["status"] == s["status"]
+                      and g["zijde"] == s["zijde"] and g["object"] == s["object"]
+                      and abs(s["afstand"] - g["waarden"][-1]) <= MAATLIJN_SPREIDING_M)
+            if zelfde:
+                g["tot"] = m
+                g["waarden"].append(s["afstand"])
+                g["punten"].append((m, s["p"], s["q"]))
+            else:
+                if g:
+                    g["open"] = False
+                groepen.append({"open": True, "status": s["status"], "zijde": s["zijde"],
+                                "object": s["object"], "verharding": s["verharding"],
+                                "van": m, "tot": m,
+                                "waarden": [s["afstand"]], "punten": [(m, s["p"], s["q"])]})
+        for g in groepen:
+            if g["tot"] - g["van"] < MAATLIJN_STAP_M and g["status"] == "naast":
+                continue  # losse bemonstering: ruis
+            w = sorted(g["waarden"])
+            lijnen, volgende = [], g["van"]
+            for m, p, q in g["punten"]:
+                if q is not None and m >= volgende - 1e-6:
+                    lijnen.append({"van": [round(p[0], 2), round(p[1], 2)],
+                                   "tot": [round(q[0], 2), round(q[1], 2)],
+                                   "afstand_m": round(math.hypot(q[0] - p[0], q[1] - p[1]), 2),
+                                   "metrering_m": round(m, 1)})
+                    volgende = m + MAATLIJN_INTERVAL_M
+            van_p = route.interpolate(g["van"])
+            tot_p = route.interpolate(g["tot"])
+            uit.append({
+                "categorie": cat,
+                "status": g["status"],
+                "object": g["object"],
+                "verharding": g["verharding"],
+                "zijde": g["zijde"],
+                "van_m": round(g["van"], 1),
+                "tot_m": round(g["tot"], 1),
+                "lengte_m": round(g["tot"] - g["van"], 1),
+                "afstand_m": round(round(w[len(w) // 2] / 0.05) * 0.05, 2),
+                "afstand_min_m": round(w[0], 2),
+                "afstand_max_m": round(w[-1], 2),
+                "afstand_begin_m": round(g["waarden"][0], 2),
+                "afstand_eind_m": round(g["waarden"][-1], 2),
+                "verlopend": w[-1] - w[0] > MAATLIJN_SPREIDING_M,
+                "van_rd": [round(van_p.x, 2), round(van_p.y, 2)],
+                "tot_rd": [round(tot_p.x, 2), round(tot_p.y, 2)],
+                "maatlijnen": lijnen,
+            })
+    uit.sort(key=lambda x: (x["van_m"], x["categorie"]))
+    for i, x in enumerate(uit, 1):
+        x["nr"] = f"MV-{i:03d}"
+    return uit
+
+
+def maatlijnen_herprojecteren(items: list, route: LineString) -> list:
+    """Metrering van maatvoeringsstukken opnieuw meten op het definitieve
+    tracé (corridor: per deeltraject berekend, daarna samengevoegd)."""
+    for x in items:
+        m0 = route.project(Point(x["van_rd"]))
+        m1 = route.project(Point(x["tot_rd"]))
+        x["van_m"], x["tot_m"] = round(min(m0, m1), 1), round(max(m0, m1), 1)
+        x["lengte_m"] = round(x["tot_m"] - x["van_m"], 1)
+        for ml in x["maatlijnen"]:
+            ml["metrering_m"] = round(route.project(Point(ml["van"])), 1)
+    items.sort(key=lambda x: (x["van_m"], x["categorie"]))
+    for i, x in enumerate(items, 1):
+        x["nr"] = f"MV-{i:03d}"
+    return items

@@ -163,6 +163,147 @@ REGELS: dict[str, dict] = {
                      "maar binnen deze afstand van elkaar (ringtracé dat "
                      "dezelfde weg twee keer passeert) delen één boring met "
                      "één buis per circuit."),
+    # --- 4. boringen en persingen: kruisingshoek ---------------------------
+    "boring_kruisingshoek_tolerantie_gr": dict(
+        waarde=10.0, eenheid="°", ernst="waarschuwing",
+        bron="RWS Richtlijn Boortechnieken 2019 §2.3.4 (\"in principe "
+             "loodrecht\"); ProRail RLN00427-2 Eis-3.2 (haaks op de "
+             "spoorbaan); waterschapsbeleidsregels (loodrecht op de "
+             "watergang). Tolerantie in graden: aanname, geen bron",
+        omschrijving="Toegestane afwijking van haaks (90°) voor een boring of "
+                     "persing. Schuiner wordt de boorlijn haaks op het "
+                     "obstakel gelegd; lukt dat niet, dan is het een "
+                     "afwijking waarvoor de beheerder toestemming moet geven."),
+    # --- 4. boringen en persingen: diepte bij de obstakelrand --------------
+    "boring_dekking_rijbaan_m": dict(
+        waarde=1.50, eenheid="m", ernst="info",
+        bron="RWS Richtlijn Boortechnieken 2019 §2.4.1 (HDD mantelbuis "
+             "≤ 160 mm: 1,5 m aan de rand van de weg) en §3.3.1 (persing: "
+             "1,0 m + D onder de fundering, 0,5 m verharding)",
+        omschrijving="Dekking van de boring/persing onder maaiveld of "
+                     "bovenkant verharding bij een rijbaan."),
+    "boring_dekking_water_m": dict(
+        waarde=1.00, eenheid="m", ernst="info",
+        bron="Beleidsregels kabels en leidingen WS Rivierenland (5.10) en "
+             "WS Rijn en IJssel (2.5): ≥ 1 m onder het leggerprofiel",
+        omschrijving="Dekking onder de leggerbodem van een watergang."),
+    "boring_dekking_water_primair_m": dict(
+        waarde=2.00, eenheid="m", ernst="info",
+        bron="Hoogheemraadschap van Rijnland, algemene regel 3 (2,00 m bij "
+             "primaire wateren); WS Rivierenland (2 m bij vaarwegen)",
+        omschrijving="Dekking onder de leggerbodem van een primaire "
+                     "(A-)watergang."),
+    "watergang_diepte_m": dict(
+        waarde=1.50, eenheid="m", ernst="info",
+        bron="Aanname (leggerdiepte B-watergang); legger raadplegen",
+        omschrijving="Diepte van de leggerbodem onder maaiveld, zolang de "
+                     "legger geen bodemhoogte levert."),
+    "persing_dekking_spoor_m": dict(
+        waarde=1.50, eenheid="m", ernst="info",
+        bron="ProRail RLN00427-2 tabel 2 (OFT ≤ 400 mm: 1,5 m onder "
+             "bovenkant spoorstaaf)",
+        omschrijving="Dekking van een persing onder het spoor."),
+    "hdd_diepte_spoor_m": dict(
+        waarde=6.00, eenheid="m", ernst="info",
+        bron="ProRail RLN00427-2 tabel 3 (HDD Ø ≤ 250 mm: ≥ 6 m onder "
+             "maaiveld, onder de druklijn)",
+        omschrijving="Minimale diepte van een gestuurde boring onder het "
+                     "spoor."),
+    # --- 4. boringen en persingen: afstand van kuip/intredepunt tot rand ----
+    "boring_rand_verharding_m": dict(
+        waarde=1.00, eenheid="m", ernst="waarschuwing",
+        bron="RWS Richtlijn Boortechnieken 2019 §2.4.2, §3.3.9, §4.3.10",
+        omschrijving="Beginpunt van de invloedslijn: afstand uit de kant "
+                     "verharding van een rijbaan."),
+    "boring_talud_verharding": dict(
+        waarde=1.50, eenheid="hor/vert", ernst="waarschuwing",
+        bron="RWS Richtlijn Boortechnieken 2019 §2.4.2, §3.3.9 (1:1,5; kuip "
+             "≥ 1,5 × H uit de rand + 1,0 m)",
+        omschrijving="Helling van de invloedslijn onder de rijbaan: kuip of "
+                     "intredeput (incl. ontgraving) ligt minimaal "
+                     "rand + talud × ontgravingsdiepte uit de kant verharding."),
+    "boring_rand_spoor_m": dict(
+        waarde=2.75, eenheid="m", ernst="waarschuwing",
+        bron="ProRail RLN00427-2 (druklijn 2,75 m uit hart spoor)",
+        omschrijving="Beginpunt van de druklijn, gemeten uit hart spoor."),
+    "boring_talud_spoor": dict(
+        waarde=2.00, eenheid="hor/vert", ernst="waarschuwing",
+        bron="ProRail RLN00427-2 tabel 2 (persing: druklijn 1:2; HDD 1:1,5 "
+             "— de strengste geldt voor de kuip)",
+        omschrijving="Helling van de druklijn van het spoor voor kuipen en "
+                     "intredeputten."),
+    "boring_afstand_insteek_m": dict(
+        waarde=1.00, eenheid="m", ernst="waarschuwing",
+        bron="Beschermingszone B-watergang 1 m (WS Rivierenland "
+             "beleidsregel 5.10); minimaal 1 m uit de insteek",
+        omschrijving="Afstand van kuip of in-/uittredepunt tot de insteek "
+                     "van een watergang."),
+    "boring_afstand_insteek_primair_m": dict(
+        waarde=5.00, eenheid="m", ernst="waarschuwing",
+        bron="Beschermingszone A-watergang 4–5 m (WS Rivierenland "
+             "beleidsregel 5.10)",
+        omschrijving="Afstand van kuip of in-/uittredepunt tot de insteek "
+                     "van een primaire (A-)watergang."),
+    # --- 4. boringen en persingen: kuipen en boorgeometrie -----------------
+    "kuip_werkruimte_m": dict(
+        waarde=0.50, eenheid="m", ernst="info",
+        bron="Praktijk (werkruimte onder de buis in de kuip)",
+        omschrijving="Ontgravingsdiepte van een pers-/ontvangstkuip onder de "
+                     "onderkant van de buis."),
+    "persing_perskuip_lengte_m": dict(
+        waarde=3.00, eenheid="m", ernst="info",
+        bron="WarmingUp 2B2 (Deltares, 2022) bijlage 4: perskuip OFT/avegaar "
+             "2 × 3 m",
+        omschrijving="Lengte van de perskuip in de boorrichting (achter het "
+                     "intredepunt)."),
+    "persing_ontvangkuip_lengte_m": dict(
+        waarde=1.00, eenheid="m", ernst="info",
+        bron="WarmingUp 2B2 (Deltares, 2022) bijlage 4: ontvangstkuip 1 × 1 m",
+        omschrijving="Lengte van de ontvangstkuip in de boorrichting."),
+    "raket_perskuip_lengte_m": dict(
+        waarde=5.00, eenheid="m", ernst="info",
+        bron="WarmingUp 2B2 (Deltares, 2022) bijlage 4: perskuip 5 × 1 m",
+        omschrijving="Lengte van de lanceerkuip van een raketboring."),
+    "raket_ontvangkuip_lengte_m": dict(
+        waarde=1.00, eenheid="m", ernst="info",
+        bron="WarmingUp 2B2 (Deltares, 2022) bijlage 4: ontvangstkuip 1 × 1 m",
+        omschrijving="Lengte van de ontvangstkuip van een raketboring."),
+    "boorput_diepte_m": dict(
+        waarde=1.00, eenheid="m", ernst="info",
+        bron="Aanname (in-/uittredeput gestuurde boring)",
+        omschrijving="Ontgravingsdiepte van de in-/uittredeput bij HDD en "
+                     "nanodrill; bepaalt de afstand tot de invloedslijn."),
+    "hdd_intredehoek_gr": dict(
+        waarde=15.0, eenheid="°", ernst="info",
+        bron="Praktijk 12–23° (boorplannen; Schrijvers 2023)",
+        omschrijving="Intredehoek van een gestuurde boring (HDD)."),
+    "hdd_uittredehoek_gr": dict(
+        waarde=12.0, eenheid="°", ernst="info",
+        bron="Praktijk 12–16° (boorplannen; Schrijvers 2023)",
+        omschrijving="Uittredehoek van een gestuurde boring (HDD)."),
+    "hdd_boorstang_straal_m": dict(
+        waarde=100.0, eenheid="m", ernst="info",
+        bron="Praktijk midi-HDD (boorplan Gebr. van Leeuwen: R ≥ 150 m bij "
+             "grotere stangen); type boorstelling bepaalt",
+        omschrijving="Minimale boogstraal van de boorstreng bij HDD."),
+    "nanodrill_intredehoek_gr": dict(
+        waarde=20.0, eenheid="°", ernst="info",
+        bron="Praktijk nanodrill/boogboring (Schrijvers 2023)",
+        omschrijving="Intredehoek van een nanodrill."),
+    "nanodrill_uittredehoek_gr": dict(
+        waarde=20.0, eenheid="°", ernst="info",
+        bron="Praktijk nanodrill/boogboring (Schrijvers 2023)",
+        omschrijving="Uittredehoek van een nanodrill."),
+    "nanodrill_boorstang_straal_m": dict(
+        waarde=40.0, eenheid="m", ernst="info",
+        bron="Praktijk nanodrill (korte stangen); aanname",
+        omschrijving="Minimale boogstraal van de boorstreng bij nanodrill."),
+    "pe_buigstraal_factor": dict(
+        waarde=75.0, eenheid="× D", ernst="info",
+        bron="Fabrikanttabellen PE (Pipelife/Dyka: 50–75 × D, afhankelijk "
+             "van SDR en temperatuur)",
+        omschrijving="Minimale buigstraal van de HDPE-mantelbuis in de "
+                     "boorboog."),
     # --- geometrische integriteit ------------------------------------------
     "zelf_intersectie_ernst": dict(
         waarde="kritiek", eenheid="-", ernst="kritiek",

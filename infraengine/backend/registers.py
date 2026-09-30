@@ -23,8 +23,8 @@ from engine import (
     ZN_NGE, ZN_NNN, ZN_STILTE, ZONE_NAMES, BOOM_WORTELZONE_M,
     TECHNIEK_HDD, TECHNIEK_NANO, TECHNIEK_OPEN, TECHNIEK_PERSING, TECHNIEK_RAKET,
     is_bijzonder_punt,
-    BOOR_UITLOOP, BOOR_UITLOOP_DEFAULT, BOOR_VRIJ_MAX_M, RAKET_MAX_BOORLENGTE_M,
-    RIJBAAN_PERSING_MAX_M, _substring,
+    BOOR_VRIJ_MAX_M, RAKET_MAX_BOORLENGTE_M, RIJBAAN_PERSING_MAX_M, _substring,
+    boor_diepte_m, kruising_uitloop_m, kuip_m, markeer_bijzonder_punt,
 )
 
 # Indicatieve eenheidsprijzen (per organisatie instelbaar; FO §7 Kosten)
@@ -278,8 +278,16 @@ TECHNIEK_RANG = {TECHNIEK_RAKET: 1, TECHNIEK_NANO: 2, TECHNIEK_PERSING: 3,
 SOORT_RANG = {"spoor": 3, "water": 2, "rijbaan": 1}
 
 
-def _uitloop(c: dict) -> float:
-    return BOOR_UITLOOP.get(c["techniek"], BOOR_UITLOOP_DEFAULT)
+def _uitloop(c: dict, kant: str = "in", techniek: str | None = None) -> float:
+    """Uitloop obstakelrand → in-/uittredepunt (engine.uitloop_detail)."""
+    return kruising_uitloop_m(c, techniek, kant)
+
+
+def _aanloop(c: dict, kant: str) -> float:
+    """Ruimte die een boring aan één kant van het obstakel inneemt: uitloop
+    plus de kuip in de boorrichting."""
+    k_in, k_uit = kuip_m(c["techniek"])
+    return _uitloop(c, kant) + (k_in if kant == "in" else k_uit)
 
 
 def _techniek_na_samenvoegen(technieken: list, obstakel_m: float,
@@ -326,7 +334,7 @@ def groepeer_boringen(route: LineString, crossings: list) -> list:
         if g is not None:
             laatste = g["kruisingen"][-1]
             gat = c["chainage_van_m"] - g["chainage_tot_m"]
-            if gat <= _uitloop(laatste) + _uitloop(c) + extra:
+            if gat <= _aanloop(laatste, "uit") + _aanloop(c, "in") + extra:
                 g["kruisingen"].append(c)
                 g["chainage_tot_m"] = max(g["chainage_tot_m"], c["chainage_tot_m"])
                 continue
@@ -357,13 +365,14 @@ def groepeer_boringen(route: LineString, crossings: list) -> list:
         alle = list(g["kruisingen"]) + [c for pg in g["passages"] for c in pg["kruisingen"]]
         obstakel_m = g["chainage_tot_m"] - g["chainage_van_m"]
         technieken = [c["techniek"] for c in alle]
-        uitloop = max(_uitloop(c) for c in alle)
+        uitloop = (max(_uitloop(c, "in") for c in alle)
+                   + max(_uitloop(c, "uit") for c in alle))
         # één kruising: het techniekvoorstel van de engine blijft staan;
         # alleen bij samenvoegen wordt op gezamenlijke lengte en aantal
         # buizen opgeschaald
         g["techniek"] = (technieken[0] if len(alle) == 1 else
                          _techniek_na_samenvoegen(technieken, obstakel_m,
-                                                  obstakel_m + 2 * uitloop,
+                                                  obstakel_m + uitloop,
                                                   g["circuits"]))
         g["soort"] = max((c["soort"] for c in alle),
                          key=lambda s: SOORT_RANG.get(s, 0))
@@ -401,36 +410,68 @@ def build_boringen(route: LineString, crossings: list) -> list:
     circuit; bij persing en spoor één stalen mantelbuis met binnenbuizen).
     """
     items = []
+    tol = float(normen.waarde("boring_kruisingshoek_tolerantie_gr"))
     for g in groepeer_boringen(route, crossings):
-        eerste = g["kruisingen"][0]
-        uitloop = max(_uitloop(c) for c in g["alle_kruisingen"])
-        uitloop = max(uitloop, BOOR_UITLOOP.get(g["techniek"], BOOR_UITLOOP_DEFAULT))
-        m_in = max(0.0, g["chainage_van_m"] - uitloop)
-        m_uit = min(route.length, g["chainage_tot_m"] + uitloop)
+        eerste, laatste = g["kruisingen"][0], g["kruisingen"][-1]
+        u_in = _uitloop(eerste, "in", g["techniek"])
+        u_uit = _uitloop(laatste, "uit", g["techniek"])
+        m_in = max(0.0, g["chainage_van_m"] - u_in)
+        m_uit = min(route.length, g["chainage_tot_m"] + u_uit)
         # exacte in-/uittredepunten uit engine.bepaal_boorpunten: uitloop van
-        # de (definitieve) techniek vanaf de obstakelrand, op vrij terrein
-        # (buiten wegdeel, water, talud en pand), als coördinaat teruggezocht
-        # op het definitieve tracé; intrede van de eerste kruising, uittrede
-        # van de laatste. Zonder die punten (oudere projecten): de uitloop
-        # vanaf de chainage.
+        # de (definitieve) techniek vanaf de obstakelrand volgens boorgeometrie
+        # en invloedslijn, op vrij terrein waar ook de kuip past, als
+        # coördinaat teruggezocht op het definitieve tracé; intrede van de
+        # eerste kruising, uittrede van de laatste. Zonder die punten (oudere
+        # projecten): de uitloop vanaf de chainage.
         bp = [c["boor_punten"][g["techniek"]] for c in g["kruisingen"]
               if (c.get("boor_punten") or {}).get(g["techniek"])]
         plaatsing = []
+        kuipen = {}
         if bp:
             m_in = min(route.project(Point(q["in_rd"])) for q in bp)
             m_uit = max(route.project(Point(q["uit_rd"])) for q in bp)
-            for kant, q, k_v, k_ok in (("intredepunt", bp[0], "verschoven_in_m", "vrij_in"),
-                                       ("uittredepunt", bp[-1], "verschoven_uit_m", "vrij_uit")):
+            u_in = bp[0].get("uitloop_in_m", u_in)
+            u_uit = bp[-1].get("uitloop_uit_m", u_uit)
+            for kant, q, k_v, k_ok, k_eis, k_kuip, k_oorz in (
+                    ("intredepunt", bp[0], "verschoven_in_m", "vrij_in", "eis_in",
+                     "kuip_in_rd", "oorzaak_in"),
+                    ("uittredepunt", bp[-1], "verschoven_uit_m", "vrij_uit", "eis_uit",
+                     "kuip_uit_rd", "oorzaak_uit")):
+                if q.get(k_kuip):
+                    kuipen[kant] = q[k_kuip]
+                if q.get(k_eis):
+                    plaatsing.append(f"{kant}: {q[k_eis]}")
                 if not q.get(k_ok, True):
                     plaatsing.append(
                         f"{kant}: binnen {BOOR_VRIJ_MAX_M:g} m langs het tracé geen vrij "
-                        "terrein (wegdeel/water/talud/pand) — op de uitloopafstand "
-                        "gelegd, handmatig inpassen")
+                        "terrein voor punt en kuip (wegdeel/water/spoor met hun "
+                        "afstandszone, pand) — op de uitloopafstand gelegd, handmatig "
+                        "inpassen")
                 elif q.get(k_v):
+                    oorzaak = q.get(k_oorz) or "wegdeel, water, spoor of hun afstandszone"
+                    afstand = f"{q[k_v]:.1f}".replace(".", ",")
                     plaatsing.append(
-                        f"{kant} {q[k_v]:g} m verder van het obstakel gelegd: op de "
-                        "uitloopafstand lag het nog in een wegdeel, water, talud of "
-                        "tegen een pand")
+                        f"{kant} {afstand} m verder van het obstakel gelegd "
+                        f"(ter plaatse: {oorzaak}); daar liggen punt en kuip "
+                        "op vrij terrein")
+        # open kruisingen binnen de boorlijn (een smalle sloot tussen de weg
+        # en het uittredepunt) gaan in dezelfde boring mee: de buis ligt daar
+        # al onder, een aparte open ontgraving is dan overbodig
+        nr = f"BOR-{len(items) + 1:03d}"
+        binnen = [c for c in crossings
+                  if c["techniek"] == TECHNIEK_OPEN and c.get("boring") is None
+                  and m_in - 0.01 <= c["chainage_van_m"] and c["chainage_tot_m"] <= m_uit + 0.01]
+        for c in binnen:
+            c["techniek_oorspronkelijk"] = TECHNIEK_OPEN
+            c["techniek"] = g["techniek"]
+            c["noodzaak"] = (f"ligt binnen de boorlijn van {nr}: in dezelfde boring "
+                             "gepasseerd, geen aparte open ontgraving")
+            c["detail"] = f"meegenomen in {nr} ({g['techniek'].lower()})"
+            markeer_bijzonder_punt(c)
+        alle = sorted(g["alle_kruisingen"] + binnen, key=lambda c: c["chainage_van_m"])
+        if binnen:
+            plaatsing.append(" + ".join(c["nr"] for c in binnen)
+                             + " (open) ligt binnen de boorlijn en gaat mee in deze boring")
         p_in, p_uit = route.interpolate(m_in), route.interpolate(m_uit)
         # boorlijn exact op het tracé; waar het rechttrekken lukte is dit de
         # rechte lijn intrede→uittrede, anders volgt hij de (gebogen) route
@@ -439,16 +480,34 @@ def build_boringen(route: LineString, crossings: list) -> list:
         koorde = LineString([boorlijn.coords[0], boorlijn.coords[-1]])
         afwijking = max(koorde.distance(Point(xy)) for xy in boorlijn.coords)
         recht = afwijking <= 0.25
+        # kruisingshoek: de schuinste kruising van de boring telt
+        hoeken = [c["kruisingshoek_gr"] for c in g["alle_kruisingen"]
+                  if c.get("kruisingshoek_gr") is not None]
+        hoek = min(hoeken) if hoeken else None
+        haaks = hoek is None or hoek >= 90.0 - tol
+        if not haaks:
+            plaatsing.append(
+                f"kruisingshoek {hoek:g}° (eis haaks, tolerantie {tol:g}°): haakse "
+                "boorlijn paste hier niet — schuin kruisen alleen met toestemming "
+                "van de beheerder (RWS/ProRail/waterschap)")
+        diepte = boor_diepte_m(g["techniek"], g["soort"],
+                               any(c.get("legger_verbiedt_open") for c in g["alle_kruisingen"]))
         dekking = {
-            "water": "≥ 1,0–1,5 m onder leggerbodem (keur; NEN 3651)",
-            "rijbaan": "≥ 1,2 m onder wegdek (AVOI wegbeheerder)",
-            "spoor": "conform ProRail-voorschrift, stalen mantelbuis",
+            "water": (f"≥ {normen.waarde('boring_dekking_water_m'):g} m onder leggerbodem "
+                      f"(A-watergang {normen.waarde('boring_dekking_water_primair_m'):g} m); "
+                      f"boordiepte ca. {diepte:.1f} m − mv bij aanname leggerdiepte "
+                      f"{normen.waarde('watergang_diepte_m'):g} m"),
+            "rijbaan": (f"≥ {normen.waarde('boring_dekking_rijbaan_m'):g} m onder "
+                        "bovenkant verharding / maaiveld aan de wegrand (RWS "
+                        "Richtlijn Boortechnieken)"),
+            "spoor": (f"HDD ≥ {normen.waarde('hdd_diepte_spoor_m'):g} m − mv, persing "
+                      f"≥ {normen.waarde('persing_dekking_spoor_m'):g} m onder BS, onder "
+                      "de druklijn; stalen mantelbuis (ProRail RLN00427-2)"),
         }.get(g["soort"], "≥ 1,0 m")
         wt = eerste.get("werkterrein") or {}
         lengte = round(m_uit - m_in, 1)
-        nr = f"BOR-{len(items) + 1:03d}"
         buis = mantelbuizen.bepaal(g["techniek"], g["soort"], g["circuits"], lengte)
-        for c in g["alle_kruisingen"]:
+        for c in alle:
             c["boring"] = nr
         items.append({
             **_basisitem(nr, "boring"),
@@ -456,15 +515,21 @@ def build_boringen(route: LineString, crossings: list) -> list:
             "type_oorspronkelijk": (eerste.get("techniek_oorspronkelijk", "")
                                     if len(g["alle_kruisingen"]) == 1 else ""),
             "kruising": eerste["nr"],
-            "kruisingen": [c["nr"] for c in g["alle_kruisingen"]],
+            "kruisingen": [c["nr"] for c in alle],
             "obstakel": " + ".join(f"{c['soort']} ({c['breedte_m']} m)"
-                                   for c in g["kruisingen"]),
+                                   for c in alle if c in g["kruisingen"] or c in binnen),
             "noodzaak": "; ".join(dict.fromkeys(
                 c.get("noodzaak", "") for c in g["kruisingen"] if c.get("noodzaak"))),
             "samengevoegd": g["samengevoegd"],
             "intredepunt_rd": (round(p_in.x, 2), round(p_in.y, 2)),
             "uittredepunt_rd": (round(p_uit.x, 2), round(p_uit.y, 2)),
-            "uitloop_m": uitloop,
+            "uitloop_m": round(max(u_in, u_uit), 1),
+            "uitloop_in_m": round(u_in, 1),
+            "uitloop_uit_m": round(u_uit, 1),
+            "kuip_in_rd": kuipen.get("intredepunt"),
+            "kuip_uit_rd": kuipen.get("uittredepunt"),
+            "kruisingshoek_gr": hoek,
+            "haaks": haaks,
             "lengte_m": lengte,
             "recht": recht,
             "afwijking_recht_m": round(afwijking, 2),
@@ -1040,7 +1105,8 @@ def ken_werkpakketten_toe(werkpakketten: list, route: LineString,
                           segments: list, crossings: list, boringen: list,
                           moffen: list, zro: list, vergunningen: list,
                           onderzoeken: list, checks: list,
-                          sonderingen: list | None = None) -> None:
+                          sonderingen: list | None = None,
+                          maatlijnen: list | None = None) -> None:
     """Elke registerregel het werkpakket geven waarin hij valt (op chainage);
     zo zijn alle registers per werkpakket te sorteren en te filteren."""
     if not werkpakketten:
@@ -1070,6 +1136,8 @@ def ken_werkpakketten_toe(werkpakketten: list, route: LineString,
     for c in checks:
         c["werkpakket"] = (_wp_van(werkpakketten, route.project(Point(c["punt"])))
                            if c.get("punt") else WP_TRACEBREED)
+    for x in maatlijnen or []:
+        x["werkpakket"] = _wp_van(werkpakketten, (x["van_m"] + x["tot_m"]) / 2)
 
 
 def build_uitvoeringsplanning(werkpakketten: list, boringen: list,
@@ -1142,8 +1210,10 @@ def build_kosten(segments: list, crossings: list, zro: list, moffen: list,
                 if s["klasse"] not in (CL_WATER, CL_SPOOR))
     boringen = 0.0
     for c in crossings:
+        if c["techniek"] not in SLEUFLOZE_TECHNIEKEN:
+            continue
         lengte = (c.get("kruislengte_m", c["breedte_m"])
-                  + 2 * BOOR_UITLOOP.get(c["techniek"], BOOR_UITLOOP_DEFAULT))
+                  + _uitloop(c, "in") + _uitloop(c, "uit"))
         if c["techniek"] == TECHNIEK_HDD:
             boringen += t["hdd_vast"] + t["hdd_per_m"] * lengte
         elif c["techniek"] == TECHNIEK_PERSING:

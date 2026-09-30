@@ -21,6 +21,7 @@ Teksthoogte 1,0 m: leesbaar op de gebruikelijke plotschalen 1:200–1:1000.
 from __future__ import annotations
 
 import io
+import math
 import time
 
 import ezdxf
@@ -43,6 +44,8 @@ LAGEN = [
     ("STATIONS", ACI_GROEN, "CONTINUOUS"),
     ("BOMEN_WORTELZONE", ACI_GROEN, "DOT"),
     ("SEGMENT_TEKST", ACI_GRIJS, "CONTINUOUS"),
+    ("MAATVOERING", ACI_WIT, "CONTINUOUS"),
+    ("MAATVOERING_HANDMATIG", ACI_MAGENTA, "CONTINUOUS"),
     ("KADER", ACI_WIT, "CONTINUOUS"),
 ]
 
@@ -106,8 +109,14 @@ def maak_dxf(variant: dict, stations: list, bomen: list,
             msp.add_circle((punt[0], punt[1]), radius=0.75,
                            dxfattribs={"layer": "BORING_PUNT"})
             _tekst(msp, f"{b['nr']} {rol}", punt, "BORING_PUNT", dy=1.2)
+        for punt, kuip in ((p_in, b.get("kuip_in_rd")), (p_uit, b.get("kuip_uit_rd"))):
+            if kuip:  # pers-/ontvangstkuip in het verlengde van de boorlijn
+                msp.add_lwpolyline([tuple(punt), tuple(kuip)],
+                                   dxfattribs={"layer": "BORING_PUNT", "const_width": 1.0})
         midden = ((p_in[0] + p_uit[0]) / 2, (p_in[1] + p_uit[1]) / 2)
-        _tekst(msp, f"{b['nr']} {b['type']} L={b['lengte_m']:g} m",
+        hoek = (f" {b['kruisingshoek_gr']:g}°" if b.get("kruisingshoek_gr") is not None
+                else "")
+        _tekst(msp, f"{b['nr']} {b['type']} L={b['lengte_m']:g} m{hoek}",
                midden, "TRACE_BORING", dy=1.8)
 
     # --- kruisingen ----------------------------------------------------------
@@ -141,6 +150,25 @@ def maak_dxf(variant: dict, stations: list, bomen: list,
         midden = reeks[len(reeks) // 2]
         _tekst(msp, f"{s['ligging']} ({s['lengte_m']:g} m)", midden,
                "SEGMENT_TEKST", dy=-2.2)
+
+    # --- maatvoering: afstand tracé ↔ verhardingsrand/gevel (echte DXF-
+    #     maatvoeringen, zodat CAD de maat zelf toont en meeschaalt) --------
+    def maat(van, tot, laag):
+        if math.hypot(tot[0] - van[0], tot[1] - van[1]) < 0.01:
+            return
+        dim = msp.add_aligned_dim(
+            p1=(van[0], van[1]), p2=(tot[0], tot[1]), distance=0.6,
+            dimstyle="EZDXF", dxfattribs={"layer": laag},
+            override={"dimtxt": 0.45, "dimasz": 0.25, "dimdec": 2,
+                      "dimexe": 0.15, "dimexo": 0.05, "dimclrd": 256,
+                      "dimclre": 256, "dimclrt": 256})
+        dim.render()
+
+    for x in variant.get("maatlijnen", []):
+        for ml in x.get("maatlijnen", []):
+            maat(ml["van"], ml["tot"], "MAATVOERING")
+    for ml in variant.get("maatlijnen_handmatig", []):
+        maat(ml["van"], ml["tot"], "MAATVOERING_HANDMATIG")
 
     # --- tekstkader linksonder ----------------------------------------------
     xs = [x for reeks in _coords(variant["route"]) for x, _ in reeks]

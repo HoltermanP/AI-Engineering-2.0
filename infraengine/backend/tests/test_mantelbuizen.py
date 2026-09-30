@@ -15,6 +15,7 @@ from shapely.geometry import LineString  # noqa: E402
 import mantelbuizen  # noqa: E402
 from engine import (  # noqa: E402
     TECHNIEK_HDD, TECHNIEK_NANO, TECHNIEK_OPEN, TECHNIEK_PERSING, TECHNIEK_RAKET,
+    uitloop_m,
 )
 from registers import build_boringen, groepeer_boringen  # noqa: E402
 
@@ -90,7 +91,8 @@ class GroeperenTest(unittest.TestCase):
         self.assertEqual(krs[0]["boring"], "BOR-001")
 
     def test_water_naast_rijbaan_wordt_een_boring(self):
-        # persing rijbaan 100–110, HDD watergang 118–122: uitloop 3 + 10 > gat 8
+        # persing rijbaan 100–110, HDD watergang 118–122: uitloop + kuip
+        # persing plus HDD-aanloop > gat 8
         krs = [_kruising("KR-001", "rijbaan", 100, 110, TECHNIEK_PERSING, self.route),
                _kruising("KR-002", "water", 118, 122, TECHNIEK_HDD, self.route)]
         b = build_boringen(self.route, krs)
@@ -98,7 +100,10 @@ class GroeperenTest(unittest.TestCase):
         self.assertEqual(b[0]["kruisingen"], ["KR-001", "KR-002"])
         self.assertEqual(b[0]["type"], TECHNIEK_HDD)      # zwaarste techniek
         self.assertEqual(b[0]["mantelbuis"], "1× HDPE Ø160 SDR11")  # één buis
-        self.assertEqual(b[0]["lengte_m"], 42.0)          # 100-10 … 122+10
+        # HDD-aanloop vóór de rijbaan en na de watergang
+        self.assertAlmostEqual(b[0]["lengte_m"],
+                               122 + uitloop_m(TECHNIEK_HDD, "water", "uit")
+                               - (100 - uitloop_m(TECHNIEK_HDD, "rijbaan", "in")), delta=0.1)
         self.assertIn("één mantelbuis in plaats van 2", b[0]["samengevoegd"])
         # de rijbaankruising volgt nu de HDD; oorspronkelijk voorstel bewaard
         self.assertEqual(krs[0]["techniek"], TECHNIEK_HDD)
@@ -113,7 +118,8 @@ class GroeperenTest(unittest.TestCase):
                _kruising("KR-002", "rijbaan", 107, 111, TECHNIEK_RAKET, self.route)]
         b = build_boringen(self.route, krs)
         self.assertEqual(len(b), 1)
-        self.assertEqual(b[0]["type"], TECHNIEK_RAKET)  # 11 + 2×2 = 15 m ≤ 18
+        # 11 m + kuipafstand aan beide kanten ≈ 19,5 m ≤ 25 m
+        self.assertEqual(b[0]["type"], TECHNIEK_RAKET)
         krs = [_kruising("KR-001", "rijbaan", 100, 108, TECHNIEK_RAKET, self.route),
                _kruising("KR-002", "rijbaan", 110, 118, TECHNIEK_RAKET, self.route)]
         b = build_boringen(self.route, krs)
@@ -150,7 +156,9 @@ class GroeperenTest(unittest.TestCase):
         self.assertEqual([x["materiaal"] for x in t], ["HDPE", "staal"])
         hdpe = t[0]
         self.assertEqual(hdpe["aantal"], 2)
-        self.assertEqual(hdpe["lengte_m"], 16.0 + 14.0)
+        verwacht = (10 + 2 * uitloop_m(TECHNIEK_PERSING, "rijbaan")
+                    + 4 + 2 * uitloop_m(TECHNIEK_NANO, "water"))
+        self.assertAlmostEqual(hdpe["lengte_m"], verwacht, delta=0.2)
 
 
 if __name__ == "__main__":

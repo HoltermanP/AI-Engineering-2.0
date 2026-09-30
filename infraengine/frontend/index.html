@@ -43,7 +43,8 @@
         <button class="tool" data-mode="via" title="Verplicht passeerpunt">◈ Via-punt</button>
         <button class="tool" data-mode="sleep" title="Tracé verslepen: pak het berekende (rode) tracé op en sleep het naar de gewenste ligging — de lijn buigt direct mee. Versleep zo veel punten als nodig (een versleept punt kun je opnieuw oppakken) en klik daarna op ✓ Aanpassen tracé: het tracé wordt dan herberekend langs de versleepte punten. Beschikbaar zodra een tracé is berekend.">↷ Tracé verslepen</button>
         <button class="tool" data-mode="forbidden" title="Verboden zone tekenen">⊘ Verboden zone</button>
-        <button class="tool" data-mode="delete" title="Klik op een station, via-punt of zone om te verwijderen">✕ Verwijderen</button>
+        <button class="tool" data-mode="delete" title="Klik op een station, via-punt, zone of zelf gezette maatlijn om te verwijderen">✕ Verwijderen</button>
+        <button class="tool" data-mode="maat" title="Maatlijn zetten: klik het beginpunt (vangt op het tracé) en het eindpunt, bijvoorbeeld de verhardingsrand of een gevel. De maat komt op de kaart, in de tab Maatvoering en in de DXF-export. Beschikbaar zodra een tracé is berekend.">📏 Maatlijn</button>
         <button class="tool breed" data-mode="street" title="Street View: klik op (of naast) het tracé en loop er doorheen — versleep de blauwe marker over het tracé of gebruik de pijltjestoetsen; het beeld loopt mee. Beschikbaar zodra een tracé is berekend.">🚶 Street View langs het tracé</button>
       </div>
       <div id="sleep-acties" hidden>
@@ -71,6 +72,7 @@
       <label><input type="checkbox" id="lg-cpt" title="BRO geotechnisch sondeeronderzoek (CPT): bestaande sonderingen. Informatief; het boringenregister meldt automatisch of er binnen ± 100 m van een boring al sonderingen bekend zijn."> Sonderingen (BRO CPT)</label>
       <label><input type="checkbox" id="lg-seg" checked> Segmenten (ligging)</label>
       <label><input type="checkbox" id="lg-alt" checked> Overige varianten</label>
+      <label><input type="checkbox" id="lg-maat" checked title="Maatlijnen van het tracé tot de verhardingsrand en langs gevels (om de 25 m en bij elke wijziging), plus zelf gezette maatlijnen. Zichtbaar bij inzoomen (straatniveau)."> Maatvoering (maatlijnen)</label>
       <label><input type="checkbox" id="lg-percelen" title="Kadastrale percelen die het tracé raakt (ZRO-register), met perceelnummer. Zichtbaar na het berekenen van een tracé."> Geraakte percelen (ZRO)</label>
       <hr>
       <span class="hint">Zonelagen (wegen mee in het tracé)</span>
@@ -118,6 +120,7 @@
       <label><input type="checkbox" id="sel-f-toetsing" checked> Toetsingsbevindingen</label>
       <label><input type="checkbox" id="sel-f-segmenten" checked> Segmenten (ligging)</label>
       <label><input type="checkbox" id="sel-f-bomen" checked title="Bomen binnen de strook rond de selectie"> Bomen + wortelzone</label>
+      <label><input type="checkbox" id="sel-f-maatlijnen" checked> Maatlijnen</label>
       <p class="hint">Selecteer met de knoppen hierboven, met de vinkjes in de tabs
         Werkpakketten en Segmenten, of met shift-klik op het tracé.</p>
     </section>
@@ -133,6 +136,7 @@
       <h2>3 · Rekenopties</h2>
       <label><input type="checkbox" id="opt-varianten"> Drie extra varianten + MCA (standaard uit: alleen de voorkeursvariant)</label>
       <label class="inline">Haspellengte <input id="opt-haspel" type="number" value="500" min="100" step="50" class="mono"> m</label>
+      <label class="inline" title="Via-punten (ook versleepte tracépunten) zijn zacht: het tracé passeert binnen deze straal op de goedkoopste plek volgens het wegingsprofiel, in plaats van er met een heen-en-terug-stuk exact doorheen te gaan. 0 = exact door het punt.">Via-tolerantie <input id="opt-via-tol" type="number" value="10" min="0" max="50" step="1" class="mono"> m</label>
       <p class="hint">Tot 70 km en meerdere stations. Boven ± 2,5 km hemelsbreed rekent de
         app per deeltraject in een corridor van ± 160 m rond de rechte lijn tussen de
         stations. Loopt een deeltraject vast (natuurgebied, bebouwing, verboden zone),
@@ -287,6 +291,7 @@
       <button data-tab="sonderingen">Sonderingen</button>
       <button data-tab="onderzoeken">Onderzoeken</button>
       <button data-tab="zro">ZRO</button>
+      <button data-tab="maatvoering">Maatvoering</button>
       <button data-tab="toetsing">Toetsing</button>
       <button data-tab="moffen">Moffen</button>
       <button data-tab="kosten">Calculatie</button>
@@ -505,7 +510,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=9"></script>
 <script src="registers.js?v=3"></script>
 <script src="proces.js?v=4"></script>
 </body>

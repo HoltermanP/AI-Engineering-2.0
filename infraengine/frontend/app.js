@@ -49,6 +49,8 @@ const srcNdff = new ol.source.Vector();     // NDFF km-hokken met beschermde soo
 const srcKlant = new ol.source.Vector();    // klantlocaties (adressen) uit het IV
 const srcPercelen = new ol.source.Vector(); // door het tracé geraakte percelen (ZRO)
 const srcSelectie = new ol.source.Vector(); // geselecteerde werkpakketten/segmenten
+const srcMaatAuto = new ol.source.Vector(); // maatlijnen tracé ↔ verhardingsrand/gevel
+const srcMaatHand = new ol.source.Vector(); // zelf gezette maatlijnen
 
 // kleur van een NDFF-hok naar het aantal beschermde soorten (Ow) erin
 const NDFF_KLASSEN = [
@@ -94,6 +96,40 @@ function gwKlasse(laatste) {
   if (!laatste) return "historisch";
   const dagen = (Date.now() - new Date(laatste).getTime()) / 864e5;
   return dagen <= 366 ? "actueel" : dagen <= 5 * 366 ? "ouder" : "historisch";
+}
+
+// maatlijn: lijn met eindstreepjes; de maat in het midden, of (aanEind: de
+// automatische maatlijnen vanaf het tracé) voorbij de rand, zodat het getal
+// niet over de tracélijn valt
+const fmtM = m => Number(m).toLocaleString("nl-NL",
+  { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " m";
+function maatStijl(f, res, kleur, aanEind) {
+  const [a, b] = f.getGeometry().getCoordinates();
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+  const ux = dx / L, uy = dy / L;
+  const nx = -dy / L * res * 5, ny = dx / L * res * 5;
+  const lijn = new ol.style.Stroke({ color: kleur, width: 1.3 });
+  return [
+    new ol.style.Style({ stroke: lijn }),
+    new ol.style.Style({
+      geometry: new ol.geom.MultiLineString([
+        [[a[0] - nx, a[1] - ny], [a[0] + nx, a[1] + ny]],
+        [[b[0] - nx, b[1] - ny], [b[0] + nx, b[1] + ny]]]),
+      stroke: lijn,
+    }),
+    new ol.style.Style({
+      geometry: new ol.geom.Point(aanEind
+        ? [b[0] + ux * res * 4, b[1] + uy * res * 4]
+        : [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]),
+      text: new ol.style.Text({
+        text: f.get("label"), font: "600 10.5px 'IBM Plex Mono',monospace",
+        textAlign: aanEind ? (ux >= 0 ? "left" : "right") : "center",
+        fill: new ol.style.Fill({ color: kleur }),
+        backgroundFill: new ol.style.Fill({ color: "rgba(255,255,255,0.85)" }),
+        padding: [1, 3, 0, 3],
+      }),
+    }),
+  ];
 }
 
 const lagen = {
@@ -184,6 +220,15 @@ const lagen = {
       }),
     }),
   }),
+  // maatlijnen: tracé → verhardingsrand/gevel, pas leesbaar ingezoomd
+  maatauto: new ol.layer.Vector({
+    source: srcMaatAuto, zIndex: 31, declutter: true,
+    style: (f, res) => res > 0.8 ? null : maatStijl(f, res, "#1E2A33", true),
+  }),
+  maathand: new ol.layer.Vector({
+    source: srcMaatHand, zIndex: 32,
+    style: (f, res) => maatStijl(f, res, "#9E2A8C"),
+  }),
   // selectie: brede blauwe band onder het tracé langs de gekozen delen
   selectie: new ol.layer.Vector({
     source: srcSelectie, zIndex: 21,
@@ -211,6 +256,12 @@ const lagen = {
     source: srcCrossings, zIndex: 25,
     style: f => {
       const kleur = KLEUR_SOORT[f.get("soort")] || "#333";
+      if (f.get("kuip")) {
+        // pers-/ontvangstkuip in het verlengde van de boorlijn
+        return new ol.style.Style({
+          stroke: new ol.style.Stroke({ color: kleur, width: 10, lineCap: "butt" }),
+        });
+      }
       if (f.getGeometry().getType() === "LineString") {
         // boring: exacte lijn van intrede- tot uittredepunt
         return [
@@ -710,6 +761,7 @@ document.getElementById("lg-alt").addEventListener("change", e => {
 /* ------------------------------------------------------------- tekentools */
 let mode = "pan";
 let drawInteractie = null;
+let maatSnap = null;  // snap-interactie van de maatlijn-tool
 // stations, via-punten en getekende vlakken zijn versleepbaar; een versleept
 // via-punt rekent niet meteen opnieuw maar telt mee bij "✓ Aanpassen tracé"
 [srcStations, srcVia, srcArea, srcForbidden].forEach(src => {
@@ -739,6 +791,33 @@ function setMode(nieuw) {
     drawInteractie.on("drawend", () => { setTimeout(() => setMode("pan"), 50); updateUI(); });
     map.addInteraction(drawInteractie);
   }
+  if (maatSnap) { map.removeInteraction(maatSnap); maatSnap = null; }
+  if (nieuw === "maat") {
+    if (!resultaat) {
+      statusEl.textContent = "Maatlijnen zetten kan pas als er een tracé is berekend.";
+      setTimeout(() => setMode("pan"), 0);
+      return;
+    }
+    drawInteractie = new ol.interaction.Draw({
+      source: srcMaatHand, type: "LineString", maxPoints: 2,
+      style: f => f.getGeometry().getType() === "LineString"
+        && f.getGeometry().getCoordinates().length === 2
+        ? maatStijl(maatLabel(f), map.getView().getResolution(), "#9E2A8C")
+        : new ol.style.Style({ image: new ol.style.Circle({ radius: 4,
+            fill: new ol.style.Fill({ color: "#9E2A8C" }) }) }),
+    });
+    drawInteractie.on("drawend", e => {
+      maatLabel(e.feature);
+      setTimeout(maatHandSync, 0);  // na het toevoegen aan de bron
+    });
+    map.addInteraction(drawInteractie);
+    // eindpunten vangen op het tracé en op de automatische maatlijnen
+    maatSnap = new ol.interaction.Snap({ source: srcRoutes, pixelTolerance: 10 });
+    map.addInteraction(maatSnap);
+    statusEl.textContent = "Maatlijn: klik het beginpunt (vangt op het tracé) en " +
+      "daarna het eindpunt, bijvoorbeeld de rand van de verharding of een gevel. " +
+      "Verwijderen met ✕ Verwijderen.";
+  }
   if (nieuw === "street") svOpen(null);
   if (nieuw === "sleep") {
     if (!resultaat) {
@@ -756,6 +835,35 @@ function setMode(nieuw) {
 document.querySelectorAll("button.tool").forEach(b =>
   b.addEventListener("click", () => setMode(b.dataset.mode)));
 setMode("pan");
+
+/* ---- handmatige maatlijnen: bij de actieve variant bewaren (opslaan met het
+   project) en naar de backend sturen, zodat de DXF-export ze meeneemt */
+function maatLabel(f) {
+  const c = f.getGeometry().getCoordinates();
+  if (c.length >= 2)
+    f.set("label", fmtM(Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])));
+  return f;
+}
+async function maatHandSync() {
+  if (!resultaat) return;
+  const lijnen = srcMaatHand.getFeatures().map(f => {
+    const [a, b] = f.getGeometry().getCoordinates();
+    return { van: a, tot: b,
+             afstand_m: Math.round(Math.hypot(b[0] - a[0], b[1] - a[1]) * 100) / 100 };
+  });
+  resultaat.varianten[actieveVariant].maatlijnen_handmatig = lijnen;
+  if (actieveTab === "maatvoering") toonTab();
+  try {
+    await fetch("api/maatlijnen", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ variant: actieveVariant, lijnen }),
+    });
+  } catch (e) { /* offline: blijft in het project bewaard */ }
+}
+document.getElementById("lg-maat").addEventListener("change", e => {
+  lagen.maatauto.setVisible(e.target.checked);
+  lagen.maathand.setVisible(e.target.checked);
+});
 
 /* ---- tracé verslepen: de rode lijn buigt live mee; elk losgelaten punt
    wordt een voorlopig via-punt. Pas "✓ Aanpassen tracé" zet ze om in echte
@@ -968,6 +1076,7 @@ map.on("click", evt => {
     updateUI();
   } else if (mode === "delete") {
     map.forEachFeatureAtPixel(evt.pixel, (f, layer) => {
+      if (srcMaatHand.hasFeature(f)) { srcMaatHand.removeFeature(f); maatHandSync(); return true; }
       for (const src of [srcStations, srcVia, srcForbidden, srcArea])
         if (src.hasFeature(f)) { src.removeFeature(f); updateUI(); return true; }
       return false;
@@ -1081,9 +1190,17 @@ function toonKaartPopup(b, k, coord) {
       (b.samengevoegd ? popupRij("Samengevoegd", b.samengevoegd) : "") +
       popupRij("Noodzaak", b.noodzaak) +
       popupRij("Boorlengte", `${b.lengte_m} m` +
-        (b.uitloop_m != null ? ` (uitloop ${b.uitloop_m} m)` : "")) +
+        (b.uitloop_in_m != null
+          ? ` (uitloop in ${b.uitloop_in_m} m, uit ${b.uitloop_uit_m} m)`
+          : b.uitloop_m != null ? ` (uitloop ${b.uitloop_m} m)` : "")) +
+      (b.kruisingshoek_gr != null ? popupRij("Kruisingshoek",
+        `${b.kruisingshoek_gr}° ` + (b.haaks
+          ? `<span class="chip">haaks</span>`
+          : `<span class="chip kritiek">schuin</span> toestemming beheerder nodig`)) : "") +
       popupRij("Intrede (RD)", rd(b.intredepunt_rd)) +
       popupRij("Uittrede (RD)", rd(b.uittredepunt_rd)) +
+      (b.kuip_in_rd ? popupRij("Kuip intrede (RD)", rd(b.kuip_in_rd)) : "") +
+      (b.kuip_uit_rd ? popupRij("Kuip uittrede (RD)", rd(b.kuip_uit_rd)) : "") +
       popupRij("Plaatsing", b.plaatsing) +
       popupRij("Dekking-eis", b.dekking_eis) +
       popupRij("Mantelbuis", `${b.mantelbuis}` +
@@ -1315,6 +1432,7 @@ const WEIGHT_LABELS = {
   overig_onverhard: "overig onverhard", onbekend: "onbekend terrein",
   natuur_groen: "bos / natuurlijk terrein",
   gesloten_verharding: "× gesloten verharding",
+  buiten_wegprofiel: "× buiten wegprofiel (niet langs de weg)",
   natura2000_weg: "× Natura 2000 (via weg/berm)", nnn: "× Natuurnetwerk NL",
   grondwaterbescherming: "× grondwaterbescherming",
   bodem_verontreinigd: "× verontreinigd/nazorg (SLD)",
@@ -1517,6 +1635,11 @@ async function ververRegionaleBronnen() {
 
 const statusEl = document.getElementById("status");
 
+function viaTolerantie() {
+  const v = parseFloat(document.getElementById("opt-via-tol").value);
+  return Number.isFinite(v) ? Math.max(0, Math.min(50, v)) : 10;
+}
+
 async function bereken() {
   const btn = document.getElementById("btn-compute");
   const versleept = sleepBezig();
@@ -1545,6 +1668,7 @@ async function bereken() {
       weights: leesWeights(),
       variants: document.getElementById("opt-varianten").checked,
       haspel_m: parseFloat(document.getElementById("opt-haspel").value) || 500,
+      via_tolerantie_m: viaTolerantie(),
       projectnaam: document.getElementById("project-naam").value.trim(),
     };
     const r = await fetch("api/compute", {
@@ -1628,7 +1752,7 @@ function toonResultaat() {
   sleepWissen(true);  // niet-toegepaste versleepte punten vervallen (bv. variantwissel)
   srcRoutes.clear(); srcSegments.clear(); srcCrossings.clear(); srcMoffen.clear();
   srcBomen.clear(); srcWerkpakketten.clear(); srcHighlight.clear();
-  srcMaatvoering.clear(); srcPercelen.clear();
+  srcMaatvoering.clear(); srcPercelen.clear(); srcMaatAuto.clear(); srcMaatHand.clear();
   svRouteGewijzigd();  // Street View-paneel meebewegen met variant/nieuw tracé
   if (!resultaat) return;
   (resultaat.bomen || []).forEach(c => {
@@ -1677,6 +1801,14 @@ function toonResultaat() {
     lijn.set("kort", `${kortTechniek(b.type)} ${b.lengte_m} m`);
     lijn.set("bor", b);
     srcCrossings.addFeature(lijn);
+    [[b.intredepunt_rd, b.kuip_in_rd], [b.uittredepunt_rd, b.kuip_uit_rd]].forEach(([p, k]) => {
+      if (!k) return;
+      const f = new ol.Feature(new ol.geom.LineString([p, k]));
+      f.set("soort", soort);
+      f.set("kuip", true);
+      f.set("bor", b);
+      srcCrossings.addFeature(f);
+    });
     [["intrede", b.intredepunt_rd], ["uittrede", b.uittredepunt_rd]].forEach(([type, p]) => {
       const f = new ol.Feature(new ol.geom.Point(p));
       f.set("soort", soort);
@@ -1689,6 +1821,18 @@ function toonResultaat() {
     const f = new ol.Feature(new ol.geom.Point(m.punt));
     f.set("mof", m);
     srcMoffen.addFeature(f);
+  });
+  (v.maatlijnen || []).forEach(x => (x.maatlijnen || []).forEach(ml => {
+    const f = new ol.Feature(new ol.geom.LineString([ml.van, ml.tot]));
+    f.set("label", fmtM(ml.afstand_m));
+    f.set("m", ml.metrering_m);
+    f.set("mv", x.nr);
+    srcMaatAuto.addFeature(f);
+  }));
+  (v.maatlijnen_handmatig || []).forEach(ml => {
+    const f = new ol.Feature(new ol.geom.LineString([ml.van, ml.tot]));
+    f.set("label", fmtM(ml.afstand_m));
+    srcMaatHand.addFeature(f);
   });
   (v.zro || []).forEach(z => {
     if (!z.geometry) return;
@@ -1904,9 +2048,10 @@ const td = x => `<td>${x ?? ""}</td>`;
    uitgeknipt tot een strook rond de geselecteerde tracédelen. */
 const selectie = { wp: new Set(), seg: new Set() };
 const SEL_FILTERS = ["gebieden", "percelen", "kruisingen", "moffen", "toetsing",
-                     "segmenten", "bomen"];
+                     "segmenten", "bomen", "maatlijnen"];
 const SEL_LAAG = { percelen: "percelen", kruisingen: "crossings", moffen: "moffen",
-                   toetsing: "maatvoering", segmenten: "segments", bomen: "bomen" };
+                   toetsing: "maatvoering", segmenten: "segments", bomen: "bomen",
+                   maatlijnen: "maatauto" };
 let selLijnen = [];    // ol.geom.LineString's van de geselecteerde delen
 let selBereiken = [];  // [van_m, tot_m] per geselecteerd deel
 
@@ -1960,6 +2105,7 @@ function featureInSelectie(soort, f, kruisSel) {
     return inBereik(s.van_m, s.tot_m);
   }
   if (soort === "moffen") return inBereik(f.get("mof").chainage_m);
+  if (soort === "maatlijnen") return inBereik(f.get("m"));
   if (soort === "percelen") {
     const z = f.get("zro"), half = (z.ingenomen_lengte_m || 0) / 2;
     return z.chainage_m != null ? inBereik(z.chainage_m - half, z.chainage_m + half)
@@ -2132,7 +2278,7 @@ function selectiePaneelBijwerken(v) {
                               : "Nog geen berekend tracé."}</span>`;
   const lengte = selBereiken.reduce((s, [a, b]) => s + (b - a), 0);
   const nKr = lagen.crossings.getSource().getFeatures()
-    .filter(f => f.get("insel") && !f.get("punttype")).length;
+    .filter(f => f.get("insel") && !f.get("punttype") && !f.get("kuip")).length;
   const nPc = srcPercelen.getFeatures().filter(f => f.get("insel")).length;
   document.getElementById("sel-samenvatting").textContent = selectieActief()
     ? `${selectie.wp.size} werkpakket(ten), ${selectie.seg.size} los(se) segment(en) · ` +
@@ -2357,6 +2503,46 @@ function toonTab() {
   } else if (actieveTab === "zro") {
     el.innerHTML = '<p class="leeg">ZRO-register laden…</p>';
     toonZroTab(el, v);
+  } else if (actieveTab === "maatvoering") {
+    const items = v.maatlijnen || [];
+    const naast = items.filter(x => x.categorie === "verharding" && x.status === "naast");
+    const inVerh = items.filter(x => x.categorie === "verharding" && x.status === "in");
+    const sam = document.createElement("p");
+    sam.className = "hint";
+    sam.innerHTML = items.length
+      ? `Tracé naast de verharding: ${Math.round(naast.reduce((t, x) => t + x.lengte_m, 0))} m` +
+        (naast.length ? `, kleinste afstand tot de rand ${fmtM(Math.min(...naast.map(x => x.afstand_min_m)))}` : "") +
+        ` · in de verharding: ${Math.round(inVerh.reduce((t, x) => t + x.lengte_m, 0))} m` +
+        ` · langs gevels: ${items.filter(x => x.categorie === "gevel").length} stuk(ken).` +
+        " Maatlijnen staan op de kaart (inzoomen) en in de DXF-export." +
+        " Zelf een maat zetten: 📏 Maatlijn in het blok Verkennen."
+      : "Geen maatvoering in dit resultaat — herbereken het tracé.";
+    el.appendChild(sam);
+    const afstandTekst = x => x.status === "in" ? "in de verharding"
+      : x.verlopend ? `${fmtM(x.afstand_begin_m)} → ${fmtM(x.afstand_eind_m)}`
+      : fmtM(x.afstand_m);
+    t = tabel(["Nr", "WP", "Van", "Tot", "Lengte", "Ten opzichte van", "Zijde", "Afstand tot de rand"],
+      items.map(x => ({
+        cells: [td(x.nr), td(x.werkpakket), tdn(x.van_m), tdn(x.tot_m), tdn(x.lengte_m + " m"),
+          td(x.object + (x.verharding ? `<br><small>${x.verharding}</small>` : "")),
+          td(x.zijde || "—"),
+          tdn(afstandTekst(x) + (x.verlopend || x.status === "in" ? ""
+            : `<br><small>${fmtM(x.afstand_min_m)} – ${fmtM(x.afstand_max_m)}</small>`))],
+        zoom: { type: "LineString", coordinates: [x.van_rd, x.tot_rd] },
+      })));
+    const hand = v.maatlijnen_handmatig || [];
+    if (hand.length) {
+      el.appendChild(t);
+      const h = document.createElement("h4");
+      h.textContent = "Zelf gezette maatlijnen";
+      el.appendChild(h);
+      t = tabel(["#", "Van (RD)", "Tot (RD)", "Maat"],
+        hand.map((ml, i) => ({
+          cells: [td(i + 1), tdn(ml.van.map(c => c.toFixed(2)).join(", ")),
+            tdn(ml.tot.map(c => c.toFixed(2)).join(", ")), tdn(fmtM(ml.afstand_m))],
+          zoom: { type: "LineString", coordinates: [ml.van, ml.tot] },
+        })));
+    }
   } else if (actieveTab === "toetsing") {
     if (v.maatvoering) el.appendChild(maatvoeringOverzichtEl(v.maatvoering));
     t = tabel(["Ernst", "WP", "Toets", "Grondslag", "Melding"],
@@ -4162,6 +4348,7 @@ document.getElementById("btn-save").addEventListener("click", async () => {
     weights: leesWeights(),
     variants: document.getElementById("opt-varianten").checked,
     haspel_m: parseFloat(document.getElementById("opt-haspel").value) || 500,
+    via_tolerantie_m: viaTolerantie(),
     result: resultaat,  // berekend tracé + registers mee opslaan
   };
   const r = await fetch("api/project/save", {
@@ -4207,6 +4394,7 @@ document.getElementById("project-lijst").addEventListener("change", async e => {
   document.getElementById("opt-varianten").checked = false;
   document.getElementById("opt-ring").checked = !!s.ring;
   document.getElementById("opt-haspel").value = s.haspel_m || 500;
+  document.getElementById("opt-via-tol").value = s.via_tolerantie_m ?? 10;
 
   // meegeslagen rekenresultaat herstellen (kaart, paneel, exports, nota's)
   resultaat = (s.result && s.result.varianten) ? s.result : null;

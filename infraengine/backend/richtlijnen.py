@@ -137,18 +137,21 @@ CATALOGUS: dict[str, dict] = {
                                  "m", 5, 60),
     "boom_wortelzone_m": _e("BOOM_WORTELZONE_M",
                             "minimale wortelzone-straal rond een boom", "m", 0.5, 15),
-    # --- boor-uitloop per techniek (intredehoek/opstelling) ------------------
+    # --- minimale boor-uitloop per techniek (ondergrens; de werkelijke
+    #     uitloop volgt uit intredehoek, boogstraal en invloedslijn, zie
+    #     engine.uitloop_detail en de boornormen in normen.py) ---------------
     "boor_uitloop_hdd_m": {"pad": ("boor", engine.TECHNIEK_HDD),
-                           "omschrijving": "uitloop vóór intrede/na uittrede bij HDD",
+                           "omschrijving": "minimale uitloop vóór intrede/na uittrede "
+                           "bij HDD",
                            "eenheid": "m", "min": 0, "max": 60},
     "boor_uitloop_nanodrill_m": {"pad": ("boor", engine.TECHNIEK_NANO),
-                                 "omschrijving": "uitloop bij nanodrill/mini-HDD",
+                                 "omschrijving": "minimale uitloop bij nanodrill/mini-HDD",
                                  "eenheid": "m", "min": 0, "max": 30},
     "boor_uitloop_persing_m": {"pad": ("boor", engine.TECHNIEK_PERSING),
-                               "omschrijving": "uitloop (kuip) bij persing",
+                               "omschrijving": "minimale afstand obstakel–perskuip bij persing",
                                "eenheid": "m", "min": 0, "max": 20},
     "boor_uitloop_raket_m": {"pad": ("boor", engine.TECHNIEK_RAKET),
-                             "omschrijving": "uitloop (kuip) bij raketboring",
+                             "omschrijving": "minimale afstand obstakel–kuip bij raketboring",
                              "eenheid": "m", "min": 0, "max": 20},
     # --- werkterrein-eisen per techniek -------------------------------------
     "werkterrein_hdd_intrede_m2": {"pad": ("werk", engine.TECHNIEK_HDD, "intrede_m2"),
