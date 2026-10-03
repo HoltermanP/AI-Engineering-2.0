@@ -635,6 +635,161 @@ async function laadGwIsohypsen() {
 
 map.on("moveend", () => { laadGrondwaterPutten(); laadGwIsohypsen(); laadNdffHokken(); });
 
+/* --------------------- Liander elektriciteitsnet (open data, CC-BY 4.0)
+   Kabels en stations van Liander, live uit hun open ArcGIS FeatureServer
+   (web map "Liander Open Data Elektranet"). Per sublaag een vectorlaag die
+   per tegel laadt, binnen het schaalbereik dat Liander zelf publiceert
+   (laagspanning pas vanaf 1:5.000). Stijl en legenda komen uit de renderer
+   van de service zelf. Alleen het Liander-verzorgingsgebied; informatief —
+   weegt niet mee in het tracé en vervangt geen KLIC-melding. */
+const LIANDER_URL = "https://services1.arcgis.com/v6W5HAVrpgSg3vts/arcgis/rest/services/Liander_Open_Data_Elektra/FeatureServer";
+// tekenvolgorde van onder naar boven (gelijk aan de web map)
+const LIANDER_SUBLAGEN = [530, 644, 112, 424, 632, 638, 643, 642, 641];
+const lianderLagen = [];   // { id, naam, laag, legenda: [{ label, html }] }
+let lianderMelding = "";
+let lianderBezig = null;   // Promise: sublagen worden (eenmalig) opgebouwd
+
+const esriKleur = c => c ? `rgba(${c[0]},${c[1]},${c[2]},${(c[3] ?? 255) / 255})` : "transparent";
+
+// Esri-symbool → OpenLayers-stijl + legendavlekje (HTML)
+function esriSymbool(s) {
+  if (!s) return null;
+  if (s.type === "esriSLS") {
+    const dash = s.style === "esriSLSDash" ? [6, 4] : undefined;
+    const w = Math.max(1.2, s.width * 1.33);
+    return {
+      stijl: new ol.style.Style({ stroke: new ol.style.Stroke(
+        { color: esriKleur(s.color), width: w, lineDash: dash }) }),
+      html: `<span class="vlek" style="width:22px;height:0;border-top:` +
+        `${Math.max(2, Math.round(w))}px ${dash ? "dashed" : "solid"} ${esriKleur(s.color)}"></span>`,
+    };
+  }
+  if (s.type === "esriSFS") {
+    const rand = s.outline ? esriKleur(s.outline.color) : "transparent";
+    return {
+      stijl: new ol.style.Style({
+        fill: new ol.style.Fill({ color: esriKleur(s.color) }),
+        stroke: new ol.style.Stroke({ color: rand, width: 1 }),
+      }),
+      html: `<span class="vlek" style="width:14px;height:10px;` +
+        `background:${esriKleur(s.color)};border:1px solid ${rand}"></span>`,
+    };
+  }
+  if (s.type === "esriPMS" && s.imageData) {
+    const src = `data:${s.contentType};base64,${s.imageData}`;
+    return {
+      stijl: new ol.style.Style({ image: new ol.style.Icon({ src, scale: 1 }) }),
+      html: `<img class="vlek" src="${src}" style="width:${s.width}px;height:${s.height}px">`,
+    };
+  }
+  return null;
+}
+
+async function bouwLianderLagen() {
+  const tegels = ol.tilegrid.createXYZ({ extent: RD.getExtent(), tileSize: 512 });
+  const fmt = new ol.format.EsriJSON();
+  const defs = await Promise.all(LIANDER_SUBLAGEN.map(id =>
+    fetch(`${LIANDER_URL}/${id}?f=json`).then(r => r.json())));
+  defs.forEach((d, i) => {
+    const r = d.drawingInfo.renderer;
+    let stijlVan, legenda;
+    if (r.type === "uniqueValue") {
+      const perWaarde = new Map();
+      legenda = [];
+      for (const u of r.uniqueValueInfos) {
+        const sym = esriSymbool(u.symbol);
+        if (!sym) continue;
+        perWaarde.set(String(u.value), sym.stijl);
+        const l = legenda.find(l => l.label === u.label);
+        if (l) l.waarden.push(String(u.value));
+        else legenda.push({ label: u.label, html: sym.html, waarden: [String(u.value)] });
+      }
+      const standaard = esriSymbool(r.defaultSymbol);
+      stijlVan = f => perWaarde.get(String(f.get(r.field1))) ?? standaard?.stijl;
+    } else {
+      const sym = esriSymbool(r.symbol);
+      stijlVan = () => sym?.stijl;
+      legenda = sym ? [{ label: d.name, html: sym.html }] : [];
+    }
+    const src = new ol.source.Vector({
+      format: fmt,
+      strategy: ol.loadingstrategy.tile(tegels),
+      loader: async (extent, resolution, proj, ok, fout) => {
+        try {
+          const alle = [];
+          for (let offset = 0; ; ) {
+            const q = new URLSearchParams({
+              where: "1=1", outFields: "*", f: "json",
+              geometry: extent.join(","), geometryType: "esriGeometryEnvelope",
+              inSR: "28992", outSR: "28992", spatialRel: "esriSpatialRelIntersects",
+              maxAllowableOffset: String(resolution / 2),
+              resultOffset: String(offset),
+            });
+            const res = await (await fetch(`${LIANDER_URL}/${d.id}/query?${q}`)).json();
+            if (res.error) throw new Error(res.error.message);
+            const feats = fmt.readFeatures(res);
+            feats.forEach(f => f.set("liander", d.name));
+            alle.push(...feats);
+            if (!res.exceededTransferLimit || !feats.length) break;
+            offset += feats.length;
+          }
+          src.addFeatures(alle);
+          ok(alle);
+          ververLianderLegendaUitgesteld();
+        } catch (e) {
+          lianderMelding = "Liander-dienst niet bereikbaar";
+          src.removeLoadedExtent(extent);
+          ververLegenda();
+          fout();
+        }
+      },
+    });
+    const laag = new ol.layer.Vector({
+      source: src, visible: false, zIndex: 4 + i / 100,
+      // schaalbereik van de service (OGC-standaardpixel 0,28 mm)
+      maxResolution: d.minScale ? d.minScale * 0.00028 : undefined,
+      style: stijlVan,
+    });
+    lianderLagen.push({ id: d.id, naam: d.name, minScale: d.minScale, veld: r.field1, laag, legenda });
+    map.addLayer(laag);
+  });
+}
+
+async function zetLianderZichtbaar(aan) {
+  if (aan && !lianderBezig) lianderBezig = bouwLianderLagen().catch(e => {
+    lianderBezig = null;
+    lianderMelding = "Liander-dienst niet bereikbaar";
+  });
+  if (lianderBezig) await lianderBezig;
+  if (!aan) lianderMelding = "";
+  lianderLagen.forEach(l => l.laag.setVisible(aan));
+  ververLegenda();
+}
+
+let lianderLegendaTimer = null;
+function ververLianderLegendaUitgesteld() {
+  clearTimeout(lianderLegendaTimer);
+  lianderLegendaTimer = setTimeout(ververLegenda, 250);
+}
+map.on("moveend", () => { if (lianderLagen.some(o => o.laag.getVisible())) ververLianderLegendaUitgesteld(); });
+
+function toonLianderPopup(f, coord) {
+  const skip = new Set(["OBJECTID", "Shape__Length", "Shape__Area", "liander"]);
+  const rijen = Object.entries(f.getProperties())
+    .filter(([k, v]) => !skip.has(k) && v !== null && typeof v !== "object")
+    .map(([k, v]) => popupRij(k.charAt(0) + k.slice(1).toLowerCase().replace(/_/g, " "),
+      rlEsc(String(v)) + (k === "SPANNINGSNIVEAU" ? " kV" : ""))).join("");
+  const lengte = f.get("Shape__Length");
+  popupEl.innerHTML = `<button class="sluit" title="Sluiten">×</button>` +
+    `<h3>Liander — ${rlEsc(f.get("liander"))}</h3>` + rijen +
+    (lengte && f.getGeometry().getType().includes("Line")
+      ? popupRij("Lengte (deel)", fmtM(lengte)) : "") +
+    '<p class="opm">Bron: Liander Open Data Elektranet (CC-BY 4.0). Indicatief — ' +
+    "geen rechten aan te ontlenen; vervangt geen KLIC-melding.</p>";
+  popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
+  kaartPopup.setPosition(coord);
+}
+
 /* --------------------- NDFF beschermde soorten (open data, per km-hok)
    Informatieve laag: de km-hokken in beeld met de beschermde soorten (Ow)
    per categorie, live via de backend uit de open data achter de Flora &
@@ -738,6 +893,8 @@ document.getElementById("lg-grondwater").addEventListener("change", e => {
   else { srcGrondwater.clear(); gwMelding = ""; }
   ververLegenda();
 });
+document.getElementById("lg-liander").addEventListener("change", e =>
+  zetLianderZichtbaar(e.target.checked));
 document.getElementById("lg-gwiso").addEventListener("change", e => {
   lagen.gwiso.setVisible(e.target.checked);
   if (e.target.checked) laadGwIsohypsen();
@@ -1112,6 +1269,10 @@ map.on("click", evt => {
     map.forEachFeatureAtPixel(evt.pixel, f => !!(klant = f.get("adres") ? f : null),
       { hitTolerance: 8, layerFilter: l => l === lagen.klant });
     if (klant) { toonKlantPopup(klant.getProperties(), evt.coordinate); return; }
+    let net = null;
+    map.forEachFeatureAtPixel(evt.pixel, f => !!(net = f.get("liander") ? f : null),
+      { hitTolerance: 6, layerFilter: l => lianderLagen.some(o => o.laag === l) });
+    if (net) { toonLianderPopup(net, evt.coordinate); return; }
     // geen boring/kruising/put geraakt: zichtbare datalagen op dit punt bevragen
     let seg = null;
     map.forEachFeatureAtPixel(evt.pixel, f => {
@@ -1132,7 +1293,8 @@ map.on("pointermove", evt => {
   const hit = map.hasFeatureAtPixel(evt.pixel,
     { hitTolerance: 8,
       layerFilter: l => l === lagen.crossings || l === lagen.grondwater
-                        || l === lagen.ndff || l === lagen.klant });
+                        || l === lagen.ndff || l === lagen.klant
+                        || lianderLagen.some(o => o.laag === l) });
   map.getTargetElement().style.cursor = hit ? "pointer" : "";
 });
 
@@ -1960,6 +2122,37 @@ function ververLegenda() {
         (gwIsoInfo ? `<div class="rij hint">${rlEsc(gwIsoInfo)}</div>` : "") +
         (gwIsoMelding ? `<div class="rij">⚠ ${rlEsc(gwIsoMelding)}</div>` : "");
     delen.push(blok);
+  }
+  const net = lianderLagen.filter(o => o.laag.getVisible());
+  if (net.length || lianderMelding) {
+    // alleen de sublagen/klassen die in het huidige kaartbeeld voorkomen
+    const view = map.getView(), res = view.getResolution();
+    const beeld = view.calculateExtent(map.getSize());
+    const schaal = m => "1:" + m.toLocaleString("nl-NL");
+    const regels = [], buitenSchaal = [];
+    for (const o of net) {
+      if (o.minScale && res > o.minScale * 0.00028) {
+        buitenSchaal.push(`${o.naam.toLowerCase()} vanaf ${schaal(o.minScale)}`);
+        continue;
+      }
+      const fs = o.laag.getSource().getFeaturesInExtent(beeld);
+      if (!fs.length) continue;
+      if (o.veld) {
+        const aanwezig = new Set(fs.map(f => String(f.get(o.veld))));
+        const klassen = o.legenda.filter(l => l.waarden.some(w => aanwezig.has(w)));
+        regels.push(`<div class="rij"><em>${rlEsc(o.naam)}</em></div>` +
+          klassen.map(l => `<div class="rij">${l.html}${rlEsc(l.label)}</div>`).join(""));
+      } else {
+        regels.push(`<div class="rij">${o.legenda[0]?.html ?? ""}${rlEsc(o.naam)}</div>`);
+      }
+    }
+    delen.push("<details open><summary>Elektriciteitsnet Liander</summary>" +
+      (regels.join("") || '<div class="rij hint">geen Liander-net in beeld ' +
+        "(buiten verzorgingsgebied?)</div>") +
+      (buitenSchaal.length ? `<div class="rij hint">zoom in voor ${rlEsc(buitenSchaal.join(", "))}</div>` : "") +
+      (lianderMelding ? `<div class="rij">⚠ ${rlEsc(lianderMelding)}</div>` : "") +
+      '<div class="rij hint">klik op een kabel of station · bron Liander (CC-BY 4.0)</div>' +
+      "</details>");
   }
   const zichtbaar = overlayLagen.filter(o => o.laag.getVisible());
   zichtbaar.forEach((o, i) => delen.push(
