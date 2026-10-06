@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from shapely.geometry import LineString, MultiPoint, Point, Polygon, mapping
@@ -1501,6 +1501,82 @@ def ndff_hokken(bbox: str):
         return ndff_mod.kaartlaag(delen)
     except Exception as e:
         raise HTTPException(502, f"NDFF open data niet bereikbaar: {type(e).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# KLIC-leveringen — hoofdmap koppelen, kaartlaag en documenten
+# ---------------------------------------------------------------------------
+
+class KlicMap(BaseModel):
+    map: str
+
+
+def _bbox_param(bbox: str) -> tuple:
+    try:
+        delen = tuple(float(x) for x in bbox.split(","))
+        if len(delen) != 4:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "bbox moet 'xmin,ymin,xmax,ymax' (RD) zijn.")
+    return delen
+
+
+@app.get("/api/klic/leveringen")
+def klic_leveringen():
+    """Gekoppelde mappen, scanvoortgang en de ingelezen leveringen."""
+    return klic.leveringen()
+
+
+@app.post("/api/klic/koppel")
+def klic_koppel(req: KlicMap):
+    try:
+        klic.koppel(req.map)
+    except klic.KlicError as e:
+        raise HTTPException(400, str(e))
+    return klic.leveringen()
+
+
+@app.post("/api/klic/ontkoppel")
+def klic_ontkoppel(req: KlicMap):
+    klic.ontkoppel(req.map)
+    return klic.leveringen()
+
+
+@app.post("/api/klic/herlaad")
+def klic_herlaad():
+    klic.start_scan()
+    return klic.leveringen()
+
+
+@app.post("/api/klic/kies-map")
+def klic_kies_map():
+    """Systeemdialoog 'map kiezen' (lokale installatie) en direct koppelen."""
+    try:
+        pad = klic.kies_map()
+        if pad:
+            klic.koppel(pad)
+    except klic.KlicError as e:
+        raise HTTPException(400, str(e))
+    return {**klic.leveringen(), "gekozen": pad}
+
+
+@app.get("/api/klic/features")
+def klic_features(bbox: str, res: float | None = None):
+    """KLIC-objecten in het kaartbeeld (RD-bbox; res = m/pixel)."""
+    return klic.features_in(_bbox_param(bbox), res)
+
+
+@app.get("/api/klic/bestand")
+def klic_bestand(klic_nr: str, pad: str):
+    """Document uit een levering (bijlage, profielschets, leveringsinformatie)."""
+    try:
+        data, naam = klic.bestand(klic_nr, pad)
+    except klic.KlicError as e:
+        raise HTTPException(404, str(e))
+    soort = "application/pdf" if naam.lower().endswith(".pdf") else "application/octet-stream"
+    veilig = re.sub(r'[^A-Za-z0-9._-]', "_", naam)
+    return Response(data, media_type=soort,
+                    headers={"Content-Disposition": f'inline; filename="{veilig}"'})
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,8 @@ const srcPercelen = new ol.source.Vector(); // door het tracé geraakte percelen
 const srcSelectie = new ol.source.Vector(); // geselecteerde werkpakketten/segmenten
 const srcMaatAuto = new ol.source.Vector(); // maatlijnen tracé ↔ verhardingsrand/gevel
 const srcMaatHand = new ol.source.Vector(); // zelf gezette maatlijnen
+const srcKlic = new ol.source.Vector();     // KLIC: kabels/leidingen in beeld
+const srcKlicContour = new ol.source.Vector(); // KLIC: leveringscontouren
 
 // kleur van een NDFF-hok naar het aantal beschermde soorten (Ow) erin
 const NDFF_KLASSEN = [
@@ -133,6 +135,23 @@ function maatStijl(f, res, kleur, aanEind) {
 }
 
 const lagen = {
+  // KLIC-leveringen: contouren (altijd, ook uitgezoomd) en de netten in beeld
+  klicContour: new ol.layer.Vector({
+    source: srcKlicContour, zIndex: 13, visible: false, declutter: true,
+    style: (f, res) => new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: "#C000C0", width: 1.4, lineDash: [7, 5] }),
+      text: res < 25 ? new ol.style.Text({
+        text: f.get("label"), placement: "line", overflow: true,
+        font: "600 10px 'IBM Plex Mono',monospace", textBaseline: "bottom",
+        fill: new ol.style.Fill({ color: "#C000C0" }),
+        stroke: new ol.style.Stroke({ color: "#fff", width: 3 }),
+      }) : undefined,
+    }),
+  }),
+  klic: new ol.layer.Vector({
+    source: srcKlic, zIndex: 14, visible: false,
+    style: (f, res) => klicStijl(f, res),
+  }),
   // NDFF: kilometerhokken gekleurd naar het aantal beschermde soorten; label
   // = aantal soorten (∗ = waarvan strikt beschermd). Klik = soortenlijst.
   ndff: new ol.layer.Vector({
@@ -633,7 +652,7 @@ async function laadGwIsohypsen() {
   }
 }
 
-map.on("moveend", () => { laadGrondwaterPutten(); laadGwIsohypsen(); laadNdffHokken(); });
+map.on("moveend", () => { laadGrondwaterPutten(); laadGwIsohypsen(); laadNdffHokken(); laadKlic(); });
 
 /* --------------------- NDFF beschermde soorten (open data, per km-hok)
    Informatieve laag: de km-hokken in beeld met de beschermde soorten (Ow)
@@ -732,6 +751,306 @@ function toonKlantPopup(k, coord) {
   popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
   kaartPopup.setPosition(coord);
 }
+/* --------------------- KLIC-leveringen (bestaande kabels en leidingen)
+   De backend doorzoekt de gekoppelde hoofdmap(pen) naar KLIC-leveringen
+   (uitgepakt, zip of zip-in-zip) en leest de IMKL-GML in. De kaart toont
+   per kaartbeeld de netten (kleur per thema), omhullingen, EV-zones,
+   profielschetsen en — vanaf straatniveau — netcomponenten en putten.
+   Klik op een object voor de gegevens en eventuele profielschets (PDF). */
+const KLIC_THEMA = {
+  hoogspanning: ["#FF0000", "hoogspanning"],
+  landelijkHoogspanningsnet: ["#FF0000", "landelijk hoogspanningsnet"],
+  middenspanning: ["#A0122E", "middenspanning"],
+  laagspanning: ["#D2691E", "laagspanning"],
+  datatransport: ["#00A651", "datatransport"],
+  gasHogeDruk: ["#E69500", "gas hoge druk"],
+  gasLageDruk: ["#D4B800", "gas lage druk"],
+  petrochemie: ["#FF6A00", "petrochemie"],
+  buisleidingGevaarlijkeInhoud: ["#FF6A00", "buisleiding gevaarlijke inhoud"],
+  water: ["#1F5BFF", "water"],
+  rioolVrijverval: ["#8B5A2B", "riool vrijverval"],
+  rioolOnderOverOfOnderdruk: ["#5C3A1A", "riool onder over-/onderdruk"],
+  warmte: ["#B000B5", "warmte"],
+  overig: ["#6E6E6E", "overig"],
+  wees: ["#A0A0A0", "wees (zonder beheerder)"],
+};
+const KLIC_SOORT = {
+  Elektriciteitskabel: "elektriciteitskabel", Telecommunicatiekabel: "telecommunicatiekabel",
+  Waterleiding: "waterleiding", Rioolleiding: "rioolleiding",
+  OlieGasChemicalienPijpleiding: "gas-/olie-/chemicaliënleiding",
+  Thermischepijpleiding: "warmteleiding", Duct: "kabelbuis (duct)",
+  Overig: "overige kabel/leiding", UtilityLink: "kabel/leiding (type onbekend)",
+  Mantelbuis: "mantelbuis", Kabelbed: "kabelbed", Appurtenance: "netcomponent",
+  Mangat: "mangat/put", TechnischGebouw: "technisch gebouw/station", Kast: "kast",
+  Mast: "mast", ExtraDetailinfo: "detailinfo",
+  AanduidingEisVoorzorgsmaatregel: "eis voorzorgsmaatregel (EV)",
+  DiepteTovMaaiveld: "diepte t.o.v. maaiveld", DiepteNAP: "diepte t.o.v. NAP",
+};
+// codelijstwaarden (INSPIRE/IMKL) leesbaar in de popup
+const KLIC_WAARDE = {
+  functional: "in gebruik", projected: "gepland", decommissioned: "buiten gebruik",
+  underConstruction: "in aanleg", disused: "buiten gebruik",
+  underground: "ondergronds", onGroundSurface: "op maaiveld",
+  suspendedOrElevated: "bovengronds", true: "ja", false: "nee",
+  tot30cm: "tot 30 cm", tot50cm: "tot 50 cm", tot100cm: "tot 100 cm",
+  steel: "staal", naturalGas: "aardgas", sanitary: "vuilwater", storm: "hemelwater",
+  combined: "gemengd", potable: "drinkwater",
+};
+const klicKleur = t => (KLIC_THEMA[t] || KLIC_THEMA.overig)[0];
+const klicStijlen = {};
+
+function klicStijl(f, res) {
+  const k = f.get("k"), t = f.get("t"), s = f.get("s");
+  const dik = res < 0.35 ? 1 : 0;
+  const sleutel = `${k}|${t}|${dik}|${k === "punt" ? s : ""}`;
+  if (klicStijlen[sleutel]) return klicStijlen[sleutel];
+  const kleur = klicKleur(t);
+  let st;
+  if (k === "net") {
+    st = new ol.style.Style({ stroke: new ol.style.Stroke({ color: kleur, width: dik ? 2.2 : 1.5 }) });
+  } else if (k === "omhulling") {
+    // mantelbuis/kabelbed: brede, lichte band onder de kabel
+    st = new ol.style.Style({ stroke: new ol.style.Stroke({
+      color: ol.color.asString([...ol.color.asArray(kleur).slice(0, 3), 0.28]),
+      width: dik ? 7 : 4.5, lineCap: "butt" }), zIndex: -1 });
+  } else if (k === "ev") {
+    st = new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: "#E00000", width: 1.6, lineDash: [6, 4] }),
+      fill: new ol.style.Fill({ color: "rgba(224,0,0,0.10)" }), zIndex: -2 });
+  } else if (k === "detail") {
+    st = new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: "#6A3FA0", width: 1.4, lineDash: [3, 3] }),
+      fill: new ol.style.Fill({ color: "rgba(106,63,160,0.04)" }) });
+  } else {  // punt
+    const vierkant = s === "TechnischGebouw" || s === "Kast";
+    const fill = new ol.style.Fill({ color: kleur });
+    const stroke = new ol.style.Stroke({ color: "#fff", width: 1 });
+    st = new ol.style.Style({ image: vierkant
+      ? new ol.style.RegularShape({ points: 4, radius: 5, angle: Math.PI / 4, fill, stroke })
+      : new ol.style.Circle({ radius: s === "Mangat" ? 3.5 : 2.6, fill, stroke }) });
+  }
+  return (klicStijlen[sleutel] = st);
+}
+
+const klicGeo = new ol.format.GeoJSON();
+let klicVolgnr = 0;
+let klicMelding = "";
+let klicData = null;           // laatste /api/klic/leveringen
+let klicPoll = null;
+
+async function laadKlic() {
+  if (!lagen.klic.getVisible()) return;
+  const volgnr = ++klicVolgnr;
+  const bbox = map.getView().calculateExtent(map.getSize());
+  const res = map.getView().getResolution();
+  try {
+    const r = await fetch("api/klic/features?bbox=" + bbox.map(v => v.toFixed(0)).join(",") +
+      "&res=" + res.toFixed(3));
+    const d = await r.json();
+    if (volgnr !== klicVolgnr || !lagen.klic.getVisible()) return;
+    srcKlic.clear();
+    if (!r.ok) { klicMelding = d.detail || "KLIC-laag niet beschikbaar"; ververLegenda(); return; }
+    srcKlic.addFeatures(d.features.map(o => {
+      const f = new ol.Feature(klicGeo.readGeometry(o.g));
+      f.setProperties({ klicObj: o, k: o.k, t: o.t, s: o.s });
+      return f;
+    }));
+    const n = klicData ? klicData.leveringen.length : 0;
+    klicMelding = d.te_veel ? `${d.te_veel.toLocaleString("nl-NL")} objecten in beeld — zoom verder in`
+      : !n ? "nog geen KLIC-levering gekoppeld"
+      : !d.features.length ? "geen KLIC-objecten in dit kaartbeeld"
+      : !d.punten ? "netcomponenten en putten vanaf straatniveau" : "";
+    ververLegenda();
+  } catch (e) {
+    if (volgnr !== klicVolgnr) return;
+    klicMelding = "KLIC-laag niet beschikbaar";
+    ververLegenda();
+  }
+}
+
+function klicBestandUrl(klicNr, pad) {
+  return "api/klic/bestand?klic_nr=" + encodeURIComponent(klicNr) + "&pad=" + encodeURIComponent(pad);
+}
+
+function klicTekenContouren() {
+  srcKlicContour.clear();
+  (klicData ? klicData.leveringen : []).forEach(l => {
+    if (!l.contour) return;
+    const f = new ol.Feature(klicGeo.readGeometry(l.contour));
+    f.set("label", `KLIC ${l.klic}`);
+    f.set("klicLev", l.klic);
+    srcKlicContour.addFeature(f);
+  });
+}
+
+function klicZoomNaar(klicNr) {
+  const f = srcKlicContour.getFeatures().find(x => x.get("klicLev") === klicNr);
+  if (!f) return;
+  const cb = document.getElementById("lg-klic");
+  if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change")); }
+  map.getView().fit(f.getGeometry().getExtent(), { padding: [40, 40, 40, 40], duration: 400 });
+}
+
+function klicToonPanel(d) {
+  const st = document.getElementById("klic-status");
+  const n = d.leveringen.length;
+  st.classList.remove("fout");
+  if (d.bezig) {
+    const sc = d.scan || {};
+    st.textContent = `KLIC inlezen… ${sc.stap || ""}` + (sc.totaal ? ` (${sc.gedaan}/${sc.totaal})` : "");
+  } else if (!d.mappen.length && !d.bestanden.length) {
+    st.textContent = "KLIC: nog geen map gekoppeld. Koppel de hoofdmap met KLIC-leveringen; " +
+      "submappen en zips worden doorzocht.";
+  } else {
+    st.textContent = `${n} levering(en) · ${d.features.toLocaleString("nl-NL")} kabels/leidingen` +
+      (d.scan && d.scan.klaar_op ? ` · ingelezen ${d.scan.klaar_op}` : "") +
+      (d.bestanden.length ? ` · ${d.bestanden.length} GeoJSON-bestand(en) in data/klic` : "");
+  }
+  if (d.fouten && d.fouten.length) {
+    st.classList.add("fout");
+    st.textContent += ` · ⚠ ${d.fouten.length} melding(en)`;
+    st.title = d.fouten.join("\n");
+  } else st.title = "";
+  document.getElementById("klic-mappen").innerHTML = d.mappen.map(m =>
+    `<div class="klic-map" title="${rlEsc(m)}"><span>📁 ${rlEsc(m)}</span>` +
+    `<button data-map="${rlEsc(m)}" title="Map ontkoppelen">×</button></div>`).join("");
+  document.querySelectorAll("#klic-mappen button").forEach(b =>
+    b.addEventListener("click", async () => {
+      if (!confirm(`KLIC-map ontkoppelen?\n${b.dataset.map}\n\nDe bestanden zelf blijven staan.`)) return;
+      klicVernieuw(await klicPost("api/klic/ontkoppel", { map: b.dataset.map }));
+    }));
+  const det = document.getElementById("klic-lev-details");
+  det.hidden = !n;
+  document.getElementById("klic-lev-kop").textContent = `Leveringen (${n})`;
+  document.getElementById("klic-leveringen").innerHTML = d.leveringen.map(l => {
+    const t = l.tellingen || {};
+    const docs = [
+      ...(l.documenten || []).map(p => ({ pad: p, naam: "Leveringsinformatie (Kadaster)" })),
+      ...(l.bijlagen || []).map(b => ({ pad: b.pad,
+        naam: `${(l.beheerders || {})[b.bron] || b.bron} — ${b.type || "bijlage"}` })),
+    ];
+    return `<div class="klic-lev"><a class="zoom" data-klic="${rlEsc(l.klic)}" title="Inzoomen op deze levering">${rlEsc(l.klic)}</a>` +
+      (l.volgnr > 1 ? ` <span class="sub">(levering ${l.volgnr})</span>` : "") +
+      `<div>${rlEsc(l.referentie || "")}</div>` +
+      `<div class="sub">${rlEsc([l.datum, (l.soort || "").replace(/verzoek$/, "melding"),
+        l.locatie].filter(Boolean).join(" · "))}</div>` +
+      `<div class="sub">${t.net || 0} kabels/leidingen · ${Object.keys(l.beheerders || {}).length} beheerders` +
+      (t.ev ? ` · <strong style="color:#C00">${t.ev} EV-zone(s)</strong>` : "") + "</div>" +
+      (docs.length ? `<details><summary>Documenten (${docs.length})</summary><ul>` +
+        docs.map(x => `<li><a href="${klicBestandUrl(l.klic, x.pad)}" target="_blank" rel="noopener">` +
+          `${rlEsc(x.naam)}</a></li>`).join("") + "</ul></details>" : "") +
+      "</div>";
+  }).join("");
+  document.querySelectorAll("#klic-leveringen a.zoom").forEach(a =>
+    a.addEventListener("click", () => klicZoomNaar(a.dataset.klic)));
+}
+
+async function klicPost(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}) });
+  const d = await r.json();
+  if (!r.ok) { alert(d.detail || "KLIC: actie mislukt"); return null; }
+  return d;
+}
+
+async function klicVernieuw(d) {
+  if (d === null) return;
+  if (!d) {
+    try { d = await (await fetch("api/klic/leveringen")).json(); } catch (e) { return; }
+  }
+  const wasBezig = klicData && klicData.bezig;
+  klicData = d;
+  klicToonPanel(d);
+  klicTekenContouren();
+  clearTimeout(klicPoll);
+  if (d.bezig) klicPoll = setTimeout(() => klicVernieuw(), 1500);
+  else if (wasBezig || !srcKlic.getFeatures().length) laadKlic();
+}
+
+document.getElementById("lg-klic").addEventListener("change", e => {
+  lagen.klic.setVisible(e.target.checked);
+  lagen.klicContour.setVisible(e.target.checked);
+  if (e.target.checked) laadKlic();
+  else { srcKlic.clear(); klicMelding = ""; }
+  ververLegenda();
+});
+document.getElementById("klic-kies").addEventListener("click", async e => {
+  const knop = e.currentTarget;
+  knop.disabled = true;
+  document.getElementById("klic-status").textContent = "Kies de hoofdmap in het venster dat opent…";
+  try {
+    const r = await fetch("api/klic/kies-map", { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) {
+      // geen systeemdialoog (server/Docker): pad invoeren
+      document.getElementById("klic-pad-details").open = true;
+      document.getElementById("klic-pad").focus();
+      alert(d.detail || "Mapkeuze niet beschikbaar; voer het pad in.");
+      klicVernieuw();
+    } else {
+      klicVernieuw(d);
+      if (d.gekozen) {
+        const cb = document.getElementById("lg-klic");
+        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change")); }
+      }
+    }
+  } finally { knop.disabled = false; }
+});
+document.getElementById("klic-koppel").addEventListener("click", async () => {
+  const pad = document.getElementById("klic-pad").value.trim();
+  if (!pad) return;
+  const d = await klicPost("api/klic/koppel", { map: pad });
+  if (d) {
+    document.getElementById("klic-pad").value = "";
+    const cb = document.getElementById("lg-klic");
+    if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change")); }
+  }
+  klicVernieuw(d);
+});
+document.getElementById("klic-herlaad").addEventListener("click", async () =>
+  klicVernieuw(await klicPost("api/klic/herlaad")));
+klicVernieuw();
+
+// KLIC-object als deel van de popup "Datalagen op dit punt"
+function klicInfoDeel(o) {
+  if (!o) return "";
+  const lev = klicData && klicData.leveringen.find(l => l.klic === o.klic);
+  const beheerder = (lev && lev.beheerders && lev.beheerders[o.b]) || o.b;
+  const thema = (KLIC_THEMA[o.t] || [null, o.t])[1];
+  const attrs = Object.entries(o.a || {}).map(([k, v]) =>
+    popupRij(rlEsc(k), rlEsc(KLIC_WAARDE[v] || v))).join("");
+  const pdf = o.pad ? popupRij("Document",
+    `<a href="${klicBestandUrl(o.klic, o.pad)}" target="_blank" rel="noopener">` +
+    `${o.k === "ev" ? "eisen voorzorgsmaatregel" : rlEsc((o.a && o.a["soort info"]) || "PDF")} openen ↗</a>`) : "";
+  const hier = o.docsHier && o.docsHier.length ? popupRij("Op dit punt", o.docsHier.map(d =>
+    `<a href="${klicBestandUrl(d.klic, d.pad)}" target="_blank" rel="noopener">` +
+    `${rlEsc((d.a && d.a["soort info"]) || KLIC_SOORT[d.s] || "document")}` +
+    ` (${rlEsc((lev && lev.beheerders && lev.beheerders[d.b]) || d.b)}) ↗</a>`).join("<br>")) : "";
+  return `<section><h4>KLIC: ${rlEsc(KLIC_SOORT[o.s] || o.s)}` +
+    `${o.k === "ev" ? "" : ` — ${rlEsc(thema)}`}</h4>` +
+    popupRij("Beheerder", rlEsc(beheerder)) +
+    popupRij("KLIC-melding", rlEsc(o.klic + (lev && lev.referentie ? ` (${lev.referentie})` : ""))) +
+    pdf + hier + attrs +
+    (o.k === "ev" ? '<p class="opm"><strong>Eis voorzorgsmaatregel:</strong> de netbeheerder ' +
+      "eist overleg/maatregelen vóór graafwerk in deze zone (WIBON).</p>" : "") +
+    '<p class="opm">Bron: KLIC-levering (IMKL). Ligging indicatief; exacte ligging ' +
+    "vaststellen met proefsleuven (CROW 500).</p></section>";
+}
+// bij meerdere objecten onder de muis: punt > kabel/leiding > detail > omhulling > EV
+const KLIC_KLIK_VOORRANG = { punt: 0, net: 1, detail: 2, omhulling: 3, ev: 4 };
+function klicObjectOpPixel(pixel) {
+  let beste = null;
+  const docs = [];   // profielschetsen/EV-documenten op dit punt (vaak onder de kabel)
+  map.forEachFeatureAtPixel(pixel, f => {
+    const o = f.get("klicObj");
+    if (!o) return;
+    if (!beste || KLIC_KLIK_VOORRANG[o.k] < KLIC_KLIK_VOORRANG[beste.k]) beste = o;
+    if (o.pad && !docs.some(d => d.pad === o.pad)) docs.push(o);
+  }, { hitTolerance: 5, layerFilter: l => l === lagen.klic });
+  if (beste) beste = { ...beste, docsHier: docs.filter(d => d.pad !== beste.pad) };
+  return beste;
+}
+
 document.getElementById("lg-grondwater").addEventListener("change", e => {
   lagen.grondwater.setVisible(e.target.checked);
   if (e.target.checked) laadGrondwaterPutten();
@@ -1118,7 +1437,10 @@ map.on("click", evt => {
       seg = f.get("seg");
       return !!seg;
     }, { hitTolerance: 6, layerFilter: l => l === lagen.segments });
-    toonLaagInfo(evt.coordinate, seg);
+    // KLIC-objecten komen als eigen deel in dezelfde popup, zodat de
+    // overige datalagen op dit punt zichtbaar blijven
+    const klicObj = lagen.klic.getVisible() ? klicObjectOpPixel(evt.pixel) : null;
+    toonLaagInfo(evt.coordinate, seg, klicObj);
   }
 });
 map.on("pointermove", evt => {
@@ -1132,7 +1454,7 @@ map.on("pointermove", evt => {
   const hit = map.hasFeatureAtPixel(evt.pixel,
     { hitTolerance: 8,
       layerFilter: l => l === lagen.crossings || l === lagen.grondwater
-                        || l === lagen.ndff || l === lagen.klant });
+                        || l === lagen.ndff || l === lagen.klant || l === lagen.klic });
   map.getTargetElement().style.cursor = hit ? "pointer" : "";
 });
 
@@ -1402,12 +1724,12 @@ function segmentInfoDeel(seg) {
     popupRij("Lengte", seg.lengte_m + " m") + "</section>";
 }
 
-async function toonLaagInfo(coord, seg) {
+async function toonLaagInfo(coord, seg, klicObj) {
   const actief = overlayLagen.filter(o => o.laag.getVisible());
-  if (!actief.length && !seg) { sluitPopup(); return; }
+  if (!actief.length && !seg && !klicObj) { sluitPopup(); return; }
   const volgnr = ++infoVolgnr;
   const kop = '<button class="sluit" title="Sluiten">×</button><h3>Datalagen op dit punt</h3>';
-  popupEl.innerHTML = kop + `<div class="lagen">${segmentInfoDeel(seg)}` +
+  popupEl.innerHTML = kop + `<div class="lagen">${segmentInfoDeel(seg)}${klicInfoDeel(klicObj)}` +
     (actief.length ? '<p class="opm">Gegevens ophalen…</p>' : "") + "</div>";
   popupEl.querySelector(".sluit").addEventListener("click", sluitPopup);
   kaartPopup.setPosition(coord);
@@ -1416,7 +1738,7 @@ async function toonLaagInfo(coord, seg) {
   const delen = await Promise.all(actief.map(o => laagInfoDeel(o, coord, resolutie)));
   // intussen elders geklikt of popup gesloten: dit antwoord is verouderd
   if (volgnr !== infoVolgnr || !kaartPopup.getPosition()) return;
-  const inhoud = segmentInfoDeel(seg) + delen.filter(Boolean).join("");
+  const inhoud = segmentInfoDeel(seg) + klicInfoDeel(klicObj) + delen.filter(Boolean).join("");
   popupEl.innerHTML = kop +
     `<div class="lagen">${inhoud ||
       '<p class="opm">Geen objecten op dit punt in de aangevinkte datalagen.</p>'}</div>` +
@@ -1960,6 +2282,30 @@ function ververLegenda() {
         (gwIsoInfo ? `<div class="rij hint">${rlEsc(gwIsoInfo)}</div>` : "") +
         (gwIsoMelding ? `<div class="rij">⚠ ${rlEsc(gwIsoMelding)}</div>` : "");
     delen.push(blok);
+  }
+  if (lagen.klic.getVisible()) {
+    // alleen de thema's en soorten die nu in beeld zijn
+    const fs = srcKlic.getFeatures();
+    const themas = [...new Set(fs.filter(f => f.get("k") === "net").map(f => f.get("t")))]
+      .sort((a, b) => Object.keys(KLIC_THEMA).indexOf(a) - Object.keys(KLIC_THEMA).indexOf(b));
+    const heeft = k => fs.some(f => f.get("k") === k);
+    const vlak = (fill, rand, dash) => `<span class="vlek klic-vlak" style="background:${fill};` +
+      `border:1.5px ${dash ? "dashed" : "solid"} ${rand}"></span>`;
+    delen.push("<strong>KLIC: kabels en leidingen</strong>" +
+      themas.map(t => `<div class="rij"><span class="vlek" style="height:3px;background:${klicKleur(t)}">` +
+        `</span>${rlEsc((KLIC_THEMA[t] || [0, t])[1])}</div>`).join("") +
+      (heeft("omhulling") ? '<div class="rij"><span class="vlek" style="height:7px;background:rgba(110,110,110,.3)">' +
+        "</span>mantelbuis / kabelbed</div>" : "") +
+      (heeft("punt") ? '<div class="rij"><span class="vlek klic-punt" style="background:#6E6E6E"></span>' +
+        "netcomponent / put (■ station, kast)</div>" : "") +
+      (heeft("detail") ? `<div class="rij">${vlak("rgba(106,63,160,.08)", "#6A3FA0", true)}` +
+        "detailinfo / profielschets (klik)</div>" : "") +
+      (heeft("ev") ? `<div class="rij">${vlak("rgba(224,0,0,.10)", "#E00000", true)}` +
+        "eis voorzorgsmaatregel (EV)</div>" : "") +
+      (srcKlicContour.getFeatures().length ? `<div class="rij">${vlak("transparent", "#C000C0", true)}` +
+        "leveringsgebied (KLIC-melding)</div>" : "") +
+      (klicMelding ? `<div class="rij">⚠ ${rlEsc(klicMelding)}</div>` : "") +
+      '<div class="rij hint">klik op een object voor de gegevens · ligging indicatief</div>');
   }
   const zichtbaar = overlayLagen.filter(o => o.laag.getVisible());
   zichtbaar.forEach((o, i) => delen.push(

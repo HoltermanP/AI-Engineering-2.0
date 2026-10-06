@@ -6,7 +6,7 @@
 <title>InfraEngine — MS-tracéontwerp</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="styles.css?v=5">
+<link rel="stylesheet" href="styles.css?v=6">
 <link rel="stylesheet" href="registers.css?v=2">
 <link rel="stylesheet" href="proces.css?v=4">
 </head>
@@ -74,6 +74,25 @@
       <label><input type="checkbox" id="lg-alt" checked> Overige varianten</label>
       <label><input type="checkbox" id="lg-maat" checked title="Maatlijnen van het tracé tot de verhardingsrand en langs gevels (om de 25 m en bij elke wijziging), plus zelf gezette maatlijnen. Zichtbaar bij inzoomen (straatniveau)."> Maatvoering (maatlijnen)</label>
       <label><input type="checkbox" id="lg-percelen" title="Kadastrale percelen die het tracé raakt (ZRO-register), met perceelnummer. Zichtbaar na het berekenen van een tracé."> Geraakte percelen (ZRO)</label>
+      <hr>
+      <label><input type="checkbox" id="lg-klic" title="Bestaande kabels en leidingen uit de gekoppelde KLIC-leveringen (IMKL), gekleurd per thema, met mantelbuizen/kabelbedden, eis-voorzorgsmaatregelzones en profielschetsen. Netcomponenten en putten verschijnen vanaf straatniveau. Klik in navigeermodus op een object voor de gegevens en eventuele profielschets (PDF). Gekoppelde netten wegen mee in het tracé (klic_netdichtheid) en in de maatvoeringstoets."> KLIC: kabels en leidingen</label>
+      <div id="klic-blok">
+        <p class="hint" id="klic-status">KLIC: nog geen map gekoppeld.</p>
+        <div id="klic-mappen"></div>
+        <div class="toolgrid">
+          <button id="klic-kies" class="klein" title="Hoofdmap met KLIC-leveringen kiezen (systeemdialoog). Submappen en zips (ook zips in zips) worden doorzocht.">📁 Map koppelen…</button>
+          <button id="klic-herlaad" class="klein" title="Gekoppelde mappen opnieuw doorzoeken, bijvoorbeeld na een nieuwe levering">↻ Opnieuw inlezen</button>
+        </div>
+        <details id="klic-pad-details">
+          <summary class="hint">of pad invoeren</summary>
+          <input id="klic-pad" type="text" class="mono" spellcheck="false" placeholder="/pad/naar/KLIC-hoofdmap">
+          <button id="klic-koppel" class="klein">Koppelen</button>
+        </details>
+        <details id="klic-lev-details" hidden>
+          <summary class="hint" id="klic-lev-kop">Leveringen</summary>
+          <div id="klic-leveringen"></div>
+        </details>
+      </div>
       <hr>
       <span class="hint">Zonelagen (wegen mee in het tracé)</span>
       <label><input type="checkbox" id="lg-natura"> Natura 2000</label>
@@ -510,7 +529,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=11"></script>
 <script src="registers.js?v=3"></script>
 <script src="proces.js?v=4"></script>
 </body>

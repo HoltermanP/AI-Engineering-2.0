@@ -1524,13 +1524,16 @@ def _cap_klic(result, variant, project):
     import klic as klic_mod
     stat = klic_mod.status()
     if stat.get("features"):
-        s = (f"KLIC-levering gekoppeld: {stat['features']} objecten uit "
-             f"{len(stat.get('bestanden', []))} bestand(en); netdichtheid "
-             "weegt mee en boringen melden bestaande netten.")
+        bron = (f"{stat['leveringen']} KLIC-levering(en) uit de gekoppelde map"
+                if stat.get("leveringen") else
+                f"{len(stat.get('bestanden', []))} GeoJSON-bestand(en)")
+        s = (f"KLIC gekoppeld: {stat['features']} kabels/leidingen uit {bron}; "
+             "netdichtheid weegt mee, boringen melden bestaande netten en de "
+             "maatvoering toetst afstanden.")
     else:
-        s = ("Nog geen KLIC-levering gekoppeld (data/klic/). Oriëntatie-"
-             "melding aanvragen bij het Kadaster en de GeoJSON-levering in "
-             "data/klic/ plaatsen; daarna weegt netdichtheid automatisch mee.")
+        s = ("Nog geen KLIC-levering gekoppeld. Oriëntatiemelding aanvragen bij "
+             "het Kadaster en de map met leveringen koppelen via KLIC-leveringen "
+             "in de zijbalk; daarna weegt netdichtheid automatisch mee.")
     return {"samenvatting": s, "artefacten": []}
 
 

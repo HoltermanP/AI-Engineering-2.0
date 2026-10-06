@@ -271,10 +271,23 @@ _KLIC_CATEGORIE_EIS = {
     "onbekend": "afstand_leidingen_m",  # conservatieve aanname
 }
 _KLIC_LABEL = {"kabels": "LS/MS-/datakabel", "leidingen": "gas-/waterleiding",
-               "hd_gas": "HD-gasleiding", "onbekend": "net (thema onbekend)"}
+               "hd_gas": "HD-gas-/buisleiding (gevaarlijke inhoud)", "onbekend": "net (thema onbekend)"}
+
+
+# IMKL-thema (gekoppelde KLIC-levering) → categorie; vrije tekst is de terugval
+_KLIC_THEMA = {
+    "gasHogeDruk": "hd_gas", "buisleidingGevaarlijkeInhoud": "hd_gas",
+    "petrochemie": "hd_gas", "gasLageDruk": "leidingen", "water": "leidingen",
+    "rioolVrijverval": "leidingen", "rioolOnderOverOfOnderdruk": "leidingen",
+    "warmte": "leidingen", "laagspanning": "kabels", "middenspanning": "kabels",
+    "hoogspanning": "kabels", "landelijkHoogspanningsnet": "kabels",
+    "datatransport": "kabels",
+}
 
 
 def _klic_categorie(props: dict) -> str:
+    if (props or {}).get("thema") in _KLIC_THEMA:
+        return _KLIC_THEMA[props["thema"]]
     tekst = " ".join(str(v) for v in (props or {}).values()).lower()
     if "hoge druk" in tekst or "hogedruk" in tekst or re.search(r"\bhd\b", tekst):
         return "hd_gas"
@@ -572,7 +585,8 @@ def klic_nabij(route: LineString, marge_m: float = 25.0) -> list:
     """KLIC-features binnen de zoekmarge rond het tracé (voor de toets)."""
     import klic as klic_mod
     zone = route.buffer(marge_m)
-    return [(g, p) for g, p in klic_mod._laad() if g.intersects(zone)]
+    return [(g, p) for g, p in klic_mod.fetch_geoms(zone.bounds)
+            if g.intersects(zone)]
 
 
 # ---------------------------------------------------------------------------

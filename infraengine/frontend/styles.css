@@ -631,3 +631,25 @@ table.nota-meta td:first-child{color:var(--ink-3);width:130px}
 #sel-gebied-hint{color:#8A5A14}
 table.register td.sel{width:22px;padding-right:6px}
 table.register tr:has(td.sel input:checked) td{background:rgba(30,90,168,.09)}
+
+/* KLIC-leveringen (kaartlagen-sectie) */
+#klic-blok{margin:2px 0 4px 20px}
+#klic-blok .toolgrid{margin-top:2px}
+#klic-blok .toolgrid button{margin-top:4px}
+#klic-blok details{margin:5px 0 0}
+#klic-blok details summary{cursor:pointer;margin:0}
+#klic-pad{width:100%;box-sizing:border-box;border:1px solid var(--rule);padding:4px 6px;font-size:11px;margin-top:4px}
+#klic-mappen .klic-map{display:flex;align-items:center;gap:4px;font:11px var(--mono);
+  color:var(--ink-2);margin:2px 0;word-break:break-all}
+#klic-mappen .klic-map button{border:0;background:none;color:var(--ink-3);cursor:pointer;
+  padding:0 3px;font-size:13px;flex:none}
+#klic-mappen .klic-map button:hover{color:#C8322B}
+#klic-leveringen{max-height:260px;overflow:auto;margin-top:3px}
+#klic-leveringen .klic-lev{border-top:1px dashed var(--rule);padding:4px 0;font-size:11.5px}
+#klic-leveringen .klic-lev a.zoom{font-family:var(--mono);font-weight:600;cursor:pointer;color:var(--ink)}
+#klic-leveringen .klic-lev .sub{color:var(--ink-3);font-size:11px}
+#klic-leveringen .klic-lev details summary{font-size:11px;color:var(--ink-3)}
+#klic-leveringen .klic-lev ul{margin:2px 0;padding-left:14px;font-size:11px;line-height:1.35}
+#klic-status.fout{color:#8A5A14}
+#legenda .vlek.klic-punt{width:9px;height:9px;border-radius:50%;border:1.5px solid #fff;box-shadow:0 0 0 1px #bbb}
+#legenda .vlek.klic-vlak{width:14px;height:10px;border-radius:2px}
