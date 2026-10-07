@@ -898,9 +898,9 @@ function klicToonPanel(d) {
   if (d.bezig) {
     const sc = d.scan || {};
     st.textContent = `KLIC inlezen… ${sc.stap || ""}` + (sc.totaal ? ` (${sc.gedaan}/${sc.totaal})` : "");
-  } else if (!d.mappen.length && !d.bestanden.length) {
-    st.textContent = "KLIC: nog geen map gekoppeld. Koppel de hoofdmap met KLIC-leveringen; " +
-      "submappen en zips worden doorzocht.";
+  } else if (!n && !d.bestanden.length) {
+    st.textContent = "KLIC: nog geen leveringen. Upload een map met KLIC-leveringen " +
+      "(submappen en zips worden doorzocht) of losse leveringsbestanden.";
   } else {
     st.textContent = `${n} levering(en) · ${d.features.toLocaleString("nl-NL")} kabels/leidingen` +
       (d.scan && d.scan.klaar_op ? ` · ingelezen ${d.scan.klaar_op}` : "") +
@@ -919,6 +919,11 @@ function klicToonPanel(d) {
       if (!confirm(`KLIC-map ontkoppelen?\n${b.dataset.map}\n\nDe bestanden zelf blijven staan.`)) return;
       klicVernieuw(await klicPost("api/klic/ontkoppel", { map: b.dataset.map }));
     }));
+  document.getElementById("klic-kies").hidden = !d.lokaal_kiezen;
+  const op = d.opslag || {};
+  document.getElementById("klic-opslag").textContent = n && op.gebruikt_mb != null
+    ? `Opslag KLIC op de server: ${op.gebruikt_mb} MB` +
+      (op.vrij_mb != null ? ` · ${op.vrij_mb.toLocaleString("nl-NL")} MB vrij` : "") : "";
   const det = document.getElementById("klic-lev-details");
   det.hidden = !n;
   document.getElementById("klic-lev-kop").textContent = `Leveringen (${n})`;
@@ -926,10 +931,13 @@ function klicToonPanel(d) {
     const t = l.tellingen || {};
     const docs = [
       ...(l.documenten || []).map(p => ({ pad: p, naam: "Leveringsinformatie (Kadaster)" })),
-      ...(l.bijlagen || []).map(b => ({ pad: b.pad,
+      ...(l.bijlagen || []).filter(b => b.aanwezig !== false).map(b => ({ pad: b.pad,
         naam: `${(l.beheerders || {})[b.bron] || b.bron} — ${b.type || "bijlage"}` })),
     ];
+    const lokaal = (l.bijlagen || []).filter(b => b.aanwezig === false).length;
     return `<div class="klic-lev"><a class="zoom" data-klic="${rlEsc(l.klic)}" title="Inzoomen op deze levering">${rlEsc(l.klic)}</a>` +
+      (l.bron_soort === "upload" ? ` <button class="klic-weg" data-klic="${rlEsc(l.klic)}" ` +
+        'title="Geüploade levering van de server verwijderen">🗑</button>' : "") +
       (l.volgnr > 1 ? ` <span class="sub">(levering ${l.volgnr})</span>` : "") +
       `<div>${rlEsc(l.referentie || "")}</div>` +
       `<div class="sub">${rlEsc([l.datum, (l.soort || "").replace(/verzoek$/, "melding"),
@@ -939,10 +947,20 @@ function klicToonPanel(d) {
       (docs.length ? `<details><summary>Documenten (${docs.length})</summary><ul>` +
         docs.map(x => `<li><a href="${klicBestandUrl(l.klic, x.pad)}" target="_blank" rel="noopener">` +
           `${rlEsc(x.naam)}</a></li>`).join("") + "</ul></details>" : "") +
+      (lokaal ? `<div class="sub">${lokaal} algemene brief/brieven alleen in de originele levering</div>` : "") +
       "</div>";
   }).join("");
   document.querySelectorAll("#klic-leveringen a.zoom").forEach(a =>
     a.addEventListener("click", () => klicZoomNaar(a.dataset.klic)));
+  document.querySelectorAll("#klic-leveringen button.klic-weg").forEach(b =>
+    b.addEventListener("click", async () => {
+      if (!confirm(`KLIC-levering ${b.dataset.klic} van de server verwijderen?`)) return;
+      const r = await fetch("api/klic/levering?klic_nr=" + encodeURIComponent(b.dataset.klic),
+        { method: "DELETE" });
+      const d = await r.json();
+      if (!r.ok) { alert(d.detail || "Verwijderen mislukt"); return; }
+      klicVernieuw(d);
+    }));
 }
 
 async function klicPost(url, body) {
@@ -983,7 +1001,7 @@ document.getElementById("klic-kies").addEventListener("click", async e => {
     const d = await r.json();
     if (!r.ok) {
       // geen systeemdialoog (server/Docker): pad invoeren
-      document.getElementById("klic-pad-details").open = true;
+      document.getElementById("klic-lokaal").open = true;
       document.getElementById("klic-pad").focus();
       alert(d.detail || "Mapkeuze niet beschikbaar; voer het pad in.");
       klicVernieuw();
@@ -1010,6 +1028,241 @@ document.getElementById("klic-koppel").addEventListener("click", async () => {
 document.getElementById("klic-herlaad").addEventListener("click", async () =>
   klicVernieuw(await klicPost("api/klic/herlaad")));
 klicVernieuw();
+
+/* KLIC uploaden vanuit de browser (productie: de server ziet geen lokale
+   mappen). De browser bekijkt eerst wat er gekozen is — zips worden alleen
+   aan hun inhoudsopgave gelezen — en stuurt alleen wat nodig is: per
+   levering de GI-xml (gzip-gecomprimeerd) of de leveringszip; de server
+   vraagt daarna precies de profielschetsen/EV-documenten op die bij de
+   kaartobjecten horen. E-mails, algemene brieven, verzamelzips met alleen
+   bekende leveringen en leveringen die al op de server staan, blijven thuis. */
+const KLIC_GI_RE = /GI_gebiedsinformatielevering_([0-9A-Za-z]+?)_(\d+)[^/]*\.xml(\.gz)?$/i;
+const KLIC_ZIP_RE = /([0-9A-Za-z]+)_(\d+)\.zip$/i;
+const KLIC_DEEL = 8 * 1024 * 1024;
+
+// namen in een zip uit de centrale directory (zonder de zip te laden)
+async function klicZipNamen(file) {
+  const n = file.size, staart = Math.min(n, 65557);
+  const v = new DataView(await file.slice(n - staart).arrayBuffer());
+  let e = -1;
+  for (let i = staart - 22; i >= 0; i--) if (v.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error("geen geldige zip");
+  let grootte = v.getUint32(e + 12, true), start = v.getUint32(e + 16, true);
+  if ((start === 0xFFFFFFFF || grootte === 0xFFFFFFFF) && e >= 20 &&
+      v.getUint32(e - 20, true) === 0x07064b50) {   // zip64
+    const rec = Number(v.getBigUint64(e - 12, true));
+    const z = new DataView(await file.slice(rec, rec + 56).arrayBuffer());
+    grootte = Number(z.getBigUint64(40, true));
+    start = Number(z.getBigUint64(48, true));
+  }
+  const cd = new DataView(await file.slice(start, start + grootte).arrayBuffer());
+  const dec = new TextDecoder(), namen = [];
+  for (let p = 0; p + 46 <= cd.byteLength && cd.getUint32(p, true) === 0x02014b50;) {
+    const ln = cd.getUint16(p + 28, true), le = cd.getUint16(p + 30, true), lc = cd.getUint16(p + 32, true);
+    namen.push(dec.decode(new Uint8Array(cd.buffer, p + 46, ln)));
+    p += 46 + ln + le + lc;
+  }
+  return namen;
+}
+
+const klicSleutel = (re, naam) => { const m = re.exec(naam); return m ? [m[1], +m[2]] : null; };
+const klicMB = b => (b / 1e6).toLocaleString("nl-NL", { maximumFractionDigits: b < 1e7 ? 1 : 0 }) + " MB";
+
+async function klicMaakPlan(files) {
+  const bekend = new Map((klicData ? klicData.leveringen : []).map(l => [l.klic, l.volgnr]));
+  const opServer = new Map(bekend);
+  const alOpServer = ([k, v]) => (opServer.get(k) || 0) >= v;
+  const gedekt = ([k, v]) => (bekend.get(k) || 0) >= v;
+  const dek = ([k, v]) => bekend.set(k, Math.max(bekend.get(k) || 0, v));
+  const rel = f => f.webkitRelativePath || f.name;
+  const plan = { gi: [], zips: [], pdfPad: new Map(), pdfNaam: new Map(),
+                 aanwezig: new Set(), dubbel: new Set(), overig: 0, onleesbaar: [] };
+  for (const f of files) {
+    if (/\.pdf$/i.test(f.name)) {
+      plan.pdfPad.set(rel(f), f);
+      plan.pdfNaam.set(f.name, f);
+    }
+  }
+  // 1. uitgepakte leveringen (GI-xml), daarna 2. leveringszips, 3. verzamelzips
+  for (const f of files) {
+    const k = klicSleutel(KLIC_GI_RE, f.name);
+    if (!k) continue;
+    if (gedekt(k)) { (alOpServer(k) ? plan.aanwezig : plan.dubbel).add(k.join("_")); continue; }
+    dek(k);
+    const r = rel(f);
+    plan.gi.push({ file: f, sleutel: k, map: r.includes("/") ? r.slice(0, r.lastIndexOf("/")) : "" });
+  }
+  const zips = [];
+  for (const f of files) {
+    if (!/\.zip$/i.test(f.name)) continue;
+    try {
+      const namen = await klicZipNamen(f);
+      zips.push({ file: f,
+        direct: namen.map(n => klicSleutel(KLIC_GI_RE, n)).filter(Boolean),
+        genest: namen.filter(n => /\.zip$/i.test(n)).map(n => klicSleutel(KLIC_ZIP_RE, n)) });
+    } catch (e) { plan.onleesbaar.push(f.name); }
+  }
+  zips.sort((a, b) => (b.direct.length > 0) - (a.direct.length > 0));
+  for (const z of zips) {
+    const nieuw = z.direct.filter(k => !gedekt(k));
+    // geneste zip zonder herkenbare naam: kan een nieuwe levering bevatten
+    const nieuwGenest = z.genest.filter(k => !k || !gedekt(k));
+    if (nieuw.length || nieuwGenest.length) {
+      plan.zips.push(z.file);
+      [...nieuw, ...nieuwGenest.filter(Boolean)].forEach(dek);
+    } else {
+      [...z.direct, ...z.genest.filter(Boolean)].forEach(k =>
+        (alOpServer(k) ? plan.aanwezig : plan.dubbel).add(k.join("_")));
+    }
+  }
+  const gebruikt = new Set([...plan.gi.map(g => g.file), ...plan.zips]);
+  plan.overig = files.filter(f => !gebruikt.has(f) && !/\.pdf$/i.test(f.name)
+    && !KLIC_GI_RE.test(f.name) && !/\.zip$/i.test(f.name) && !f.name.startsWith(".")).length;
+  return plan;
+}
+
+async function klicStuur(url, blob, params, voortgang) {
+  const id = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now())
+    .replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+  let antwoord = null;
+  for (let off = 0; off < blob.size || off === 0; off += KLIC_DEEL) {
+    // laatste stuk: voortgang 1 vóór het versturen — de server pakt dan uit/leest in
+    voortgang(off + KLIC_DEEL >= blob.size ? 1 : off / blob.size);
+    const q = new URLSearchParams({ id, offset: off, totaal: blob.size, ...params });
+    const r = await fetch(`${url}?${q}`, { method: "POST", body: blob.slice(off, off + KLIC_DEEL),
+      headers: { "Content-Type": "application/octet-stream" } });
+    antwoord = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(antwoord.detail || `upload mislukt (${r.status})`);
+    if (blob.size === 0) break;
+  }
+  return antwoord;
+}
+
+async function klicGzip(file) {
+  if (!("CompressionStream" in window)) return { blob: file, naam: file.name };
+  const blob = await new Response(file.stream().pipeThrough(new CompressionStream("gzip"))).blob();
+  return { blob, naam: file.name + ".gz" };
+}
+
+let klicUploadBezig = false;
+
+async function klicUpload(fileList) {
+  const files = [...fileList];
+  if (!files.length || klicUploadBezig) return;
+  klicUploadBezig = true;
+  const vg = document.getElementById("klic-voortgang");
+  const balk = document.getElementById("klic-voortgang-balk");
+  const tekst = document.getElementById("klic-voortgang-tekst");
+  const meld = (t, f) => { tekst.textContent = t; if (f != null) balk.value = f; };
+  vg.hidden = false;
+  meld(`${files.length} bestanden bekijken…`, 0);
+  try {
+    // actuele lijst van de server (een vorige upload kan nog worden ingelezen)
+    for (let i = 0; i < 120; i++) {
+      klicData = await (await fetch("api/klic/leveringen")).json();
+      if (!klicData.bezig) break;
+      meld("Wachten tot de vorige upload is ingelezen…", 0);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    const plan = await klicMaakPlan(files);
+    const metDocs = document.getElementById("klic-docs").checked;
+    const stappen = plan.gi.length + plan.zips.length;
+    const mb = plan.gi.reduce((s, g) => s + g.file.size / 20, 0)   // xml → gzip ≈ 1/20
+      + plan.zips.reduce((s, f) => s + f.size, 0);
+    const overgeslagen = [
+      plan.aanwezig.size ? `${plan.aanwezig.size} levering(en) al op de server` : "",
+      plan.dubbel.size ? `${plan.dubbel.size} levering(en) die ook elders in de selectie staan ` +
+        "(uitgepakt of in een verzamelzip)" : "",
+      plan.overig ? `${plan.overig} overige bestanden (e-mails, kaarten, …)` : "",
+      plan.onleesbaar.length ? `onleesbare zip: ${plan.onleesbaar.join(", ")}` : "",
+    ].filter(Boolean);
+    if (!stappen) {
+      meld("Niets te uploaden" + (overgeslagen.length ? ": " + overgeslagen.join("; ") :
+        " — geen KLIC-leveringen (GI_gebiedsinformatielevering_*.xml of leveringszip) gevonden") + ".", 0);
+      return;
+    }
+    const opslag = klicData && klicData.opslag;
+    if (!confirm(`KLIC uploaden: ${plan.gi.length} uitgepakte levering(en) en ${plan.zips.length} zip(s), ` +
+        `± ${klicMB(mb)}` + (opslag && opslag.vrij_mb != null ? ` (vrij op de server: ${opslag.vrij_mb} MB)` : "") +
+        ".\n" + (metDocs ? "Bewaard worden kaartdata, profielschetsen/detailinfo en EV-documenten."
+          : "Bewaard worden alleen de kaartdata (profielschetsen uitgevinkt).") +
+        (overgeslagen.length ? "\n\nOvergeslagen: " + overgeslagen.join("; ") + "." : "") + "\n\nDoorgaan?")) {
+      vg.hidden = true;
+      return;
+    }
+    const fouten = [], nieuw = new Set();
+    let stap = 0, docsMist = 0, docsMee = 0;
+    const deel = (i, f) => (i + f) / stappen;
+    for (const g of plan.gi) {
+      meld(`Levering ${g.sleutel[0]} comprimeren…`, deel(stap, 0));
+      try {
+        const { blob, naam } = await klicGzip(g.file);
+        const r = await klicStuur("api/klic/upload", blob, { naam, documenten: metDocs }, f =>
+          meld(f < 1 ? `Levering ${g.sleutel[0]} uploaden (${klicMB(blob.size)})`
+            : `Levering ${g.sleutel[0]} inlezen…`, deel(stap, f * 0.6)));
+        for (const lev of r.leveringen || []) {
+          nieuw.add(lev.klic);
+          const nodig = lev.nodig || [];
+          for (let j = 0; j < nodig.length; j++) {
+            const pad = nodig[j];
+            const bestand = plan.pdfPad.get(g.map ? `${g.map}/${pad}` : pad)
+              || plan.pdfNaam.get(pad.split("/").pop());
+            if (!bestand) { docsMist++; continue; }
+            await klicStuur("api/klic/upload-document", bestand,
+              { klic_nr: lev.klic, volgnr: lev.volgnr, pad }, () =>
+                meld(`Levering ${lev.klic}: documenten ${j + 1}/${nodig.length}`,
+                  deel(stap, 0.6 + 0.4 * (j + 1) / nodig.length)));
+            docsMee++;
+          }
+        }
+      } catch (e) { fouten.push(`${g.file.name}: ${e.message}`); }
+      stap++;
+    }
+    for (const z of plan.zips) {
+      try {
+        const r = await klicStuur("api/klic/upload", z, { naam: z.name, documenten: metDocs }, f =>
+          meld(f < 1 ? `${z.name} uploaden (${klicMB(z.size)})` : `${z.name} uitpakken en inlezen…`,
+            deel(stap, f * 0.95)));
+        (r.leveringen || []).forEach(l => nieuw.add(l.klic));
+      } catch (e) { fouten.push(`${z.name}: ${e.message}`); }
+      stap++;
+    }
+    meld(`Klaar: ${stappen - fouten.length} van ${stappen} upload(s) verwerkt` +
+      (docsMee ? ` · ${docsMee} document(en) meegestuurd` : "") +
+      (docsMist ? ` · ${docsMist} profielschets(en) niet in de selectie` : "") +
+      (fouten.length ? ` · ⚠ ${fouten.length} mislukt` : "") + ".", 1);
+    tekst.title = fouten.join("\n");
+    if (fouten.length) alert("KLIC-upload: niet alles is gelukt.\n\n" + fouten.join("\n"));
+    let d = await klicPost("api/klic/upload-klaar");
+    for (let i = 0; d && d.bezig && i < 300; i++) {   // inlezen afwachten
+      await new Promise(r => setTimeout(r, 1000));
+      d = await (await fetch("api/klic/leveringen")).json();
+    }
+    await klicVernieuw(d);
+    const cb = document.getElementById("lg-klic");
+    if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change")); }
+    // naar de zojuist geüploade leveringen
+    const ext = ol.extent.createEmpty();
+    srcKlicContour.getFeatures().filter(f => nieuw.has(f.get("klicLev")))
+      .forEach(f => ol.extent.extend(ext, f.getGeometry().getExtent()));
+    if (!ol.extent.isEmpty(ext))
+      map.getView().fit(ext, { padding: [40, 40, 40, 40], duration: 400, maxZoom: 13 });
+  } catch (e) {
+    meld(`Upload mislukt: ${e.message}`);
+  } finally {
+    klicUploadBezig = false;
+  }
+}
+
+document.getElementById("klic-upload-map").addEventListener("click", () =>
+  document.getElementById("klic-map-input").click());
+document.getElementById("klic-upload-best").addEventListener("click", () =>
+  document.getElementById("klic-best-input").click());
+for (const id of ["klic-map-input", "klic-best-input"])
+  document.getElementById(id).addEventListener("change", async e => {
+    await klicUpload(e.target.files);
+    e.target.value = "";
+  });
 
 // KLIC-object als deel van de popup "Datalagen op dit punt"
 function klicInfoDeel(o) {

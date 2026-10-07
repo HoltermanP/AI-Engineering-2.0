@@ -653,3 +653,9 @@ table.register tr:has(td.sel input:checked) td{background:rgba(30,90,168,.09)}
 #klic-status.fout{color:#8A5A14}
 #legenda .vlek.klic-punt{width:9px;height:9px;border-radius:50%;border:1.5px solid #fff;box-shadow:0 0 0 1px #bbb}
 #legenda .vlek.klic-vlak{width:14px;height:10px;border-radius:2px}
+#klic-voortgang progress{width:100%;height:8px;margin-top:6px;accent-color:var(--ms)}
+#klic-voortgang .hint{margin-top:2px}
+#klic-leveringen .klic-lev button.klic-weg{border:0;background:none;cursor:pointer;padding:0 2px;
+  font-size:11px;opacity:.55;margin:0}
+#klic-leveringen .klic-lev button.klic-weg:hover{opacity:1}
+#klic-lokaal{margin-top:6px}

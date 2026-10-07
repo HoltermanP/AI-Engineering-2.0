@@ -18,7 +18,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -1558,6 +1559,67 @@ def klic_kies_map():
     except klic.KlicError as e:
         raise HTTPException(400, str(e))
     return {**klic.leveringen(), "gekozen": pad}
+
+
+MAX_UPLOAD_DEEL = 16 * 1024 * 1024  # de browser stuurt stukken van 8 MB
+
+
+async def _klic_deel(request: Request, upload_id: str, naam: str,
+                     offset: int, totaal: int):
+    data = await request.body()
+    if len(data) > MAX_UPLOAD_DEEL:
+        raise HTTPException(413, "Uploaddeel te groot.")
+    try:
+        return await run_in_threadpool(klic.ontvang_deel, upload_id, naam,
+                                       offset, totaal, data)
+    except klic.KlicError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/klic/upload")
+async def klic_upload(request: Request, id: str, naam: str, offset: int, totaal: int,
+                      documenten: bool = True):
+    """Levering uploaden (zip of GI-xml[.gz]) in stukken; na het laatste stuk
+    wordt hij uitgepakt/ingelezen en volgt per levering welke documenten nog
+    ontbreken (de browser stuurt die daarna via upload-document)."""
+    pad = await _klic_deel(request, id, naam, offset, totaal)
+    if pad is None:
+        return {"klaar": False}
+    try:
+        return {"klaar": True, **await run_in_threadpool(klic.verwerk_upload, pad, naam,
+                                                         documenten)}
+    except klic.KlicError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/klic/upload-document")
+async def klic_upload_document(request: Request, id: str, klic_nr: str, volgnr: int,
+                               pad: str, offset: int, totaal: int):
+    """Document (profielschets/EV/leveringsinformatie) bij een geüploade levering."""
+    deel = await _klic_deel(request, id, pad, offset, totaal)
+    if deel is None:
+        return {"klaar": False}
+    try:
+        await run_in_threadpool(klic.bewaar_document, klic_nr, volgnr, pad, deel)
+    except klic.KlicError as e:
+        raise HTTPException(400, str(e))
+    return {"klaar": True}
+
+
+@app.post("/api/klic/upload-klaar")
+def klic_upload_klaar():
+    klic.start_scan()
+    return klic.leveringen()
+
+
+@app.delete("/api/klic/levering")
+def klic_verwijder(klic_nr: str):
+    """Geüploade levering van de server verwijderen (schijfruimte)."""
+    try:
+        klic.verwijder_levering(klic_nr)
+    except klic.KlicError as e:
+        raise HTTPException(400, str(e))
+    return klic.leveringen()
 
 
 @app.get("/api/klic/features")
