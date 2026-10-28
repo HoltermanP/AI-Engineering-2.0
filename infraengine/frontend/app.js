@@ -1390,6 +1390,7 @@ function setMode(nieuw) {
       "daarna het eindpunt, bijvoorbeeld de rand van de verharding of een gevel. " +
       "Verwijderen met ✕ Verwijderen.";
   }
+  if (typeof uoModusGewijzigd === "function") uoModusGewijzigd(nieuw);  // uo.js
   if (nieuw === "street") svOpen(null);
   if (nieuw === "sleep") {
     if (!resultaat) {
@@ -2329,6 +2330,7 @@ function toonResultaat() {
   srcBomen.clear(); srcWerkpakketten.clear(); srcHighlight.clear();
   srcMaatvoering.clear(); srcPercelen.clear(); srcMaatAuto.clear(); srcMaatHand.clear();
   svRouteGewijzigd();  // Street View-paneel meebewegen met variant/nieuw tracé
+  if (typeof uoNaResultaat === "function") uoNaResultaat();  // uo.js: werktekeningen
   if (!resultaat) return;
   (resultaat.bomen || []).forEach(c => {
     const f = new ol.Feature(new ol.geom.Point([c[0], c[1]]));

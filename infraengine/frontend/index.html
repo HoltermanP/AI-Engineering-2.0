@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="styles.css?v=7">
 <link rel="stylesheet" href="registers.css?v=2">
 <link rel="stylesheet" href="proces.css?v=4">
+<link rel="stylesheet" href="uo.css?v=1">
 </head>
 <body>
 <header id="topbar">
@@ -45,6 +46,7 @@
         <button class="tool" data-mode="forbidden" title="Verboden zone tekenen">⊘ Verboden zone</button>
         <button class="tool" data-mode="delete" title="Klik op een station, via-punt, zone of zelf gezette maatlijn om te verwijderen">✕ Verwijderen</button>
         <button class="tool" data-mode="maat" title="Maatlijn zetten: klik het beginpunt (vangt op het tracé) en het eindpunt, bijvoorbeeld de verhardingsrand of een gevel. De maat komt op de kaart, in de tab Maatvoering en in de DXF-export. Beschikbaar zodra een tracé is berekend.">📏 Maatlijn</button>
+        <button class="tool breed" data-mode="exact" title="Exact intekenen voor het uitvoeringsontwerp: hoekpunten op de centimeter verplaatsen, coördinaten intypen, vangen op BGT-randen, kadastrale grenzen, de inmeting en KLIC, evenwijdige hulplijnen op een vaste afstand (bijv. 0,60 m uit de gevel), punten op een hulplijn projecteren of tot een lijn verlengen. Met ✓ Vastleggen wordt de ligging exact overgenomen (geen herberekening van de route) en worden registers, toetsing en maatvoering opnieuw bepaald.">✎ Exact intekenen (UO)</button>
         <button class="tool breed" data-mode="street" title="Street View: klik op (of naast) het tracé en loop er doorheen — versleep de blauwe marker over het tracé of gebruik de pijltjestoetsen; het beeld loopt mee. Beschikbaar zodra een tracé is berekend.">🚶 Street View langs het tracé</button>
       </div>
       <div id="sleep-acties" hidden>
@@ -104,6 +106,16 @@
           <button id="klic-koppel" class="klein">Koppelen</button>
         </details>
         <p class="hint" id="klic-opslag"></p>
+      </div>
+      <hr>
+      <label><input type="checkbox" id="lg-inmeting" checked title="Topografische inmeting van de landmeter (DXF, DWG of puntenbestand in RD/NAP): ondergrond op centimeterniveau, vangbaar bij exact intekenen en opgenomen in de werktekeningen. Zichtbaar vanaf straatniveau."> Inmeting (landmeter)</label>
+      <div id="inm-blok">
+        <p class="hint" id="inm-status">Nog geen inmeting ingelezen.</p>
+        <div class="toolgrid">
+          <button id="inm-upload" class="klein" title="DXF of DWG (topografische tekening) of CSV/TXT met meetpunten (puntnr; x; y; z; code). Alleen RD New; ETRS89-graden worden via RDNAPTRANS™2018 omgerekend.">⇧ Inmeting inlezen…</button>
+        </div>
+        <input id="inm-input" type="file" hidden accept=".dxf,.dwg,.csv,.txt,.xyz,.pts">
+        <div id="inm-lijst"></div>
       </div>
       <hr>
       <span class="hint">Zonelagen (wegen mee in het tracé)</span>
@@ -185,6 +197,7 @@
         <button id="btn-exp-dxf" disabled
                 title="Tracétekening als DXF in RD New (EPSG:28992): tracé, boringen met in-/uittredepunten, kruisingen, moffen, stations en wortelzones op eigen lagen">AutoCAD (DXF)</button>
       </div>
+      <button id="btn-uo" class="primair-licht" disabled title="Werktekeningen voor het uitvoeringsontwerp: bladindeling langs het tracé, situatiebladen met BGT/kadaster/KLIC/inmeting, lengteprofielen van boringen, dwarsprofielen en uitzetstaat — als PDF-set en als DXF/DWG met layouts per blad, stempel volgens het tekenvoorschrift en revisiebeheer met wijzigingswolken.">▦ Werktekeningen (UO)…</button>
       <hr>
       <span class="hint">Ontwerpnota — door AI opgesteld uit alle registers en
         het berekende tracé. Het document bouwt zich live op in een
@@ -200,6 +213,146 @@
   <main id="map-wrap">
     <div id="map"></div>
     <div id="legenda"></div>
+
+    <div id="cursor-xy" class="mono" hidden></div>
+
+    <aside id="exact-paneel" class="uo-paneel dicht" aria-label="Exact intekenen">
+      <header class="uo-kop">
+        <div><h3>Exact intekenen</h3><span class="mono" id="ex-info"></span></div>
+        <button id="ex-sluit" title="Sluiten zonder vastleggen (wijzigingen vervallen)">✕</button>
+      </header>
+      <div class="uo-inhoud">
+        <section>
+          <h4>Vangen</h4>
+          <div class="uo-vinkjes">
+            <label><input type="checkbox" id="ex-v-bgt" checked> BGT-randen</label>
+            <label><input type="checkbox" id="ex-v-perceel" checked> kadastrale grenzen</label>
+            <label><input type="checkbox" id="ex-v-inm" checked> inmeting</label>
+            <label><input type="checkbox" id="ex-v-klic" checked> KLIC</label>
+            <label><input type="checkbox" id="ex-v-hulp" checked> hulplijnen</label>
+          </div>
+          <p class="hint" id="ex-vang-hint"></p>
+        </section>
+        <section>
+          <h4>Hoekpunten <span class="hint" id="ex-lengte"></span></h4>
+          <div id="ex-tabel-wrap"><table id="ex-tabel" class="mini"></table></div>
+          <div class="uo-knoppen">
+            <button id="ex-invoegen" class="klein" title="Nieuw punt halverwege het geselecteerde punt en het volgende">+ Punt na selectie</button>
+            <button id="ex-verwijder" class="klein" title="Geselecteerd hoekpunt verwijderen">✕ Punt</button>
+            <button id="ex-undo" class="klein" title="Ongedaan maken (Ctrl+Z)">↶</button>
+            <button id="ex-redo" class="klein" title="Opnieuw (Ctrl+Y)">↷</button>
+          </div>
+          <label class="inline">Punt invoegen op metrering <input id="ex-km" type="number" step="0.01" min="0" class="mono"> m
+            <button id="ex-km-ok" class="klein">Invoegen</button></label>
+        </section>
+        <section id="ex-sel-sectie">
+          <h4>Geselecteerd punt <span class="mono" id="ex-sel-naam"></span></h4>
+          <div class="uo-rij">
+            <label>X <input id="ex-x" type="number" step="0.01" class="mono"></label>
+            <label>Y <input id="ex-y" type="number" step="0.01" class="mono"></label>
+            <button id="ex-xy-ok" class="klein">Zet</button>
+          </div>
+          <div class="uo-rij">
+            <label>Afstand vanaf vorig punt <input id="ex-d" type="number" step="0.01" class="mono"></label>
+            <label>Richting ° (noord = 0, met de klok mee) <input id="ex-r" type="number" step="0.01" class="mono"></label>
+            <button id="ex-pol-ok" class="klein">Zet</button>
+          </div>
+          <div class="uo-rij">
+            <label>Verschuif Δx <input id="ex-dx" type="number" step="0.01" value="0" class="mono"></label>
+            <label>Δy <input id="ex-dy" type="number" step="0.01" value="0" class="mono"></label>
+            <button id="ex-rel-ok" class="klein">Verschuif</button>
+          </div>
+        </section>
+        <section>
+          <h4>Hulplijnen</h4>
+          <div class="uo-rij">
+            <label>Afstand <input id="ex-off" type="number" step="0.01" value="0.60" class="mono"> m</label>
+            <button id="ex-off-kies" class="klein" title="Klik daarna op een rand (BGT, kadaster, inmeting, KLIC of hulplijn) aan de kant waar de hulplijn moet komen">∥ Evenwijdig aan rand…</button>
+          </div>
+          <div class="uo-knoppen">
+            <button id="ex-hulp-teken" class="klein" title="Hulplijn tussen twee (gevangen) punten tekenen">╱ Hulplijn tekenen</button>
+            <button id="ex-hulp-kies" class="klein" title="Klik op een hulplijn om die actief te maken">◎ Actieve hulplijn kiezen</button>
+            <button id="ex-hulp-wis" class="klein">Hulplijnen wissen</button>
+          </div>
+          <p class="hint" id="ex-hulp-info">Geen actieve hulplijn.</p>
+          <div class="uo-knoppen">
+            <button id="ex-proj" class="klein" title="Geselecteerd punt loodrecht op de actieve hulplijn leggen">⊥ Punt op hulplijn</button>
+            <button id="ex-verleng" class="klein" title="Geselecteerd punt in de richting van zijn lijnstuk verlengen of inkorten tot de actieve hulplijn">⇥ Verleng tot hulplijn</button>
+            <button id="ex-seg" class="klein" title="Lijnstuk geselecteerd punt → volgend punt op de actieve hulplijn leggen">═ Lijnstuk op hulplijn</button>
+          </div>
+        </section>
+        <section>
+          <h4>Coördinaat zoeken</h4>
+          <div class="uo-rij">
+            <input id="ex-zoek" class="mono" placeholder="X Y (RD) of lat, lon (ETRS89)">
+            <button id="ex-zoek-ok" class="klein">Zoek</button>
+            <button id="ex-zoek-punt" class="klein" title="Gezochte coördinaat als hoekpunt invoegen na het geselecteerde punt">+ als punt</button>
+          </div>
+          <p class="hint" id="ex-zoek-info"></p>
+        </section>
+        <section class="uo-acties">
+          <button id="ex-vastleggen" class="primair" title="Ligging exact overnemen en registers, toetsing en maatvoering opnieuw bepalen (geen nieuwe routering)">✓ Tracé vastleggen</button>
+          <button id="ex-annuleer">↺ Annuleren</button>
+          <p class="hint">Sleep hoekpunten op de kaart (vangt op de aangevinkte lagen); sleep een lijnstuk om een punt toe te voegen; Alt-klik op een punt verwijdert het. Coördinaten worden afgerond op 0,01 m.</p>
+        </section>
+      </div>
+    </aside>
+
+    <aside id="uo-paneel" class="uo-paneel dicht" aria-label="Werktekeningen">
+      <header class="uo-kop">
+        <div><h3>Werktekeningen (UO)</h3><span class="mono" id="uo-info"></span></div>
+        <button id="uo-sluit" title="Sluiten">✕</button>
+      </header>
+      <div class="uo-inhoud">
+        <p class="uo-melding" id="uo-melding" hidden></p>
+        <section>
+          <h4>Bladindeling</h4>
+          <div class="uo-rij">
+            <label>Papier <select id="uo-papier"><option>A3</option><option>A2</option><option>A1</option><option>A0</option></select></label>
+            <label>Schaal <select id="uo-schaal"><option value="250">1:250</option><option value="500">1:500</option><option value="1000">1:1000</option></select></label>
+            <label>Overlap <input id="uo-overlap" type="number" min="0" step="1" class="mono"> m</label>
+            <label>Kilometrering <input id="uo-km" type="number" min="5" step="5" class="mono"> m</label>
+          </div>
+          <label><input type="checkbox" id="uo-toon-bladen" checked> Bladindeling op de kaart tonen</label>
+          <p class="hint" id="uo-bladen-info"></p>
+        </section>
+        <section>
+          <h4>Stempel</h4>
+          <div class="uo-raster" id="uo-stempel"></div>
+        </section>
+        <section>
+          <h4>Inhoud van de set</h4>
+          <div class="uo-vinkjes" id="uo-bladsoorten"></div>
+          <div class="uo-vinkjes" id="uo-ondergrond"></div>
+          <div class="uo-knoppen">
+            <button id="uo-inst-opslaan" class="klein" title="Instellingen bij dit project (deze variant) bewaren">Opslaan voor dit project</button>
+            <button id="uo-inst-standaard" class="klein" title="Als tekenvoorschrift voor alle projecten opslaan (data/tekenvoorschrift.json)">Als standaard (tekenvoorschrift)</button>
+          </div>
+          <p class="hint" id="uo-voorschrift-bron"></p>
+        </section>
+        <section>
+          <h4>Downloaden</h4>
+          <label>Bladen <input id="uo-selectie" class="mono" placeholder="alle — of bijv. 3-8,12"></label>
+          <div class="uo-knoppen">
+            <button id="uo-pdf" class="primair">⭳ PDF-set</button>
+            <button id="uo-dxf">⭳ DXF (layouts)</button>
+            <button id="uo-dwg">⭳ DWG</button>
+            <button id="uo-csv">⭳ Uitzetstaat (CSV)</button>
+          </div>
+          <p class="hint" id="uo-dl-info"></p>
+        </section>
+        <section>
+          <h4>Revisies</h4>
+          <div id="uo-revisies"></div>
+          <div class="uo-rij">
+            <label>Omschrijving <input id="uo-rev-oms" placeholder="bijv. tracé verlegd bij P12 na proefsleuf"></label>
+            <label>Door <input id="uo-rev-door"></label>
+          </div>
+          <label><input type="checkbox" id="uo-rev-def"> Definitieve uitgave (cijfer 0, 1, 2 … i.p.v. letter)</label>
+          <button id="uo-rev-nieuw" class="klein" title="Huidige ligging vastleggen als nieuwe revisie; wijzigingen t.o.v. de vorige revisie krijgen een wolk op de bladen">+ Nieuwe revisie</button>
+        </section>
+      </div>
+    </aside>
 
     <div id="sv-paneel" class="dicht" aria-label="Street View">
       <header id="sv-kop">
@@ -541,8 +694,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 <script src="registers.js?v=3"></script>
 <script src="proces.js?v=4"></script>
+<script src="uo.js?v=1"></script>
 </body>
 </html>

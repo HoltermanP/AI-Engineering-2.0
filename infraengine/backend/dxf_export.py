@@ -75,6 +75,14 @@ def _kruis(msp, punt: tuple, r: float, laag: str) -> None:
 def maak_dxf(variant: dict, stations: list, bomen: list,
              projectnaam: str = "") -> bytes:
     """DXF-tekening van één berekende variant, als bytes (ASCII-DXF)."""
+    doc = _bouw_doc(variant, stations, bomen, projectnaam)
+    buf = io.StringIO()
+    doc.write(buf)
+    return buf.getvalue().encode("utf-8")
+
+
+def _bouw_doc(variant: dict, stations: list, bomen: list, projectnaam: str = "",
+              kader: bool = True):
     doc = ezdxf.new("R2010", setup=True)  # setup: linetypes DASHED/DOT e.d.
     doc.header["$INSUNITS"] = 6   # meters
     doc.header["$MEASUREMENT"] = 1
@@ -173,7 +181,7 @@ def maak_dxf(variant: dict, stations: list, bomen: list,
     # --- tekstkader linksonder ----------------------------------------------
     xs = [x for reeks in _coords(variant["route"]) for x, _ in reeks]
     ys = [y for reeks in _coords(variant["route"]) for _, y in reeks]
-    if xs:
+    if xs and kader:
         regels = [
             f"InfraEngine tracétekening — {projectnaam or 'zonder projectnaam'}",
             f"Variant: {variant.get('naam', '')} · lengte {variant.get('lengte_m', 0):g} m",
@@ -187,7 +195,239 @@ def maak_dxf(variant: dict, stations: list, bomen: list,
                          dxfattribs={"layer": "KADER"}).set_placement(
                 (x0, y0 - i * (KADER_H + 0.7)),
                 align=TextEntityAlignment.TOP_LEFT)
+    return doc
 
+
+# ---------------------------------------------------------------------------
+# Werktekening (UO): ondergrond + paperspace-layouts per blad
+# ---------------------------------------------------------------------------
+
+# interne laag → sleutel in het tekenvoorschrift (werktekening.STANDAARD["laagnamen"])
+LAAG_SLEUTEL = {
+    "TRACE": "tracé", "TRACE_BORING": "boring", "BORING_PUNT": "boorpunt",
+    "KRUISINGEN": "kruising", "MOFFEN": "mof", "STATIONS": "station",
+    "BOMEN_WORTELZONE": "bomen", "MAATVOERING": "maatvoering",
+}
+KLIC_ACI = {"hoogspanning": 1, "landelijkHoogspanningsnet": 1, "middenspanning": 14,
+            "laagspanning": 30, "datatransport": 3, "gasHogeDruk": 40, "gasLageDruk": 50,
+            "water": 5, "rioolVrijverval": 34, "rioolOnderOverOfOnderdruk": 36,
+            "warmte": 6, "petrochemie": 30, "buisleidingGevaarlijkeInhoud": 30}
+BGT_ACI = {"wegdeel": 8, "ondersteunendwegdeel": 82, "begroeidterreindeel": 92,
+           "onbegroeidterreindeel": 253, "waterdeel": 150, "ondersteunendwaterdeel": 132,
+           "pand": 33, "overigbouwwerk": 251, "kunstwerkdeel_vlak": 252,
+           "overbruggingsdeel": 252, "tunneldeel": 252, "spoor": 250}
+
+
+def _laag(doc, naam: str, kleur: int = 7, lijntype: str = "CONTINUOUS") -> str:
+    naam = naam[:255].replace("/", "_")
+    if naam not in doc.layers:
+        doc.layers.add(naam, color=kleur, linetype=lijntype)
+    return naam
+
+
+def _lijnen_van(g):
+    if g.geom_type == "LineString":
+        return [list(g.coords)]
+    if g.geom_type == "Polygon":
+        return [list(g.exterior.coords)] + [list(r.coords) for r in g.interiors]
+    if hasattr(g, "geoms"):
+        return [c for d in g.geoms for c in _lijnen_van(d)]
+    return []
+
+
+def maak_werktekening_dxf(variant: dict, stations: list, bomen: list, projectnaam: str,
+                          bladen: list, inst: dict, ondergrond_fn, revisies: list,
+                          wolken: list, km_tekst) -> bytes:
+    """DXF met de werktekeningen: modelspace in RD (alle lagen incl.
+    ondergrond), en per situatieblad een layout op papierformaat met een
+    gedraaide viewport op de bladschaal en een stempel in paperspace."""
+    import pdfdoc
+    from shapely.geometry import LineString, Point, Polygon, shape
+
+    doc = _bouw_doc(variant, stations, bomen, projectnaam, kader=False)
+    msp = doc.modelspace()
+    ln = inst["laagnamen"]
+
+    # --- ondergrond per blad, ontdubbeld ----------------------------------
+    gezien = set()
+    for b in bladen:
+        xs = [c[0] for c in b["polygoon"]]
+        ys = [c[1] for c in b["polygoon"]]
+        og = ondergrond_fn((min(xs) - 2, min(ys) - 2, max(xs) + 2, max(ys) + 2))
+        bereik = Polygon(b["polygoon"])
+        for coll, feats in (og.get("bgt") or {}).items():
+            if coll.startswith("_"):
+                continue
+            laag = _laag(doc, f"{ln['bgt']}_{coll.upper()}", BGT_ACI.get(coll, 8))
+            for g, props in feats:
+                sleutel = ("bgt", props.get("lokaal_id") or g.wkb)
+                if sleutel in gezien or not g.intersects(bereik):
+                    continue
+                gezien.add(sleutel)
+                for c in _lijnen_van(g):
+                    msp.add_lwpolyline([(x, y) for x, y, *_ in c],
+                                       close=c[0] == c[-1], dxfattribs={"layer": laag})
+        laag = _laag(doc, ln["kadaster"], 6, "DASHDOT")
+        for g, props in og.get("percelen") or []:
+            sleutel = ("dkk", props.get("identificatieLokaalID") or g.wkb)
+            if sleutel in gezien or not g.intersects(bereik):
+                continue
+            gezien.add(sleutel)
+            for c in _lijnen_van(g):
+                msp.add_lwpolyline([(x, y) for x, y, *_ in c], dxfattribs={"layer": laag})
+            nr = props.get("perceelnummer")
+            if nr:
+                q = g.representative_point()
+                msp.add_text(str(nr), height=1.0, dxfattribs={"layer": laag}).set_placement(
+                    (q.x, q.y), align=TextEntityAlignment.MIDDLE_CENTER)
+        for g, props in og.get("klic") or []:
+            thema = props.get("thema") or "overig"
+            sleutel = ("klic", g.wkb)
+            if sleutel in gezien:
+                continue
+            gezien.add(sleutel)
+            laag = _laag(doc, f"{ln['klic']}_{thema.upper()}", KLIC_ACI.get(thema, 8), "DASHED")
+            for c in _lijnen_van(g):
+                msp.add_lwpolyline([(x, y) for x, y, *_ in c], dxfattribs={"layer": laag})
+        for meta, f, g in og.get("inmeting") or []:
+            sleutel = ("inm", meta["id"], id(f))
+            if sleutel in gezien:
+                continue
+            gezien.add(sleutel)
+            laag = _laag(doc, f"{ln['inmeting']}_{f['l']}"[:255], 7)
+            gt = f["g"]
+            if gt["type"] == "LineString":
+                c = gt["coordinates"]
+                if len(c[0]) == 3:
+                    msp.add_polyline3d([tuple(p) for p in c], dxfattribs={"layer": laag})
+                else:
+                    msp.add_lwpolyline([tuple(p) for p in c], dxfattribs={"layer": laag})
+            elif f.get("t") and "b" not in f:
+                msp.add_text(f["t"], height=f.get("h", 0.5), rotation=f.get("r", 0.0),
+                             dxfattribs={"layer": laag}).set_placement(tuple(gt["coordinates"]))
+            else:
+                x, y = gt["coordinates"]
+                msp.add_point((x, y, f.get("z", 0.0)), dxfattribs={"layer": laag})
+
+    # --- kilometrering en hoekpunten ---------------------------------------
+    route = shape(variant["route"])
+    if route.geom_type != "LineString":
+        route = LineString([c for l in route.geoms for c in l.coords])
+    laag = _laag(doc, ln["km"], 1)
+    stap = float(inst.get("km_interval_m", 25))
+    m = 0.0
+    while m <= route.length + 1e-6:
+        q = route.interpolate(m)
+        a = route.interpolate(max(0, m - 0.5))
+        c = route.interpolate(min(route.length, m + 0.5))
+        h = math.atan2(c.y - a.y, c.x - a.x)
+        nx, ny = -math.sin(h), math.cos(h)
+        msp.add_line((q.x - nx, q.y - ny), (q.x + nx, q.y + ny), dxfattribs={"layer": laag})
+        gr = math.degrees(h) + 90
+        gr = gr - 180 if gr > 90 else gr + 180 if gr < -90 else gr
+        msp.add_text(km_tekst(m), height=0.8, rotation=gr, dxfattribs={"layer": laag}
+                     ).set_placement((q.x + nx * 1.4, q.y + ny * 1.4),
+                                     align=TextEntityAlignment.MIDDLE_LEFT)
+        m += stap
+    for i, (x, y) in enumerate(route.coords, 1):
+        msp.add_text(f"P{i}", height=0.6, dxfattribs={"layer": laag}).set_placement(
+            (x + 0.4, y - 0.9))
+
+    # --- bladindeling en wolken --------------------------------------------
+    laag_bl = _laag(doc, ln["bladindeling"], 9, "DASHED")
+    for b in bladen:
+        msp.add_lwpolyline(b["polygoon"], close=True, dxfattribs={"layer": laag_bl})
+    laag_w = _laag(doc, ln["wolk"], 6)
+    for w in wolken:
+        msp.add_lwpolyline(w["polygoon"], close=True,
+                           dxfattribs={"layer": laag_w, "const_width": 0.15})
+        x, y = w["polygoon"][0]
+        msp.add_text(w["rev"], height=1.2, dxfattribs={"layer": laag_w}).set_placement((x, y))
+
+    # --- paperspace per blad ------------------------------------------------
+    import werktekening as wt
+    papier = inst["papier"]
+    pw, ph = pdfdoc.PAPIER.get(papier, pdfdoc.PAPIER["A3"])
+    vak = wt.kaartvak(papier)
+    schaal = float(inst["schaal"])
+    laag_st = _laag(doc, ln["stempel"], 7)
+    st = inst["stempel"]
+    laatste = next((r for r in reversed(revisies) if r.get("status") != "vervallen"), None)
+    for b in bladen:
+        lay = doc.layouts.new(f"Blad {b['nr']:03d}")
+        lay.page_setup(size=(pw, ph), margins=(0, 0, 0, 0), units="mm")
+        vw, vh = vak[2] - vak[0], vak[3] - vak[1]
+        vp = lay.add_viewport(center=((vak[0] + vak[2]) / 2, (vak[1] + vak[3]) / 2),
+                              size=(vw, vh), view_center_point=(0, 0),
+                              view_height=vh * schaal / 1000.0)
+        # gedraaide weergave: het tracé loopt horizontaal over het blad. In een
+        # viewport met twist ligt view_center_point in het gedraaide stelsel.
+        hoek = math.radians(b["hoek_gr"])
+        ca, sa = math.cos(hoek), math.sin(hoek)
+        vp.dxf.view_twist_angle = (-b["hoek_gr"]) % 360
+        vp.dxf.view_center_point = (b["cx"] * ca + b["cy"] * sa,
+                                    -b["cx"] * sa + b["cy"] * ca)
+        vp.dxf.view_target_point = (0, 0, 0)
+        vp.dxf.layer = laag_st
+        lay.add_lwpolyline([(5, 5), (pw - 5, 5), (pw - 5, ph - 5), (5, ph - 5)], close=True,
+                           dxfattribs={"layer": laag_st, "const_width": 0.5})
+        lay.add_lwpolyline([(vak[0], vak[1]), (vak[2], vak[1]), (vak[2], vak[3]),
+                            (vak[0], vak[3])], close=True, dxfattribs={"layer": laag_st})
+        rx = vak[2] + 4
+        regels = [
+            ("Opdrachtgever", st.get("opdrachtgever", "")),
+            ("Ontwerpbureau", st.get("ontwerpbureau", "")),
+            ("Project", projectnaam),
+            ("Omschrijving", f"{km_tekst(b['van_m'])} - {km_tekst(b['tot_m'])}"),
+            ("Tekening", f"Situatie blad {b['nr']} van {len(bladen)}"),
+            ("Tekeningnr.", wt.tekeningnummer(inst, "situatie", b["nr"])
+             + (f" rev. {laatste['rev']}" if laatste else "")),
+            ("Schaal", f"1:{int(schaal)} ({papier})"),
+            ("Fase / status", f"{st.get('fase', 'UO')} - {(laatste or {}).get('status', 'concept')}"),
+            ("Ontwerper", st.get("ontwerper", "")),
+            ("Getekend", st.get("tekenaar", "")),
+            ("Gecontroleerd", st.get("controleur", "")),
+            ("Datum", (laatste or {}).get("datum") or time.strftime("%Y-%m-%d")),
+        ]
+        rij = 4.6
+        h = rij * len(regels)
+        lay.add_lwpolyline([(rx, 10), (rx + wt.RECHTS_MM, 10), (rx + wt.RECHTS_MM, 10 + h),
+                            (rx, 10 + h)], close=True, dxfattribs={"layer": laag_st})
+        for i, (k, waarde) in enumerate(regels):
+            y = 10 + h - (i + 1) * rij
+            lay.add_line((rx, y), (rx + wt.RECHTS_MM, y), dxfattribs={"layer": laag_st})
+            lay.add_text(k, height=1.7, dxfattribs={"layer": laag_st}).set_placement((rx + 1.5, y + 1.4))
+            lay.add_text(str(waarde or ""), height=2.0, dxfattribs={"layer": laag_st}
+                         ).set_placement((rx + 28, y + 1.4))
+        y = 10 + h + 3
+        for r in reversed([r for r in revisies if r.get("status") != "vervallen"][-5:]):
+            lay.add_text(f"{r['rev']}  {r.get('datum', '')}  {(r.get('omschrijving') or '')[:40]}"
+                         f"  {r.get('status', '')}", height=1.7,
+                         dxfattribs={"layer": laag_st}).set_placement((rx + 1.5, y))
+            y += 3.2
+        # noordpijl (paperspace, gedraaid met het blad)
+        a = math.radians(90 - b["hoek_gr"])
+        nx, ny = rx + 12, ph - 23
+        tip = (nx + 9 * math.cos(a), ny + 9 * math.sin(a))
+        lay.add_lwpolyline([(nx - 2.5 * math.sin(a), ny + 2.5 * math.cos(a)), tip,
+                            (nx + 2.5 * math.sin(a), ny - 2.5 * math.cos(a))],
+                           dxfattribs={"layer": laag_st})
+        lay.add_text("N", height=3.0, dxfattribs={"layer": laag_st}).set_placement(
+            (tip[0] + 1.5 * math.cos(a), tip[1] + 1.5 * math.sin(a)),
+            align=TextEntityAlignment.MIDDLE_CENTER)
+        lay.add_text(f"Schaal 1:{int(schaal)}", height=2.4,
+                     dxfattribs={"layer": laag_st}).set_placement((rx + 26, ph - 16))
+
+    if "Layout1" in doc.layouts and len(doc.layouts) > 2:
+        doc.layouts.delete("Layout1")
+
+    # --- laagnamen volgens het tekenvoorschrift -----------------------------
+    for intern, sleutel in LAAG_SLEUTEL.items():
+        nieuw = ln.get(sleutel)
+        if nieuw and intern in doc.layers and nieuw not in doc.layers:
+            doc.layers.get(intern).rename(nieuw)
+    if "MAATVOERING_HANDMATIG" in doc.layers and ln.get("maatvoering"):
+        doc.layers.get("MAATVOERING_HANDMATIG").rename(ln["maatvoering"] + "_HAND")
     buf = io.StringIO()
     doc.write(buf)
     return buf.getvalue().encode("utf-8")
