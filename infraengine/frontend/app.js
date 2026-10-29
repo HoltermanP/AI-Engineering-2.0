@@ -134,6 +134,11 @@ function maatStijl(f, res, kleur, aanEind) {
   ];
 }
 
+const boomStijlen = new Map();  // wortelzone-stijl per straal in pixels
+const boomStam = new ol.style.Style({
+  image: new ol.style.Circle({ radius: 2.5, fill: new ol.style.Fill({ color: "#2E6B2F" }) }),
+});
+
 const lagen = {
   // KLIC-leveringen: contouren (altijd, ook uitgezoomd) en de netten in beeld
   klicContour: new ol.layer.Vector({
@@ -196,20 +201,24 @@ const lagen = {
   }),
   bomen: new ol.layer.Vector({
     source: srcBomen, zIndex: 19,
-    style: (f, resolution) => [
-      new ol.style.Style({
-        image: new ol.style.Circle({
-          radius: Math.max(3, (f.get("r") || BOOM_WORTELZONE_M) / resolution),
-          fill: new ol.style.Fill({ color: "rgba(46,107,47,0.14)" }),
-          stroke: new ol.style.Stroke({ color: "rgba(46,107,47,0.55)", width: 1 }),
-        }),
-      }),
-      new ol.style.Style({
-        image: new ol.style.Circle({
-          radius: 2.5, fill: new ol.style.Fill({ color: "#2E6B2F" }),
-        }),
-      }),
-    ],
+    // stijlen per (afgeronde) straal hergebruiken: een nieuwe ol.style.Circle
+    // per boom per frame tekent elke keer een eigen canvas en maakte de kaart
+    // bij duizenden bomen traag
+    style: (f, resolution) => {
+      const r = Math.max(3, Math.round((f.get("r") || BOOM_WORTELZONE_M) / resolution * 2) / 2);
+      let s = boomStijlen.get(r);
+      if (!s) {
+        s = [new ol.style.Style({
+          image: new ol.style.Circle({
+            radius: r,
+            fill: new ol.style.Fill({ color: "rgba(46,107,47,0.14)" }),
+            stroke: new ol.style.Stroke({ color: "rgba(46,107,47,0.55)", width: 1 }),
+          }),
+        }), boomStam];
+        boomStijlen.set(r, s);
+      }
+      return s;
+    },
   }),
   area: new ol.layer.Vector({
     source: srcArea, zIndex: 20,
